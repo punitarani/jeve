@@ -1,0 +1,102 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Nothing in CI may reach a model. The gateway needs a key to construct a
+  # live client, and its absence is the belt to the ruff rule's braces.
+  CI: "true"
+
+jobs:
+  decisions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Validate records and the supersede graph
+        run: python3 scripts/gen-decisions.py --check
+
+      - name: Generator unit tests
+        run: python3 scripts/test_gen_decisions.py
+
+      - name: Regenerate and fail if the tree is dirty
+        run: |
+          python3 scripts/gen-decisions.py
+          if ! git diff --exit-code; then
+            echo "::error::Generated artifacts are out of date."
+            echo "Run: python3 scripts/gen-decisions.py"
+            exit 1
+          fi
+
+      - name: Run each record's confirmation command
+        # A `confirmation` that nobody runs is a comment. This is what stops
+        # them becoming aspirational.
+        #
+        # These are arbitrary shell commands read out of files in the repo, so
+        # they are only executed for branches pushed here — never for a pull
+        # request from a fork, where the command would be attacker-controlled.
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          set -o pipefail
+          status=0
+          while IFS= read -r line; do
+            id=$(printf '%s' "$line" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+            cmd=$(printf '%s' "$line" | python3 -c 'import json,sys; print(json.load(sys.stdin)["confirmation"] or "")')
+            [ -z "$cmd" ] && continue
+            echo "--- $id: $cmd"
+            if ! bash -c "$cmd"; then
+              echo "::error::$id confirmation failed: $cmd"
+              status=1
+            fi
+          done < decisions/index.jsonl
+          exit $status
+
+      - name: markdownlint
+        run: npx --yes markdownlint-cli2
+
+  python:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: py
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest
+
+      - name: No second path to a model
+        # LLM-0004. The ruff rule bans the import; this catches a raw URL in
+        # any language, including the webapp.
+        working-directory: .
+        run: |
+          if git grep -nE 'openrouter\.ai/api' -- \
+               ':!py/src/jeve/llm/**' ':!decisions/**' ':!docs/**' \
+               ':!.github/**' ':!ops/**' ':!*.md'; then
+            echo "::error::Only jeve.llm may address OpenRouter (LLM-0004)."
+            exit 1
+          fi
+
+      - name: No credentials in the tree
+        working-directory: .
+        run: |
+          if git grep -nE 'sk-or-v1-[A-Za-z0-9]' -- ':!*.md'; then
+            echo "::error::An API key is committed. Rotate it."
+            exit 1
+          fi

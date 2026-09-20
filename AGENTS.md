@@ -1,0 +1,73 @@
+# jeve
+
+A continuously-running simulation of a small interconnected economy: four firms
+on one street — Tallybird Software (whose product the others use), Halloran &
+Pike LLP, Ledgerline Accounting, Third Rail Cafe.
+
+The research question: how much of a Smallville/Concordia-style agent loop can
+be replaced by *typed decisions* — boolean-with-probability, choice-from-enum,
+numeric scale — instead of generated text. Typed decisions come from TypeSafe's
+Jev; prose generation is the rare exception, and no causal path in the
+simulation ever reads generated text.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `py/src/jeve/` | The simulation. Layered: `contracts → world → decide/memory → gen → sim/api` |
+| `apps/web/` | The dashboard |
+| `decisions/` | Decision records and their generated index |
+| `docs/research/` | Ground truth on Jev, prior-art mapping, validation survey |
+| `docs/design/` | Long-form analysis behind the decision records |
+| `ops/` | Runtime state: spend ledger, gate status |
+
+## Decisions
+
+Architecture decisions are recorded, not remembered. Before changing anything
+structural:
+
+1. Read `decisions/INDEX.md` — one row per decision, with the globs it governs.
+2. Open **only** the records whose `scope` covers the files you are about to
+   change. Do not read them all.
+3. If you are making a consequential architectural choice that no record
+   covers, write one: `python3 scripts/gen-decisions.py --new PREFIX "title"`,
+   fill it in, then run `python3 scripts/gen-decisions.py`.
+
+Records are **immutable**. Never edit the substance of an accepted decision —
+write a new record and set `superseded-by` on the old one. Filling in `scope`
+once the code exists is metadata, not substance, and is fine.
+
+Write a record only when the choice was contested, the obvious answer was wrong
+for a non-obvious reason, or a future engineer would plausibly undo it. Cite
+the ID at the enforcement point in code (`# CORE-0005: seeds are path-derived`).
+
+Records written autonomously carry `deciders: ["claude"]` and the tag
+`agent-decided` until a human has reviewed them.
+
+## Standards
+
+- **Python**: full type hints, `uv`, pydantic at boundaries, `ruff` +
+  `mypy --strict`, stdlib-first. Python 3.14.
+- **TypeScript**: strict, no `any`, discriminated unions over optional-field
+  soup, zod at every I/O boundary.
+- One way to do each thing. No parallel abstractions "in case".
+- Every module testable without network. Real model calls live in `jeve.llm`
+  and in tests marked `live`.
+- Prefer deleting code to adding configuration.
+- Comments explain *why*, and carry the incident that justified the code.
+
+## Money
+
+**Every model call goes through `jeve.llm`.** Nothing else may import `httpx`;
+ruff enforces it. The gateway reserves worst-case cost before issuing, settles
+at the real cost, and refuses past the ceiling. Thresholds: $12 stops
+exploratory work, $16 halts everything and triggers the handoff, $20 is the
+backstop. State is in `ops/ledger.jsonl` and survives restarts — do not add a
+second path to a model, and do not reset the ledger.
+
+## Verify
+
+```
+make check     # lint, types, tests, decision records
+make smoke     # one real call, under a cent
+```

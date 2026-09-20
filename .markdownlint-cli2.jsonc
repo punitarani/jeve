@@ -1,0 +1,13 @@
+{
+  // Records are prose; hard-wrapping is a style choice, not a lint.
+  "config": {
+    "MD013": false,
+    // Front matter carries `title` and the body opens with an H1. Without
+    // this they collide as a duplicate top-level heading.
+    "MD025": { "front_matter_title": "" },
+    "MD024": { "siblings_only": true },
+    "MD033": false
+  },
+  "globs": ["**/decisions/*.md", "decisions/**/*.md"],
+  "ignores": ["node_modules/**", ".venv/**", ".cursor/**"]
+}
