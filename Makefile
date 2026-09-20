@@ -57,3 +57,7 @@ db-down: ## Stop Postgres, keep the data
 .PHONY: fixture
 fixture: ## Run the golden fixture on rules only (free, no network)
 	$(UV) python scripts/run_fixture.py
+
+.PHONY: api
+api: ## Run the API on :8000
+	cd py && uv run uvicorn jeve.api.app:app --host 127.0.0.1 --port 8000
