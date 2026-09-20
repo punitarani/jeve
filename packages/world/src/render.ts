@@ -23,6 +23,34 @@ const CAMERA_DISTANCE = 80;
 
 export type ViewTarget = { x: number; z: number; span: number };
 
+/**
+ * Is this browser's WebGL a CPU rasteriser?
+ *
+ * SwiftShader and llvmpipe draw every pixel on the CPU, and every GL call is a
+ * synchronous wait on a GPU process shared by all tabs. A 60 fps antialiased
+ * scene at 2x pixel ratio is nothing to a GPU and a great deal to a laptop
+ * core that is busy with something else: under heavy system load it froze a
+ * headless page outright, for minutes. So a software renderer gets a cheap
+ * picture — no MSAA, 1x pixel ratio, fifteen frames a second — and the town
+ * still moves. Asked of a throwaway context, because antialiasing has to be
+ * chosen before the real one is created.
+ */
+function softwareRenderer(): string | null {
+  try {
+    const probe = document.createElement("canvas");
+    const gl = probe.getContext("webgl2") ?? probe.getContext("webgl");
+    if (!gl) return null;
+    const info = gl.getExtension("WEBGL_debug_renderer_info");
+    const name = info ? String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL)) : "";
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    return /swiftshader|llvmpipe|software|basic render/i.test(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+const SOFTWARE_FRAME_MS = 1000 / 15;
+
 function tone(palette: string[], key: string): string {
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
@@ -33,6 +61,8 @@ export class WorldView {
   readonly camera: THREE.OrthographicCamera;
   readonly glOk: boolean;
   readonly canvas: HTMLCanvasElement;
+  /** The software renderer's name, or null when there is a real GPU. */
+  readonly software: string | null;
 
   private renderer: THREE.WebGLRenderer | null = null;
   private scene = new THREE.Scene();
@@ -47,6 +77,7 @@ export class WorldView {
   private color = new THREE.Color();
   private frames: number[] = [];
   private lastFrameAt = 0;
+  private lastDrawAt = 0;
 
   constructor(
     private container: HTMLElement,
@@ -61,15 +92,18 @@ export class WorldView {
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
     this.placeCamera();
 
+    this.software = softwareRenderer();
     let ok = false;
     try {
       this.renderer = new THREE.WebGLRenderer({
         canvas: this.canvas,
-        antialias: true,
+        antialias: this.software === null,
         alpha: true,
         powerPreference: "high-performance",
       });
-      this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+      this.renderer.setPixelRatio(
+        this.software === null ? Math.min(2, window.devicePixelRatio || 1) : 1,
+      );
       this.renderer.setClearColor(0x000000, 0);
       ok = true;
     } catch (error) {
@@ -204,8 +238,18 @@ export class WorldView {
 
   // -- frame ---------------------------------------------------------------
 
-  frame(now: number): void {
+  /**
+   * Advance the model and, if `draw`, the picture.
+   *
+   * The model always moves on — positions are what tests and clicks read — but
+   * nothing is drawn while the canvas is off-screen or the tab is hidden, and a
+   * software renderer draws at a quarter of the rate.
+   */
+  frame(now: number, draw = true): void {
     const moving = this.model.update(now);
+    if (!draw) return;
+    if (this.software !== null && now - this.lastDrawAt < SOFTWARE_FRAME_MS) return;
+    this.lastDrawAt = now;
 
     if (this.controls !== null) {
       this.controls.update();

@@ -642,6 +642,234 @@ def _interpret_agent_tick(
     )
 
 
+# -- credit.decision: what an outage is worth (WORLD-0004) -------------------
+
+
+def outage_words(minutes: object) -> str:
+    m = int(_number(minutes))
+    if m < 60:
+        return "under an hour"
+    if m < 4 * 60:
+        return "a few hours"
+    if m < 12 * 60:
+        return "most of a working day"
+    return "more than a day"
+
+
+_CREDIT = Ask(
+    "credit",
+    "J",
+    Choice(
+        instructions=(
+            "What service credit does the software company owe this customer "
+            "for the outage?"
+        ),
+        criteria={
+            "none": (
+                "No credit: the outage was brief and did the customer no real harm."
+            ),
+            "partial": (
+                "A partial credit, a quarter of the month's fee: the outage cost "
+                "the customer a meaningful part of a day, or they had to chase it."
+            ),
+            "full_month": (
+                "A full month's credit: the outage ran longer than a day, or it "
+                "stopped the customer billing their own clients."
+            ),
+            "other": "Something else.",
+        },
+    ),
+)
+
+
+def _prepare_credit(ctx: DecisionContext) -> Prepared:
+    customer = str(ctx.facts.get("customer", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_CREDIT,),
+        state={
+            "person": "an account manager at a small software company",
+            "customer": f"{ORG_WORDS.get(customer, 'a customer')}, a paying subscriber",
+            "outage": f"The {ctx.facts.get('module')} feature was down for "
+            f"{outage_words(ctx.facts.get('minutes'))}.",
+            "how_it_was_raised": (
+                "Someone from the customer came and pressed for a fix in person."
+                if ctx.facts.get("escalated")
+                else "The customer did not chase it."
+            ),
+            "effect_on_customer": (
+                "It stopped the customer sending their own month-end invoices."
+                if ctx.facts.get("blocked_billing")
+                else "The customer's own billing was not affected."
+            ),
+        },
+    )
+
+
+def _interpret_credit(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    level = str(got["credit"].value)
+    return Outcome({"credit": level if level != "other" else "none"}, {})
+
+
+# -- payroll.release: Friday's wages (WORLD-0004) ----------------------------
+
+_RELEASE = Ask(
+    "release",
+    "J",
+    Noul(
+        instructions="Should this week's payroll for this employer be released now?",
+        criteria=_yes_no(
+            "Release it: the hours are known and the money is there.",
+            "Hold it: the hours worked cannot be confirmed yet.",
+        ),
+    ),
+)
+
+
+def _prepare_payroll(ctx: DecisionContext) -> Prepared:
+    if not ctx.facts.get("can_afford", True):
+        # Whether the money exists is a ledger fact, never a judgement.
+        return Prepared(
+            ctx.kind, gated={"release": False, "reason": "insufficient_cash"}
+        )
+    multiple = _number(ctx.facts.get("cash_multiple"), 5.0)
+    return Prepared(
+        ctx.kind,
+        asks=(_RELEASE,),
+        state={
+            "person": (
+                "a payroll clerk at an accounting firm, running a client's payroll"
+            ),
+            "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
+            "timesheets": (
+                "This week's timesheets are complete and approved."
+                if ctx.facts.get("timesheets_available")
+                else "The time-tracking software is down, so this week's timesheets "
+                "cannot be retrieved and the hours worked are unknown."
+            ),
+            "funds": (
+                "The employer's account covers this payroll several times over."
+                if multiple >= 3
+                else "The employer's account covers this payroll, but not by much."
+            ),
+        },
+    )
+
+
+def _interpret_payroll(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    release = bool(got["release"].value)
+    return Outcome(
+        {"release": release, "reason": "released" if release else "timesheets"}, {}
+    )
+
+
+# -- close.signoff: can the month be stated yet? (WORLD-0004) ----------------
+
+_READINESS = Ask(
+    "readiness",
+    "J",
+    Score(
+        instructions="How ready are this client's books to be closed for the month?",
+        criteria=[
+            "Not ready: the month's revenue cannot be stated yet.",
+            "Ready, with notes: minor items are outstanding but the month can close.",
+            "Clean: everything reconciles and the month can close.",
+        ],
+    ),
+)
+
+
+def _prepare_close(ctx: DecisionContext) -> Prepared:
+    overdue = int(_number(ctx.facts.get("overdue_bills")))
+    return Prepared(
+        ctx.kind,
+        asks=(_READINESS,),
+        state={
+            "person": "an accountant closing a client's books for the month",
+            "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
+            "client": ORG_WORDS.get(str(ctx.facts.get("client")), "a client firm"),
+            "sales_invoices": (
+                "The client's month-end invoices have NOT been sent: their invoicing "
+                "software is down, so this month's revenue is not yet known."
+                if ctx.facts.get("invoices_stuck")
+                else "All of the client's invoices for the month have been sent."
+            ),
+            "bills": (
+                "The client has no overdue bills."
+                if overdue == 0
+                else "The client has one or two overdue bills."
+                if overdue <= 2
+                else "The client has several overdue bills."
+            ),
+        },
+    )
+
+
+def _interpret_close(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"readiness": int(str(got["readiness"].value))}, {})
+
+
+# -- catering.order: lunch in, tomorrow? (WORLD-0004) ------------------------
+
+_ORDER = Ask(
+    "order",
+    "P",
+    Choice(
+        instructions=(
+            "Does this person order lunch in from the neighbourhood cafe for the "
+            "team tomorrow?"
+        ),
+        criteria={
+            "none": "No order. People sort out their own lunch as usual.",
+            "small": "A small order: sandwiches for a meeting.",
+            "large": "A large order: lunch for the whole office.",
+            "other": "Something else.",
+        },
+    ),
+)
+
+
+def mood_words(average: object) -> str:
+    value = _number(average, 2.0)
+    if value < 1.5:
+        return "The team has been stressed and short-tempered this week."
+    if value < 2.5:
+        return "The team's mood has been ordinary."
+    return "The team has been in good spirits."
+
+
+def _prepare_catering(ctx: DecisionContext) -> Prepared:
+    if not ctx.facts.get("can_afford", True):
+        return Prepared(ctx.kind, gated={"order": "none"})
+    org = str(ctx.facts.get("org", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_ORDER,),
+        state={
+            "person": (
+                "the person who handles office spending at "
+                + ORG_WORDS.get(org, "a firm")
+            ),
+            "temperament": trait_words("sociability", ctx.traits.get("sociability")),
+            "team": mood_words(ctx.facts.get("team_mood")),
+            "funds": "There is comfortably enough in the account for it.",
+        },
+    )
+
+
+def _interpret_catering(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    order = str(got["order"].value)
+    return Outcome({"order": order if order in ("small", "large") else "none"}, {})
+
+
 QUESTION_SETS: dict[str, QuestionSet] = {
     s.kind: s
     for s in (
@@ -651,5 +879,9 @@ QUESTION_SETS: dict[str, QuestionSet] = {
         QuestionSet("payment.timing", _prepare_payment, _interpret_payment),
         QuestionSet("cafe.purchase", _prepare_cafe, _interpret_cafe),
         QuestionSet("agent.tick", _prepare_agent_tick, _interpret_agent_tick),
+        QuestionSet("credit.decision", _prepare_credit, _interpret_credit),
+        QuestionSet("payroll.release", _prepare_payroll, _interpret_payroll),
+        QuestionSet("close.signoff", _prepare_close, _interpret_close),
+        QuestionSet("catering.order", _prepare_catering, _interpret_catering),
     )
 }

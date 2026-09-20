@@ -88,3 +88,22 @@ def next_office_open(seconds: int) -> int:
     while SimTime(at(day)).is_weekend:
         day += 1
     return at(day, 9)
+
+
+def next_open(seconds: int) -> int:
+    """The next moment *anything* is open — an office or the cafe — or now.
+
+    Not the same as `next_office_open`: the cafe opens two hours before the
+    offices and trades on Saturday. Skipping dead time to the next *office*
+    opening silently dropped the cafe's mornings on every day after the first,
+    and all of its Saturdays.
+    """
+
+    moment = seconds - seconds % TICK if seconds % TICK == 0 else seconds
+    # Bounded: some tick within a week is always open.
+    for _ in range(7 * DAY // TICK + 1):
+        now = SimTime(moment)
+        if now.in_office_hours or now.cafe_open:
+            return moment
+        moment = moment - moment % TICK + TICK
+    raise AssertionError("nothing opens for a whole week")

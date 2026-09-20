@@ -21,8 +21,10 @@ from psycopg.rows import DictRow
 from jeve import db
 from jeve.core.clock import SimTime, at
 from jeve.decide.policy import RulesPolicy
+from jeve.sim import advance
 from jeve.world.engine import Engine, skip_to_next_open
 from jeve.world.seed_world import ROOT_SEED, seed
+from tests.worldcache import build_once
 
 pytestmark = pytest.mark.timeout(300)
 
@@ -43,27 +45,28 @@ def run(
     days: int = 2,
     root_seed: int = ROOT_SEED,
     debt_level: float = 1.0,
+    fresh: bool = False,
 ) -> Counter[str]:
-    """Seed and run, returning the event mix."""
+    """Seed and run, returning the event mix.
 
-    seed(conn, root_seed=root_seed)
-    engine = Engine(
-        conn, RulesPolicy(root_seed), root_seed=root_seed, debt_level=debt_level
-    )
-    end = at(days)
-    kinds: Counter[str] = Counter()
-    while True:
-        row = conn.execute("SELECT sim_time FROM sim_meta").fetchone()
-        assert row is not None
-        now = SimTime(int(row["sim_time"]))
-        if now.seconds >= end:
-            break
-        if not now.in_office_hours and not now.cafe_open:
-            if skip_to_next_open(conn) >= end:
-                break
-            continue
-        kinds.update(engine.tick().events)
-    return kinds
+    Reuses an identical world already in the database unless `fresh`, which a
+    test about reproducibility must set: comparing a world with itself proves
+    nothing.
+    """
+
+    def build() -> None:
+        seed(conn, root_seed=root_seed)
+        engine = Engine(
+            conn, RulesPolicy(root_seed), root_seed=root_seed, debt_level=debt_level
+        )
+        advance(conn, engine, until=at(days))
+
+    if fresh:
+        build()
+    else:
+        build_once(conn, f"rules:{days}d:seed={root_seed}:debt={debt_level}", build)
+    rows = conn.execute("SELECT kind, count(*) AS n FROM events GROUP BY kind")
+    return Counter({str(row["kind"]): int(row["n"]) for row in rows.fetchall()})
 
 
 def event_log_hash(conn: Connection[DictRow]) -> str:
@@ -143,9 +146,9 @@ def test_work_items_are_conserved(conn: Connection[DictRow]) -> None:
 
 
 def test_the_same_seed_produces_the_same_event_log(conn: Connection[DictRow]) -> None:
-    run(conn, days=3, root_seed=7)
+    run(conn, days=3, root_seed=7, fresh=True)
     first = event_log_hash(conn)
-    run(conn, days=3, root_seed=7)
+    run(conn, days=3, root_seed=7, fresh=True)
     assert event_log_hash(conn) == first
 
 
@@ -348,18 +351,25 @@ def test_dead_time_is_skipped_rather_than_ticked(conn: Connection[DictRow]) -> N
     conn.execute("UPDATE sim_meta SET sim_time = %s", (at(0, 22),))
     conn.commit()
     moved = skip_to_next_open(conn)
-    assert SimTime(moved).day == 1
-    assert SimTime(moved).in_office_hours
-    assert moved - at(0, 22) > 10 * 3600
+    # To the next moment anything is open — the cafe at seven, not the offices
+    # at nine, which is what this asserted while the bug was in.
+    assert moved == at(1, 7)
+    assert SimTime(moved).cafe_open and not SimTime(moved).in_office_hours
 
 
-def test_a_weekend_is_skipped_to_monday(conn: Connection[DictRow]) -> None:
+def test_sunday_is_skipped_but_saturday_is_not(conn: Connection[DictRow]) -> None:
+    """The offices are shut all weekend. The cafe is shut on Sunday only."""
+
     seed(conn, root_seed=ROOT_SEED)
     conn.execute("UPDATE sim_meta SET sim_time = %s", (at(4, 18),))
     conn.commit()
+    assert skip_to_next_open(conn) == at(5, 7)  # Friday night -> Saturday, cafe
+
+    conn.execute("UPDATE sim_meta SET sim_time = %s", (at(5, 16),))
+    conn.commit()
     moved = skip_to_next_open(conn)
     assert SimTime(moved).weekday == 0
-    assert moved == at(7, 9)
+    assert moved == at(7, 7)  # Saturday close -> Monday, straight over Sunday
 
 
 def test_a_tick_is_atomic(conn: Connection[DictRow]) -> None:
@@ -432,3 +442,34 @@ def test_every_open_invoice_is_booked_as_a_receivable(
             f"{row['from_org_id']} has {row['owed']} invoiced but "
             f"{booked['cents']} booked"
         )
+
+
+def test_dead_time_ends_when_anything_opens_not_only_the_offices() -> None:
+    """The cafe opens at seven and trades on Saturday. Skipping to the next
+    *office* opening dropped its mornings on every day but the first."""
+
+    from jeve.core.clock import next_open
+
+    assert next_open(at(0, 17)) == at(1, 7)  # Monday evening -> Tuesday, cafe
+    assert next_open(at(1, 8, 30)) == at(1, 8, 30)  # already open
+    assert next_open(at(4, 17)) == at(5, 7)  # Friday evening -> Saturday, cafe
+    assert next_open(at(5, 16)) == at(7, 7)  # Saturday close -> Monday, cafe
+    assert next_open(at(6, 12)) == at(7, 7)  # Sunday: everything is shut
+
+
+def test_the_cafe_trades_every_morning_and_on_saturday(
+    conn: Connection[DictRow],
+) -> None:
+    run(conn, days=6)
+    mornings = conn.execute(
+        "SELECT sim_time / 86400 AS day, count(*) AS n FROM events "
+        "WHERE kind = 'cafe.sale' AND mod(sim_time, 86400) < 9 * 3600 "
+        "GROUP BY 1 ORDER BY 1"
+    ).fetchall()
+    assert [int(m["day"]) for m in mornings] == [0, 1, 2, 3, 4, 5]
+    saturday = conn.execute(
+        "SELECT count(*) AS n FROM events WHERE kind = 'cafe.sale' "
+        "AND sim_time >= %s AND sim_time < %s",
+        (at(5), at(6)),
+    ).fetchone()
+    assert saturday is not None and int(saturday["n"]) > 20

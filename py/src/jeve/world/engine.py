@@ -21,10 +21,10 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve import db
-from jeve.core.clock import DAY, TICK, SimTime, next_office_open
+from jeve.core.clock import DAY, TICK, SimTime, next_open
 from jeve.core.seed import derive_rng
 from jeve.decide.policy import Decision, DecisionContext, Policy
-from jeve.world import space
+from jeve.world import flows, space
 
 # Tallybird's hazard: chance per business-hours tick that a module falls over.
 # Elevated because the fixture starts with debt high and a risky deploy queued.
@@ -196,6 +196,7 @@ class Engine:
 
     # What `jeve.world.space` needs of the engine, by its public name.
     emit = _emit
+    decide = _decide
     decide_many = _decide_many
     next_seq = _next_seq
 
@@ -218,6 +219,8 @@ class Engine:
             [(txn, account, cents) for account, cents in legs],
         )
         return txn
+
+    post = _post
 
     def _module_down(self, module_id: str) -> bool:
         row = self._conn.execute(
@@ -319,6 +322,14 @@ class Engine:
                 )
             elif kind == "subscription.run":
                 self._subscriptions(report)
+            elif kind == "payroll.run":
+                flows.payroll(self, report, str(row["subject_id"]), payload)
+            elif kind == "close.run":
+                flows.close_books(self, report, str(row["subject_id"]), payload)
+            elif kind == "catering.consider":
+                flows.consider_catering(self, report, str(row["subject_id"]), payload)
+            elif kind == "catering.deliver":
+                flows.deliver_catering(self, report, str(row["subject_id"]), payload)
 
     def _schedule(
         self, due: int, kind: str, subject: str | None, payload: dict[str, Any]
@@ -329,6 +340,7 @@ class Engine:
             (due, kind, subject, json.dumps(payload)),
         )
 
+    schedule = _schedule
     # -- flow 1: incidents -------------------------------------------------
 
     def _maybe_incident(self, report: TickReport, now: SimTime) -> None:
@@ -392,7 +404,8 @@ class Engine:
         self._conn.execute(
             "UPDATE modules SET status = 'up' WHERE id = %s", (module_id,)
         )
-        self._emit(
+        minutes = (report.sim_time - int(row["started_sim"])) // 60
+        ended_seq = self._emit(
             report,
             "incident.ended",
             org_id="tallybird",
@@ -403,6 +416,16 @@ class Engine:
                 "minutes": (report.sim_time - int(row["started_sim"])) // 60,
                 "escalated": row["escalation_event_seq"] is not None,
             },
+        )
+        # What the outage cost its customers is decided the moment it ends.
+        flows.credits(
+            self,
+            report,
+            module_id=module_id,
+            incident_id=incident_id,
+            ended_seq=ended_seq,
+            minutes=minutes,
+            escalated=row["escalation_event_seq"] is not None,
         )
 
     # -- flow 2: customers file tickets, support triages and answers -------
@@ -1048,11 +1071,11 @@ class Engine:
 
 
 def skip_to_next_open(conn: Connection[DictRow]) -> int:
-    """Jump dead time (CORE-0003). Nothing calls a model overnight."""
+    """Jump dead time (CORE-0003). Nothing calls a model while all is shut."""
 
     row = conn.execute("SELECT sim_time FROM sim_meta").fetchone()
     assert row is not None
-    target = next_office_open(int(row["sim_time"]))
+    target = next_open(int(row["sim_time"]))
     conn.execute("UPDATE sim_meta SET sim_time = %s", (target,))
     conn.commit()
     return target

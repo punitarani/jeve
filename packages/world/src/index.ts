@@ -29,6 +29,10 @@ export { buildVoxels } from "./voxels";
 
 export type WorldStatus = ReturnType<WorldModel["snapshot"]> & {
   glOk: boolean;
+  /** Name of a CPU rasteriser if that is what WebGL is, else null. */
+  software: string | null;
+  /** False while the canvas is off-screen or the tab is hidden: nothing drawn. */
+  drawing: boolean;
   bubbles: number;
 };
 
@@ -98,6 +102,7 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
   container.appendChild(overlay);
 
   let disposed = false;
+  let onScreen = true;
   let raf = 0;
   let stream: EventSource | null = null;
   let frameTimer: ReturnType<typeof setTimeout> | null = null;
@@ -191,7 +196,9 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
       tourIndex++;
       tourNextAt = now + 7000;
     }
-    view.frame(now);
+    // Scrolled past, or in a background tab: keep the model honest, draw nothing.
+    const drawing = onScreen && !document.hidden;
+    view.frame(now, drawing);
 
     for (let i = bubbles.length - 1; i >= 0; i--) {
       const bubble = bubbles[i];
@@ -252,13 +259,20 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
       if (frameTimer !== null) clearTimeout(frameTimer);
       if (pollTimer !== null) clearInterval(pollTimer);
       observer.disconnect();
+      watcher.disconnect();
       view.canvas.removeEventListener("pointerdown", onPointerDown);
       view.canvas.removeEventListener("pointerup", onPointerUp);
       overlay.remove();
       view.dispose();
       if (window.__jeveWorld) delete window.__jeveWorld[options.mode];
     },
-    status: () => ({ ...model.snapshot(), glOk: view.glOk, bubbles: bubbles.length }),
+    status: () => ({
+      ...model.snapshot(),
+      glOk: view.glOk,
+      software: view.software,
+      drawing: onScreen && !document.hidden,
+      bubbles: bubbles.length,
+    }),
     screenPositionOf(personId) {
       const walker = model.walkers.get(personId);
       if (walker === undefined || !walker.visible) return null;
@@ -296,6 +310,13 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
 
   const observer = new ResizeObserver(() => view.resize());
   observer.observe(container);
+  const watcher = new IntersectionObserver(
+    (entries) => {
+      onScreen = entries.some((entry) => entry.isIntersecting);
+    },
+    { threshold: 0.02 },
+  );
+  watcher.observe(container);
   if (options.mode === "explore") {
     view.canvas.addEventListener("pointerdown", onPointerDown);
     view.canvas.addEventListener("pointerup", onPointerUp);

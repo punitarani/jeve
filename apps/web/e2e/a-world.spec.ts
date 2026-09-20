@@ -22,6 +22,8 @@ type Status = {
   visible: number;
   walking: number;
   glOk: boolean;
+  software: string | null;
+  drawing: boolean;
   agents: { id: string; x: number; y: number; zone: string; visible: boolean }[];
 };
 
@@ -72,7 +74,10 @@ test("WebGL: is there a GPU context in this browser?", async ({ page }) => {
   await ready(page, "hero");
   // If the browser has WebGL, the scene must have used it. If it has not, the
   // page must still have come up — that is what the GL-free model is for.
-  expect((await status(page, "hero")).glOk).toBe(gl !== null);
+  const hero = await status(page, "hero");
+  expect(hero.glOk).toBe(gl !== null);
+  // A CPU rasteriser is recognised as one, and gets the cheap picture.
+  expect(hero.software !== null).toBe(/swiftshader|llvmpipe|software/i.test(gl ?? ""));
   await expect(page.getByTestId("world-hero")).toBeVisible();
   await expect(page.getByTestId("status-strip")).toBeVisible();
 });
@@ -99,6 +104,36 @@ test("the hero is moving within ten seconds of page load", async ({ page }) => {
   expect(moved.length).toBeGreaterThan(0);
   // The hero has no controls: nothing to grab, nothing to click through.
   await expect(page.getByTestId("world-hero").locator("button")).toHaveCount(0);
+});
+
+test("a hero nobody can see is not drawn, and the town goes on", async ({ page }) => {
+  await page.goto("/");
+  await ready(page, "hero");
+  expect((await status(page, "hero")).drawing).toBe(true);
+
+  // Scrolled past: drawing a town nobody is looking at sixty times a second
+  // competes with the page the reader *is* looking at. Under a software
+  // renderer on a busy machine it froze the tab.
+  await page.getByTestId("person-panel").scrollIntoViewIfNeeded();
+  await page.mouse.wheel(0, 2000);
+  await expect
+    .poll(async () => (await status(page, "hero")).drawing, { timeout: 5_000 })
+    .toBe(false);
+
+  // The model is not the picture: people keep walking while nothing is drawn.
+  const before = await status(page, "hero");
+  await page.waitForTimeout(1200);
+  const after = await status(page, "hero");
+  const still = after.agents.every((agent) => {
+    const was = before.agents.find((b) => b.id === agent.id);
+    return was !== undefined && was.x === agent.x && was.y === agent.y;
+  });
+  expect(still && before.walking > 0).toBe(false);
+
+  await page.mouse.wheel(0, -4000);
+  await expect
+    .poll(async () => (await status(page, "hero")).drawing, { timeout: 5_000 })
+    .toBe(true);
 });
 
 test("the hero advances on its own: seq increases", async ({ page }) => {

@@ -28,6 +28,21 @@ ASKING: dict[str, dict[str, object]] = {
     "ticket.answer": {"backlog": 12},
     "payment.timing": {"days_until_due": -4, "can_afford": True, "runway_days": 9},
     "cafe.purchase": {"pos_down": True, "queue_length": 3},
+    "credit.decision": {
+        "customer": "halloran",
+        "module": "invoicing",
+        "minutes": 1500,
+        "escalated": True,
+        "blocked_billing": True,
+    },
+    "close.signoff": {"client": "halloran", "invoices_stuck": True, "overdue_bills": 3},
+    "catering.order": {"org": "tallybird", "can_afford": True, "team_mood": 1.2},
+    "payroll.release": {
+        "employer": "thirdrail",
+        "can_afford": True,
+        "cash_multiple": 1.4,
+        "timesheets_available": False,
+    },
     "agent.tick": {
         "org": "halloran",
         "here": "cafe",

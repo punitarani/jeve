@@ -35,6 +35,7 @@ from jeve.world.map import (
 )
 from jeve.world.seed_world import ROOT_SEED, seed
 from tests.test_world import event_log_hash
+from tests.worldcache import build_once
 
 pytestmark = pytest.mark.timeout(300)
 
@@ -50,17 +51,24 @@ def conn() -> Iterator[Connection[DictRow]]:
 
 
 def run(conn: Connection[DictRow], *, days: int, encounters: bool = True) -> None:
-    seed(conn, root_seed=ROOT_SEED)
-    engine = Engine(
-        conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED, encounters=encounters
-    )
-    advance(conn, engine, until=at(days))
+    def build() -> None:
+        seed(conn, root_seed=ROOT_SEED)
+        engine = Engine(
+            conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED, encounters=encounters
+        )
+        advance(conn, engine, until=at(days))
+
+    build_once(conn, f"rules:{days}d:encounters={encounters}", build)
 
 
 def first_services_invoice(conn: Connection[DictRow]) -> int:
     row = conn.execute(
+        # Month-end invoices to outside clients: not a lunch bill, not the
+        # accountant's fee, which are also `services` and have nothing to do
+        # with the outage.
         "SELECT min(sim_time) AS t FROM events WHERE kind = 'invoice.issued' "
-        "AND payload->>'invoice_kind' = 'services'"
+        "AND payload->>'invoice_kind' = 'services' "
+        "AND payload->>'to' LIKE '%%.client.%%'"
     ).fetchone()
     assert row is not None and row["t"] is not None
     return int(row["t"])

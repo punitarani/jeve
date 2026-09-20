@@ -148,6 +148,39 @@ def _place(
         )
 
 
+def send(
+    engine: Engine,
+    report: TickReport,
+    *,
+    org: str,
+    to: Zone,
+    prefer: tuple[str, ...] = (),
+) -> str | None:
+    """Send someone from a firm on an errand. Returns who went, if anyone could.
+
+    An errand is a rule, not a choice: the lunch has to get there. Whoever is at
+    their own workplace right now can go, in order of `prefer` — and one person
+    cannot carry two lunches to two offices in the same fifteen minutes, so a
+    second errand in the same tick goes to somebody else. What the runner does
+    once they have arrived is theirs to decide on the next `agent.tick`.
+    """
+
+    agents = load_agents(engine)
+    rank = {role: index for index, role in enumerate(prefer)}
+    free = sorted(
+        (a for a in agents if a.org == org and a.zone is a.own_zone),
+        key=lambda a: (rank.get(a.role, len(rank)), a.id),
+    )
+    if not free or to is free[0].own_zone:
+        return None
+    runner = free[0]
+    taken: set[Tile] = {a.tile for a in agents if a.tile is not None}
+    if runner.tile is not None:
+        taken.discard(runner.tile)
+    _place(engine, report, runner, to, taken)
+    return runner.id
+
+
 def _known_outage(engine: Engine, org: str, down: list[str]) -> str | None:
     """A broken module this person has reason to know about.
 

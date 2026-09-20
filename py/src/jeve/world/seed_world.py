@@ -349,6 +349,23 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             ),
             (at(0, 9), 0, "subscription.run", None, "{}"),
         ]
+        # Payday is Friday at ten, for every firm, run by Ledgerline.
+        payday = at(4, 10)
+        schedule += [
+            (payday, 0, "payroll.run", org_id, json.dumps({"due": payday}))
+            for org_id, _, _ in ORGS
+        ]
+        # Ledgerline closes its clients' books the working day after month-end.
+        closing = at(4, 9)
+        schedule += [
+            (closing, 0, "close.run", org_id, json.dumps({"due": closing}))
+            for org_id in ("halloran", "tallybird", "thirdrail")
+        ]
+        # Lunch in from the cafe is thought about on Tuesdays and Thursdays.
+        schedule += [
+            (at(1, 10), 0, "catering.consider", org_id, "{}")
+            for org_id in ("halloran", "ledgerline", "tallybird")
+        ]
         db.executemany(
             conn,
             "INSERT INTO scheduled (due_sim_time, ord, kind, subject_id, payload) "

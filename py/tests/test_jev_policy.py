@@ -35,6 +35,7 @@ from jeve.sim import CASSETTE, advance
 from jeve.world.engine import Engine
 from jeve.world.seed_world import ROOT_SEED, seed
 from tests.test_world import event_log_hash
+from tests.worldcache import build_once
 
 pytestmark = pytest.mark.timeout(300)
 
@@ -74,6 +75,12 @@ def replay(conn: Connection[DictRow], *, days: int = DAYS) -> JevPolicy:
     return policy
 
 
+def replayed(conn: Connection[DictRow]) -> None:
+    """The replayed world, for tests that only read it."""
+
+    build_once(conn, f"jev-replay:{DAYS}d", lambda: replay(conn).close())
+
+
 def test_a_replay_reproduces_itself_without_a_key(conn: Connection[DictRow]) -> None:
     first = replay(conn)
     first_hash = event_log_hash(conn)
@@ -99,7 +106,7 @@ def test_a_replay_reproduces_itself_without_a_key(conn: Connection[DictRow]) -> 
 
 
 def test_most_decisions_are_made_by_the_model(conn: Connection[DictRow]) -> None:
-    replay(conn).close()
+    replayed(conn)
     by_source = {
         str(r["source"]): int(r["n"])
         for r in conn.execute(
@@ -126,7 +133,7 @@ def test_a_gated_decision_is_credited_to_rules(conn: Connection[DictRow]) -> Non
     """No model was consulted, so none is credited — or the share of decisions
     "made by Jev" would be padded with ones it never saw."""
 
-    replay(conn).close()
+    replayed(conn)
     gated = conn.execute(
         "SELECT source, model_call, chosen FROM decisions "
         "WHERE question_set = 'payment.timing' AND chosen->>'reason' = 'not_due' "
@@ -139,7 +146,7 @@ def test_a_gated_decision_is_credited_to_rules(conn: Connection[DictRow]) -> Non
 
 
 def test_events_say_who_really_decided(conn: Connection[DictRow]) -> None:
-    replay(conn).close()
+    replayed(conn)
     mismatched = conn.execute(
         "SELECT count(*) AS n FROM events e JOIN decisions d ON d.id = e.decision_id "
         "WHERE e.payload ? 'decided_by' AND e.payload->>'decided_by' <> d.source"
@@ -158,7 +165,7 @@ def test_someone_who_walks_in_twice_in_a_tick_decides_twice(
     same place in that person's sequence: a unique violation at best, the same
     draw twice at worst."""
 
-    replay(conn).close()
+    replayed(conn)
     doubles = conn.execute(
         "SELECT person_id, tick_seq, array_agg(decision_seq ORDER BY decision_seq) "
         "  AS seqs, array_agg(prng_path ORDER BY decision_seq) AS paths "
@@ -218,7 +225,7 @@ def test_a_batch_equals_deciding_one_at_a_time(conn: Connection[DictRow]) -> Non
 def test_rules_and_jev_disagree_about_the_world(conn: Connection[DictRow]) -> None:
     """If swapping the decider changed nothing, the seam would be decorative."""
 
-    replay(conn).close()
+    replayed(conn)
     jev_hash = event_log_hash(conn)
 
     seed(conn, root_seed=ROOT_SEED)
@@ -230,7 +237,7 @@ def test_rules_and_jev_disagree_about_the_world(conn: Connection[DictRow]) -> No
 def test_economics_prices_the_run_from_the_calls_it_used(
     conn: Connection[DictRow],
 ) -> None:
-    replay(conn).close()
+    replayed(conn)
     conn.commit()
     with TestClient(app) as client:
         body = client.get("/economics").json()

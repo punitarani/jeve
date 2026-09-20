@@ -237,6 +237,50 @@ class RulesPolicy:
             {"go": go, "talk": talk, "who": who, "about": about, "push": push},
         )
 
+    def _credit_decision(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """What an outage is worth to a customer. A policy table, nothing more."""
+
+        minutes = _num(ctx.facts.get("minutes"), 0.0)
+        if minutes >= 12 * 60 or ctx.facts.get("blocked_billing"):
+            return {"credit": "full_month"}, {}
+        if minutes >= 3 * 60 or ctx.facts.get("escalated"):
+            return {"credit": "partial"}, {}
+        return {"credit": "none"}, {}
+
+    def _payroll_release(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """Release the wages unless the hours behind them cannot be seen."""
+
+        if not ctx.facts.get("can_afford", True):
+            return {"release": False, "reason": "insufficient_cash"}, {}
+        ready = bool(ctx.facts.get("timesheets_available", True))
+        return {"release": ready, "reason": "released" if ready else "timesheets"}, {}
+
+    def _close_signoff(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """A month whose invoices have not gone out has no revenue to close on."""
+
+        if ctx.facts.get("invoices_stuck"):
+            return {"readiness": 0}, {}
+        return {"readiness": 1 if _num(ctx.facts.get("overdue_bills"), 0) else 2}, {}
+
+    def _catering_order(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """Lunch in, sometimes; more often when the week has been hard."""
+
+        roll = _uniform(rng)
+        if not ctx.facts.get("can_afford", True):
+            return {"order": "none"}, {"order": roll}
+        stressed = _num(ctx.facts.get("team_mood"), 2.0) < 1.5
+        small, large = (0.45, 0.2) if stressed else (0.3, 0.1)
+        order = "large" if roll < large else "small" if roll < large + small else "none"
+        return {"order": order}, {"order": roll}
+
 
 def _num(value: object, default: float) -> float:
     """Facts and traits come back from JSONB as `object`."""

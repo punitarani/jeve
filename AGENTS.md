@@ -14,12 +14,19 @@ simulation ever reads generated text.
 
 | Path | What |
 |---|---|
-| `py/src/jeve/` | The simulation. Layered: `contracts → world → decide/memory → gen → sim/api` |
-| `apps/web/` | The dashboard |
+| `py/src/jeve/` | The simulation. `core → llm → decide → world → sim`, with `gen` and `api` on the outside. `tests/test_layering.py` enforces it |
+| `py/src/jeve/decide/` | The `Policy` seam: `JevPolicy`, its rules twin, question sets, J/P/H sampling, the call cache |
+| `py/src/jeve/world/` | Engine, the ten flows, the town map, encounters |
+| `py/src/jeve/sim/` | `python -m jeve.sim`: the one run loop, for fixture and daemon alike |
+| `py/src/jeve/gen/` | Prose rendered from typed state. **Nothing that computes the world may import it** |
+| `py/fixtures/cassettes/` | Recorded Jev responses, keyed by content hash. What makes `make e2e` free |
+| `packages/world/` | The voxel town: a GL-free scene model with three.js as a view over it |
+| `packages/contracts/` | zod schemas for everything the API serves |
+| `apps/web/` | The hero on `/`, the explorer at `/world`, and the causal timeline |
 | `decisions/` | Decision records and their generated index |
 | `docs/research/` | Ground truth on Jev, prior-art mapping, validation survey |
 | `docs/design/` | Long-form analysis behind the decision records |
-| `ops/` | Runtime state: spend ledger, gate status |
+| `ops/` | Runtime state (spend ledger) and tracked measurements (`economics.md`, `persona-probe.md`, `providers.md`) |
 
 ## Decisions
 
@@ -68,6 +75,20 @@ second path to a model, and do not reset the ledger.
 ## Verify
 
 ```
-make check     # lint, types, tests, decision records
-make smoke     # one real call, under a cent
+make check            # lint, types (mypy + tsc), tests, decision records
+make e2e              # the whole stack, strict replay: free, no key, ~5 min
+LIVE=1 make e2e       # hit-or-call; the only thing that rewrites ops/economics.md
+make smoke            # one real call, under a cent
+make sim              # the ever-running world. Spends money, slowly
 ```
+
+Three things that will otherwise cost you an evening:
+
+- **Wording is a cache key.** A question set's text is hashed into the key of
+  every call that used it. Edit a sentence and those calls are re-recorded, and
+  the run changes. Re-record with `LIVE=1 make e2e` and commit the cassette.
+- **A tick must own its transaction.** In psycopg 3, `conn.transaction()` inside
+  an already-open transaction is a savepoint. `Engine.tick()` commits first for
+  that reason (WORLD-0002); do not "simplify" it.
+- **A connection that only reads must be autocommit** if another process will
+  `TRUNCATE`. An open read transaction holds a lock the daemon waits on for ever.
