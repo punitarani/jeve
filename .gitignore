@@ -1,0 +1,39 @@
+# Secrets. Never relax this.
+.env
+.env.*
+!.env.example
+
+# Operational state written at runtime (spend ledger, night/gate state).
+# ops/ itself is tracked so the directory exists on a clean clone.
+ops/*
+!ops/.gitkeep
+!ops/README.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# Nx
+.nx/cache
+.nx/workspace-data
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+
+# macOS
+.DS_Store
