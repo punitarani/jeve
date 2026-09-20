@@ -1,0 +1,16 @@
+{
+  "name": "jeve",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "dev": "nx run web:dev",
+    "build": "nx run-many -t build",
+    "lint": "nx run-many -t lint",
+    "typecheck": "nx run-many -t typecheck",
+    "e2e": "nx run web:e2e"
+  },
+  "devDependencies": {
+    "nx": "23.2.1",
+    "typescript": "^5.7.0"
+  }
+}

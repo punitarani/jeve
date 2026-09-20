@@ -390,3 +390,45 @@ def test_a_tick_is_atomic(conn: Connection[DictRow]) -> None:
     assert ledger_total(conn) == 0
     row = conn.execute("SELECT sim_time, tick_seq FROM sim_meta").fetchone()
     assert row is not None
+
+
+def test_receivables_never_go_negative(conn: Connection[DictRow]) -> None:
+    """An org cannot be owed a negative amount.
+
+    The ledger summing to zero does not catch this: the seed created open
+    invoices with no matching ledger entry, so collecting one credited cash
+    against a receivable that had never been booked. The books balanced and
+    the balance sheet was still wrong.
+    """
+
+    run(conn, days=5)
+    rows = conn.execute(
+        "SELECT a.org_id, sum(e.amount_cents) AS cents FROM ledger_entries e "
+        "JOIN accounts a ON a.id = e.account_id WHERE a.kind = 'receivable' "
+        "GROUP BY a.org_id"
+    ).fetchall()
+    negative = {
+        str(row["org_id"]): int(row["cents"]) for row in rows if int(row["cents"]) < 0
+    }
+    assert negative == {}, f"owed a negative amount: {negative}"
+
+
+def test_every_open_invoice_is_booked_as_a_receivable(
+    conn: Connection[DictRow],
+) -> None:
+    seed(conn, root_seed=ROOT_SEED)
+    rows = conn.execute(
+        "SELECT i.from_org_id, sum(i.amount_cents) AS owed FROM invoices i "
+        "WHERE i.paid_sim IS NULL GROUP BY i.from_org_id"
+    ).fetchall()
+    for row in rows:
+        booked = conn.execute(
+            "SELECT COALESCE(sum(amount_cents),0) AS cents FROM ledger_entries "
+            "WHERE account_id = %s",
+            (f"{row['from_org_id']}.receivable",),
+        ).fetchone()
+        assert booked is not None
+        assert int(booked["cents"]) == int(row["owed"]), (
+            f"{row['from_org_id']} has {row['owed']} invoiced but "
+            f"{booked['cents']} booked"
+        )

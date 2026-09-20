@@ -284,6 +284,26 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             invoices,
         )
 
+        # Every open invoice is a receivable the issuer already earned. Without
+        # this, collecting one drives the receivable account negative — money
+        # arriving that was never owed — and the balance sheet lies even though
+        # the ledger still sums to zero.
+        opening_txn = conn.execute(
+            "INSERT INTO ledger_txns (sim_time, memo) "
+            "VALUES (0, 'opening receivables') RETURNING id"
+        ).fetchone()
+        assert opening_txn is not None
+        receivable_legs: list[tuple[int, str, int]] = []
+        for from_org, _to_org, _to_person, _issued, _due, cents, _kind in invoices:
+            receivable_legs.append((opening_txn["id"], f"{from_org}.receivable", cents))
+            receivable_legs.append((opening_txn["id"], f"{from_org}.revenue", -cents))
+        db.executemany(
+            conn,
+            "INSERT INTO ledger_entries (txn_id, account_id, amount_cents) "
+            "VALUES (%s, %s, %s)",
+            receivable_legs,
+        )
+
         # Nine open tickets, so support starts warm rather than idle.
         tickets = [
             (

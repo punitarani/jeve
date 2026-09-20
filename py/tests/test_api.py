@@ -67,6 +67,20 @@ def test_state_is_one_read_with_a_cursor(client: TestClient) -> None:
     assert len(body["modules"]) == 3
 
 
+def test_money_is_an_integer_everywhere_on_the_wire(client: TestClient) -> None:
+    """Postgres `sum()` over bigint returns numeric, which serialises as a
+    string. Money is integer cents on the wire; a string here means a client
+    silently comparing "10518000" to a number."""
+
+    body = client.get("/state").json()
+    assert isinstance(body["unpaid_invoices"]["cents"], int)
+    assert isinstance(body["unpaid_invoices"]["n"], int)
+    assert isinstance(body["tickets"]["open"], int)
+    for org in body["orgs"]:
+        assert isinstance(org["cash_cents"], int)
+        assert isinstance(org["receivable_cents"], int)
+
+
 def test_every_org_reports_cash(client: TestClient) -> None:
     for org in client.get("/state").json()["orgs"]:
         assert isinstance(org["cash_cents"], int)

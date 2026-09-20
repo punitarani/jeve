@@ -117,6 +117,17 @@ def state() -> dict[str, object]:
             "SELECT count(*) AS n, COALESCE(sum(amount_cents),0) AS cents "
             "FROM invoices WHERE paid_sim IS NULL"
         ).fetchone()
+        # sum() over a bigint returns `numeric`, which arrives as Decimal and
+        # serialises as a *string*. Money is integer cents on the wire, so the
+        # coercion happens here rather than being papered over in the client.
+        totals = {
+            "n": int(unpaid["n"]) if unpaid else 0,
+            "cents": int(unpaid["cents"]) if unpaid else 0,
+        }
+        tickets = {
+            "untriaged": int(backlog["untriaged"]) if backlog else 0,
+            "open": int(backlog["open"]) if backlog else 0,
+        }
         modules = [
             dict(row)
             for row in conn.execute(
@@ -142,8 +153,8 @@ def state() -> dict[str, object]:
             },
             "orgs": orgs,
             "modules": modules,
-            "tickets": dict(backlog) if backlog else {},
-            "unpaid_invoices": dict(unpaid) if unpaid else {},
+            "tickets": tickets,
+            "unpaid_invoices": totals,
             "persons": {str(row["kind"]): int(row["n"]) for row in people},
         }
 

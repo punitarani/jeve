@@ -1,0 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Build scripts run on install; naming them is how a fresh clone installs
+# without an interactive approval prompt that would hang unattended.
+onlyBuiltDependencies:
+  - "@tailwindcss/oxide"
+  - esbuild
+  - nx
+  - sharp
+  - unrs-resolver
