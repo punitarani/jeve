@@ -68,5 +68,8 @@ select = ["E", "F", "W", "I", "UP", "B", "TID", "ASYNC", "RUF"]
 [tool.ruff.lint.per-file-ignores]
 # The gateway is the one place allowed to hold a socket and read the wall clock.
 "src/jeve/llm/*.py" = ["TID251"]
+# CORE-0005: the sanctioned home of randomness. Everywhere else must come
+# through derive_rng, which is why the ban exists at all.
+"src/jeve/core/seed.py" = ["TID251"]
 "tests/*.py" = ["TID251"]
 "scripts/*.py" = ["TID251"]

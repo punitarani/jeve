@@ -9,7 +9,7 @@ that carry the invariants.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -91,6 +91,15 @@ def reset(conn: Connection[DictRow]) -> None:
     with conn.transaction():
         conn.execute("DROP SCHEMA public CASCADE")
         conn.execute("CREATE SCHEMA public")
+
+
+def executemany(
+    conn: Connection[DictRow], sql: str, params: Sequence[Sequence[object]]
+) -> None:
+    """Batch insert. `executemany` lives on the cursor, not the connection."""
+
+    with conn.cursor() as cursor:
+        cursor.executemany(sql, params)
 
 
 def seed_path() -> Path:

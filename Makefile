@@ -53,3 +53,7 @@ db-up: ## Start Postgres and apply migrations
 .PHONY: db-down
 db-down: ## Stop Postgres, keep the data
 	docker compose down
+
+.PHONY: fixture
+fixture: ## Run the golden fixture on rules only (free, no network)
+	$(UV) python scripts/run_fixture.py

@@ -1,0 +1,331 @@
+"""The golden fixture: four orgs, ~424 people, and a calendar that collides.
+
+Deliberate shape, from the scenario:
+
+  - Every org runs *warm*. A cascade needs finite slack; if backlogs sit at
+    zero an outage cannot propagate and the sim is a screensaver.
+  - Month-end lands on **day 3**, not Friday. With a Friday month-end and
+    net-30 terms, the late invoices land after the window closes and nothing
+    observable happens inside a five-day fixture.
+  - Receivables are seeded so some fall due *inside* the window, which is what
+    makes a payment decision fire at all.
+  - One Invoicing outage is scheduled to run into day 4, across month-end.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from psycopg import Connection
+from psycopg.rows import DictRow
+
+from jeve import db
+from jeve.core.clock import at
+from jeve.core.seed import derive_rng
+
+ROOT_SEED = 20260920
+
+MODULES = (("timetrack", "TimeTrack"), ("invoicing", "Invoicing"), ("pos", "POS"))
+
+ORGS = (
+    ("tallybird", "Tallybird Software", "software"),
+    ("halloran", "Halloran & Pike LLP", "law"),
+    ("ledgerline", "Ledgerline Accounting", "accounting"),
+    ("thirdrail", "Third Rail Cafe", "cafe"),
+)
+
+# Staff with a full decision surface. Counterparties are generated below.
+STAFF: tuple[tuple[str, str, str], ...] = (
+    ("tallybird", "founder", "Dana Okonkwo"),
+    ("tallybird", "eng_lead", "Petra Halvorsen"),
+    ("tallybird", "engineer", "Mikel Andrade"),
+    ("tallybird", "engineer", "Sara Lindqvist"),
+    ("tallybird", "sre", "Tomas Brandt"),
+    ("tallybird", "support_lead", "Ruth Adeyemi"),
+    ("tallybird", "support", "Kwame Boateng"),
+    ("tallybird", "account_manager", "Ingrid Solberg"),
+    ("halloran", "partner", "Maeve Halloran"),
+    ("halloran", "senior_associate", "Julian Pike"),
+    ("halloran", "junior_associate", "Nadia Farrow"),
+    ("halloran", "paralegal", "Owen Castellanos"),
+    ("halloran", "office_manager", "Priya Raghunathan"),
+    ("ledgerline", "principal", "Grace Ledger"),
+    ("ledgerline", "senior_accountant", "Hugo Marchetti"),
+    ("ledgerline", "staff_accountant", "Amara Diallo"),
+    ("ledgerline", "payroll", "Bjorn Aaltonen"),
+    ("ledgerline", "client_admin", "Cleo Vanterpool"),
+    ("thirdrail", "owner", "Rosa Etxeberria"),
+    ("thirdrail", "shift_lead", "Denny Kowalczyk"),
+    ("thirdrail", "barista", "Yusuf Kaplan"),
+    ("thirdrail", "barista", "Lila Mbeki"),
+    ("thirdrail", "baker", "Anton Reyes"),
+    ("thirdrail", "weekend", "Fiona Trethewey"),
+)
+
+COUNTERPARTIES_PER_ORG = 100
+
+
+@dataclass(frozen=True, slots=True)
+class SeedSummary:
+    orgs: int
+    staff: int
+    counterparties: int
+    invoices: int
+    tickets: int
+    scheduled: int
+
+    @property
+    def persons(self) -> int:
+        return self.staff + self.counterparties
+
+
+def _traits(rng: object, role: str) -> dict[str, float]:
+    """Per-person parameters. The only thing separating two people in the same
+    role, and therefore what the persona-flattening detector tests."""
+
+    draw = rng.random  # type: ignore[attr-defined]
+    return {
+        "diligence": round(0.35 + 0.5 * draw(), 3),
+        "promptness": round(0.30 + 0.55 * draw(), 3),
+        "patience": round(0.30 + 0.6 * draw(), 3),
+        "vocality": round(0.15 + 0.6 * draw(), 3),
+        "risk_appetite": round(0.15 + 0.6 * draw(), 3),
+    }
+
+
+def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummary:
+    """Populate an empty, migrated database. Idempotent by truncation."""
+
+    # Deferred constraint triggers left pending by a previous transaction make
+    # TRUNCATE fail with ObjectInUse, so start from a clean slate.
+    conn.commit()
+
+    with conn.transaction():
+        conn.execute(
+            """
+            TRUNCATE sim_meta, scheduled, events, orgs, persons, accounts,
+                     ledger_txns, ledger_entries, modules, incidents,
+                     subscriptions, tickets, invoices, payments, cafe_sales,
+                     decisions RESTART IDENTITY CASCADE
+            """
+        )
+        conn.execute(
+            "INSERT INTO sim_meta (run_id, root_seed, sim_time, status) "
+            "VALUES (%s, %s, %s, 'paused')",
+            (f"golden-{root_seed}", root_seed, at(0, 7)),
+        )
+        db.executemany(
+            conn, "INSERT INTO modules (id, name) VALUES (%s, %s)", list(MODULES)
+        )
+        db.executemany(
+            conn,
+            "INSERT INTO orgs (id, name, kind, policy) VALUES (%s, %s, %s, %s)",
+            [(oid, name, kind, "{}") for oid, name, kind in ORGS],
+        )
+
+        # Accounts. `external` is the outside world: having it as a real
+        # account is what makes total cash checkable end to end.
+        accounts: list[tuple[str, str | None, str, str]] = [
+            ("external", None, "Outside world", "external")
+        ]
+        for org_id, _, _ in ORGS:
+            for kind in ("cash", "receivable", "payable", "revenue", "expense"):
+                accounts.append((f"{org_id}.{kind}", org_id, kind.title(), kind))
+        db.executemany(
+            conn,
+            "INSERT INTO accounts (id, org_id, name, kind) VALUES (%s, %s, %s, %s)",
+            accounts,
+        )
+
+        # Opening cash, chosen for runway: the cafe is thin, Tallybird is fat.
+        opening = {
+            "tallybird": 48_000_00,
+            "halloran": 96_000_00,
+            "ledgerline": 41_000_00,
+            "thirdrail": 9_400_00,
+        }
+        txn = conn.execute(
+            "INSERT INTO ledger_txns (sim_time, memo) VALUES (0, 'opening balances') "
+            "RETURNING id"
+        ).fetchone()
+        assert txn is not None
+        entries = [(txn["id"], f"{org}.cash", cents) for org, cents in opening.items()]
+        entries.append((txn["id"], "external", -sum(opening.values())))
+        db.executemany(
+            conn,
+            "INSERT INTO ledger_entries (txn_id, account_id, amount_cents) "
+            "VALUES (%s, %s, %s)",
+            entries,
+        )
+
+        # People.
+        persons: list[tuple[str, str, str, str, str, str]] = []
+        import json
+
+        for index, (org_id, role, name) in enumerate(STAFF):
+            rng = derive_rng(root_seed, "staff", index)
+            pid = f"{org_id}.{role}.{index}"
+            persons.append(
+                (pid, org_id, name, role, "staff", json.dumps(_traits(rng, role)))
+            )
+
+        counterparties = 0
+        for org_id, _, kind in ORGS:
+            role = {
+                "software": "subscriber",
+                "law": "client",
+                "accounting": "client",
+                "cafe": "customer",
+            }[kind]
+            for index in range(COUNTERPARTIES_PER_ORG):
+                rng = derive_rng(root_seed, "cp", org_id, index)
+                pid = f"{org_id}.{role}.{index}"
+                persons.append(
+                    (
+                        pid,
+                        # A counterparty deals *with* the org but is not staff;
+                        # org_id records the relationship.
+                        org_id,
+                        f"{role.title()} {index:03d}",
+                        role,
+                        "counterparty",
+                        json.dumps(_traits(rng, role)),
+                    )
+                )
+                counterparties += 1
+        db.executemany(
+            conn,
+            "INSERT INTO persons (id, org_id, name, role, kind, traits) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            persons,
+        )
+
+        # Subscriptions: the three firms use Tallybird, plus outside subscribers.
+        subs: list[tuple[str | None, str | None, str, int]] = [
+            ("halloran", None, "timetrack", 240_00),
+            ("halloran", None, "invoicing", 180_00),
+            ("ledgerline", None, "invoicing", 180_00),
+            ("thirdrail", None, "pos", 120_00),
+            ("thirdrail", None, "timetrack", 90_00),
+        ]
+        for index in range(COUNTERPARTIES_PER_ORG):
+            subs.append((None, f"tallybird.subscriber.{index}", "invoicing", 49_00))
+        db.executemany(
+            conn,
+            "INSERT INTO subscriptions (org_id, person_id, module_id, monthly_cents) "
+            "VALUES (%s, %s, %s, %s)",
+            subs,
+        )
+
+        # Receivables already in flight, some falling due inside the window.
+        invoices: list[tuple[str, str | None, str | None, int, int, int, str]] = [
+            # The cafe is 12 days late to Ledgerline before the run starts.
+            (
+                "ledgerline",
+                "thirdrail",
+                None,
+                at(-12),
+                at(-12 + 30),
+                1_850_00,
+                "services",
+            ),
+            (
+                "halloran",
+                None,
+                "halloran.client.3",
+                at(-25),
+                at(2, 12),
+                6_400_00,
+                "services",
+            ),
+            (
+                "halloran",
+                None,
+                "halloran.client.7",
+                at(-28),
+                at(1, 12),
+                3_200_00,
+                "services",
+            ),
+            (
+                "ledgerline",
+                None,
+                "ledgerline.client.2",
+                at(-26),
+                at(3, 12),
+                2_100_00,
+                "services",
+            ),
+            (
+                "ledgerline",
+                None,
+                "ledgerline.client.9",
+                at(-31),
+                at(0, 12),
+                1_450_00,
+                "services",
+            ),
+            ("tallybird", "halloran", None, at(-30), at(2, 9), 420_00, "subscription"),
+            (
+                "tallybird",
+                "ledgerline",
+                None,
+                at(-30),
+                at(4, 9),
+                180_00,
+                "subscription",
+            ),
+        ]
+        db.executemany(
+            conn,
+            "INSERT INTO invoices "
+            "(from_org_id, to_org_id, to_person_id, issued_sim, due_sim, "
+            " amount_cents, kind) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            invoices,
+        )
+
+        # Nine open tickets, so support starts warm rather than idle.
+        tickets = [
+            (
+                at(-1, 14),
+                f"tallybird.subscriber.{index}",
+                "invoicing" if index % 2 else "timetrack",
+                f"Export is slow on large accounts ({index})",
+            )
+            for index in range(9)
+        ]
+        db.executemany(
+            conn,
+            "INSERT INTO tickets (opened_sim, reporter_id, module_id, subject) "
+            "VALUES (%s, %s, %s, %s)",
+            tickets,
+        )
+
+        # The calendar. Month-end on day 3; the outage starts day 3 morning and
+        # runs into day 4, so invoicing is blocked exactly when it matters.
+        schedule: list[tuple[int, int, str, str | None, str]] = [
+            (at(3, 9, 30), 0, "month.end", None, '{"label": "September"}'),
+            (
+                at(3, 8, 45),
+                0,
+                "incident.start",
+                "invoicing",
+                '{"severity": 2, "expected_minutes": 1500}',
+            ),
+            (at(0, 9), 0, "subscription.run", None, "{}"),
+        ]
+        db.executemany(
+            conn,
+            "INSERT INTO scheduled (due_sim_time, ord, kind, subject_id, payload) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            schedule,
+        )
+
+    return SeedSummary(
+        orgs=len(ORGS),
+        staff=len(STAFF),
+        counterparties=counterparties,
+        invoices=len(invoices),
+        tickets=len(tickets),
+        scheduled=len(schedule),
+    )
