@@ -1,10 +1,279 @@
-# Handoff
+# Handoff — overnight session 2, 2026-09-20
 
-> **Session 2 is in progress.** Status blocks are appended here at each phase
-> gate, newest first. The session-1 handoff follows unchanged below them, and
-> the whole file is rewritten in that format at the end of the night.
+Branch `feat/mvp-overnight`, 15 commits, nothing pushed. `main` still
+does not exist, so nothing was touched on it. No history rewritten, no account
+settings changed.
 
-## Status — 2026-09-20 14:35 PDT — space, the voxel town, and kill -9 are in
+**One command to see it working:**
+
+```bash
+make e2e
+```
+
+Strict replay from the committed cassette: free, needs no API key, never
+constructs a gateway. It brings up its own Postgres, runs every offline check,
+runs the world with Jev deciding, starts the API and a production build of the
+web app, runs a *paced* sim daemon while a real browser watches, writes the
+economics report, and tears down. Six to ten minutes on this laptop tonight,
+which was also running macOS Photos analysis at ~350% CPU; I never got to time
+it on an idle machine.
+
+To look at it yourself: `make db-up && make sim` in one terminal, `make api` in
+another, `pnpm --filter @jeve/web dev` in a third, then <http://localhost:3000>
+and <http://localhost:3000/world>. `make sim` spends real money, slowly: about
+$0.007 per sim-day, governed at $2.
+
+---
+
+## 1. Your definition of done
+
+| You asked for | State | Evidence |
+|---|---|---|
+| `make e2e` from a clean checkout brings up Postgres, sim daemon, API, web | **met** | run from a fresh `git clone` with no `.env` and no key at commit `63f425d`: 211 tests, 4,752 of 4,752 decisions replayed, 0 live calls, 12 browser specs, ALL GATES PASSED |
+| Hero shows voxel agents moving between four buildings, advancing on their own | **met** | `e2e/a-world.spec.ts`: moving within 10 s of load; `seq` increases against a paced daemon |
+| Clicking an agent in the full-page app shows a Jev distribution | **met** | same spec clicks the pixel a person is drawn at; asserts `decided-by = jev`, the model id, and bars that sum to one |
+| `ops/economics.md` per-sim-day cost, decisions-by-model > 0, from real spend | **met** | `ops/economics.md`: **$0.0083 per sim-day**; 5,198 of 5,340 decisions by `typesafe/jev-1.13-20260917`; zero estimated costs |
+| Cascade query shows ≥ 1 event caused by a spatial encounter | **met** | `tests/test_space.py`, `tests/test_flows.py`; §5 below |
+
+### Gates
+
+| Gate | State | Evidence |
+|---|---|---|
+| **0** Preflight | **passed** | smoke returns all three primitives with distributions; all six models reachable (`ops/providers.md`) |
+| **1** Jev on the flows | **passed** | 5,198 of 5,340 decisions (97.3%) made by Jev across ten question sets; the rest are code gates, recorded as `rules` |
+| **1** Persona probe | **passed** | 6/6 distinct, control flat, replicated (`ops/persona-probe.md`) |
+| **1R** Record / replay | **passed** | `make e2e` free and keyless; a miss is an error naming the question set |
+| **2A** Spatial world | **passed** | control-arm tests: encounters off ⇒ later invoices, deferred close |
+| **2A** `make sim` daemon | **passed** | lock, horizon, governor, restart; `tests/test_daemon.py` |
+| **2B** Voxel renderer | **passed** | seven browser specs (twelve with the dashboard's), none by screenshot |
+| **3** Kill-and-resume | **passed** | three SIGKILLs mid-transaction, 13 tables byte-identical |
+| **2C** Dialogue on demand | **passed** | verified live once; import-layering test |
+| **2C** `gossip.outage` → invoice workaround | **not built** | cut: escalation already satisfies "an encounter alters the event graph" |
+| **4** Credits, payroll, close, catering | **passed** | `tests/test_flows.py`, each with a consequence a query can walk |
+| DSPy | **not used** | no dialogue eval I would have run tonight; an optimiser without a metric is a random walk |
+
+---
+
+## 2. Spend and unit economics
+
+**Total spent tonight: $0.08 of $20.** The ladder was never approached.
+
+Five sim-days, 424 persons, 4 orgs, 1,744 events, 1,090 distinct Jev calls,
+991,285 input tokens billed, **$0.0416 for the run from a cold cache**.
+
+| metric | target | measured | if no call were shared | |
+|---|---|---|---|---|
+| per 100 persons, per sim-day | $1.00 | $0.0020 | $0.0067 | ok |
+| per 10 orgs, per sim-day | $1.00 | $0.0208 | $0.0706 | ok |
+| per 1000 events | $1.00 | $0.0239 | $0.0809 | ok |
+| **spend per sim-day** | **$2.00** (cap $10) | **$0.0083** | **$0.0282** | ok |
+
+97% of the money is `agent.tick` — one call per person per open tick, and the
+one question set that rarely shares a call, because who is in the room varies.
+Everything else in the economy costs about a tenth of a cent a week.
+
+The measured figure is dominated by sharing: identical situations, rendered in
+words, share one call. So the report also prices every decision as its own call
+and **judges the targets against that**, so they are not met on the strength of
+the cache. Both numbers are from billed `usage.cost`; nothing is projected from
+list price.
+
+`/key` lags by minutes. At one 15-minute check it reported $0.0011 against a
+local $0.0057; it caught up to within 4%. The "local is a floor" rule in
+LLM-0004 is what kept that from handing budget back.
+
+---
+
+## 3. The headline finding
+
+**Sampling Jev's distributions preserves persona.** This was the largest
+unverified assumption in the design, and you asked for it not to be deferred.
+
+Two people with opposite temperaments, identical situation, 20 samples each with
+a throwaway reference field for the noise floor (`ops/persona-probe.md`):
+
+| | low trait | high trait | vs noise |
+|---|---|---|---|
+| stays in a slow cafe queue | 0.39 | 0.84 | 3,092× |
+| support agent answers the next ticket | 0.24 | 0.78 | 5,987× |
+| reports an outage | 0.07 | 0.40 | 762× |
+| pays an overdue invoice today | 0.25 | 0.71 | 1,017× |
+| **control:** buys at an *empty* counter | 0.83 | 0.84 | flat, as it should be |
+
+The control matters: it separates "Jev respects persona" from "Jev moves
+whenever any word changes". Replicated on a second run to within noise.
+
+**What it does not show:** that the levels are right. Jev has a patient customer
+at an empty counter buying with p = 0.84; whether a real cafe loses one walk-in
+in six is a calibration question this cannot answer. And tertile bucketing
+discards information: 0.31 and 0.49 patience are the same person to Jev.
+
+Two jaggedness notes worth keeping:
+
+- On `file.ticket`, "speaks up when something blocks their work" (0.45)
+  outranks "quick to complain and to report any problem" (0.41). Jev reads the
+  words, not an ordinal scale; the middle trait's wording matches the situation
+  literally.
+- Jev almost never sends anyone to the plaza (p ≈ 0.00–0.01). It is a place
+  people cross, not a place they go.
+
+---
+
+## 4. Bugs the night found
+
+Each fixed, each with a test that fails without the fix. The first three were in
+session 1's work and had been passing.
+
+1. **"One transaction per tick" was one transaction per sim-day.** In psycopg 3,
+   `conn.transaction()` inside an implicit transaction is a *savepoint*. The run
+   loop reads `sim_meta` before each tick, so nothing was committed until the
+   night skip happened to call `commit()`. A `kill -9` lost the day; a second
+   session saw nothing until nightfall. No test could see it, because a writer
+   always sees its own rows. Found by writing the kill test. (WORLD-0002)
+2. **Session 1's e2e had been passing against a stale server.** An orphaned
+   `next dev` from the night before was still on port 3010 eight hours later —
+   killing the `pnpm` wrapper does not kill its child — so the health check
+   passed against *that*. e2e now refuses a busy port, builds for production
+   into its own dist dir, and cleans up by port.
+3. **The cafe's mornings and Saturdays never happened.** Dead time was skipped
+   to the next *office* opening, so after Monday the cafe's 07:00–09:00 trade
+   was dropped, and all of Saturday. Found because an outage "ended" at 09:00
+   when it should have ended at 07:00.
+4. Postgres sequences do not roll back, so a killed tick renumbers the re-run —
+   and `events.seq` is content, it sits inside `causes`. Resynced to max+1 at
+   start and after any failed tick; enumerated from the catalogue.
+5. The spend ledger re-read its whole file ~4× per call (quadratic), and a torn
+   final line swallowed the *next* real entry. 429s were booked as spend.
+6. The cafe draws arrivals with replacement; batching gave a repeat visitor the
+   same `decision_seq` twice.
+7. Jev returns `probabilities` in its own key order and JSONB reorders again.
+   Sampling walks the declared order, or a replay draws differently from the
+   call it recorded.
+8. The scheduler dequeues a tick's due rows before handling any of them, so a
+   flow that asks "is an invoice run still pending?" gets the wrong answer.
+   Found by the close's control-arm test; the close reads the event log instead.
+9. A building click landed on a person standing in that building, and correctly
+   selected the person. The click point is now the floor tile furthest, on
+   screen, from anybody.
+
+---
+
+## 5. What the world does now
+
+Ten flows, 5,340 decisions over five sim-days, 97.3% made by Jev.
+The rest are code gates — cannot afford it, not due yet, ticket already open —
+recorded as `rules`, not credited to a model that never saw them.
+
+The longest chain, every link a row in `events` and the whole thing one
+recursive query over `causes`:
+
+```
+encounter            a junior associate walks to the software office
+  → ticket.escalated   and presses Tallybird's support about invoicing
+  → incident.ended     1,005 minutes sooner
+  → invoice.issued ×24 the blocked month-end run finally goes out
+  → credit.issued  ×3  and Tallybird owes a month's fee for it   (ledger)
+```
+
+Under Jev nobody ordered lunch all week: P(order) came back between 0.09 and
+0.50 across six considerations and none of the draws landed. The rules twin
+orders four times. That is a finding about Jev's base rate, not a bug.
+
+Switch encounters off and, with the same seed: invoices go out later, more runs
+are blocked, and Halloran's monthly close is deferred because there is no
+revenue figure to close on — which delays Ledgerline's own fee. Two independent
+control-arm tests assert it. Space is load-bearing.
+
+---
+
+## 6. Records written
+
+All `agent-decided`, all `deciders: ["claude"]`. `decisions/INDEX.md` has them.
+
+| ID | One line | Look at it? |
+|---|---|---|
+| LLM-0005 | Escape-hatch order; slugs resolved per path (supersedes LLM-0002) | I read "DeepSeek V4 Pro" as the dated 0813 build. The undated slug is April's weights. |
+| DECIDE-0003 | Words not numbers; J/P/H; content-hash call cache | **Yes.** Tertile bucketing is a real loss of information, chosen for Jev's accuracy and for sharing. |
+| WORLD-0002 | A tick owns its transaction and puts its sequences back | Resync is wrong the moment there are two writers. The lock is what prevents that. |
+| WORLD-0003 | Space is load-bearing | **Yes.** "An escalation cuts remaining time to a quarter" is my number, not the domain's. |
+| WORLD-0004 | Four more flows, each carrying a cascade somewhere new | Wages leave as `expense` and never come back as cafe spending. |
+| SIM-0001 | One run loop, a horizon, a lock, a governor that pauses | **Yes.** Nights are compressed 10×, so a sim-day is ~11 real minutes, not the 24 you specified. |
+| WEB-0002 | Voxel town as a view over a GL-free model (supersedes WEB-0001) | three.js is ~1 MB uncompressed on the landing page. |
+| WEB-0003 | Draw nothing off-screen; draw cheaply on a software renderer | **Yes.** It rests on a hypothesis I could not prove. |
+| GEN-0001 | Dialogue is a projection, never read back | A clean clone shows no prose: the cassette holds decisions, not dialogue. |
+
+---
+
+## 7. Open, and honest about it
+
+- **A page freeze, mitigated but not diagnosed.** Three times a page holding the
+  hero stopped dead in headless Chromium: twice it never hydrated, and once a
+  test with a 30 s timeout sat for **fifteen minutes**, which means the main
+  thread was frozen too hard for the runner to enforce its own timeout. Every
+  time, macOS Photos analysis (`mediaanalysisd`, ~350% CPU) had the load average
+  at 30–80. On a quiet machine the same build loaded seven times running in
+  800 ms at 40 fps. Headless WebGL here is SwiftShader, a CPU rasteriser, and
+  every GL call is a synchronous wait on a GPU process shared by all tabs — so
+  my hypothesis is that a 60 fps antialiased scene starved it. **I did not
+  capture a stack from a frozen tab, so that is a hypothesis.** What I did
+  (WEB-0003): nothing is drawn while the canvas is off-screen or the tab is
+  hidden, and a software renderer gets no MSAA, 1× pixel ratio and 15 fps. Both
+  are right for real visitors regardless. The specs still reload once if the
+  world does not mount, and *annotate the test when they had to*: a `reloaded`
+  annotation in a Playwright report is this, coming back.
+- `gossip.outage` → invoice workaround is not built.
+- DeepSeek V4.1 Flash, first in your escape-hatch order, did not return usable
+  JSON for the dialogue schema on the one live call; the chain fell through to
+  GLM 5.3 Flash. One sample. The response names the models it skipped.
+- The economics are measured over five sim-days of one seed. One seed.
+- No claim is made about emergent behaviours #1, #3 or #5 from the scenario
+  document. That needs the interventional study.
+- Wording is frozen by the cache key: editing a sentence in a question set
+  re-records every call that contained it.
+- CI has still never run on GitHub; nothing was pushed. I ran its commands
+  locally, and added a `web` job that typechecks the TypeScript, which nothing
+  did before.
+
+## 8. With another 4 hours
+
+1. **Prove or kill the freeze hypothesis.** Reproduce under synthetic load
+   (`yes > /dev/null` × cores), and sample the frozen renderer with `sample` or
+   `spindump`. If it is not the GPU process, WEB-0003 is only a band-aid.
+2. **Calibration, not just sensitivity.** The probe shows traits move Jev. Pick
+   two base rates with real-world anchors (cafe walk-out, days-to-pay) and see
+   how far off Jev is, and whether wording can move it.
+3. **A household sector**, so wages return as cafe spending and the money loop
+   closes.
+4. **The interventional study** the scenario document asks for: same seed, one
+   intervention, difference in outcomes — the machinery (`--until`, replay,
+   control-arm tests) now exists.
+
+## 9. Things I did that you should know about
+
+- **Restarted OrbStack** at ~12:55 PDT without asking. Its Docker engine wedged
+  after the Mac slept (`docker ps` hung while `orbctl status` said Running), so
+  nothing of anyone's was reachable. Your Supabase stack came back by itself;
+  `jeve-postgres` needed `make db-up`. About 35 minutes lost.
+- **Killed an orphaned `next dev`** on port 3010 that session 1 had left behind.
+- Untracked `apps/web/next-env.d.ts`: Next rewrites it per dist dir, which
+  dirtied the tree on every e2e run. A small tracked `src/types/next.d.ts`
+  keeps `tsc` working on a clean clone.
+- Added `.claude/launch.json` so the web app can be started from the preview
+  pane.
+- Sent you two screenshots (`/world` with a person selected, and the hero) taken
+  with Playwright from a replayed, paced run. They are not in the repo.
+- Rewrote `AGENTS.md`'s layout and verify sections and `ops/README.md`, which
+  both still described session 1.
+
+---
+
+# Appendix A — status blocks written during the night
+
+Kept as written, newest first. Where they disagree with the handoff above, the
+handoff is later and wins (for instance: the freeze is now mitigated by
+WEB-0003, and all four remaining flows were built).
+
+### Status — 2026-09-20 14:35 PDT — space, the voxel town, and kill -9 are in
 
 **The wake-up definition of done is met.** `make e2e` from this tree brings up
 Postgres, the sim daemon, the API and the web app; the hero shows voxel people
@@ -64,7 +333,7 @@ Things that cost time, for the record:
 `ops/economics.md` is stale relative to this commit (it was measured before
 space existed); a replay says so out loud. It is re-measured live at the end.
 
-## Status — 2026-09-20 11:40 PDT — Phase 0 and Phase 1 gates passed
+### Status — 2026-09-20 11:40 PDT — Phase 0 and Phase 1 gates passed
 
 **Jev is the decision layer, measured, and the persona question is answered.**
 
@@ -118,7 +387,9 @@ then the voxel renderer.
 
 ---
 
-# Session 1 handoff — overnight session, 2026-09-20
+---
+
+# Appendix B — session 1 handoff, 2026-09-20, unchanged
 
 Branch `feat/mvp-overnight`, 9 commits, nothing pushed. `main` does not exist
 yet (the repo had zero commits when I started), so nothing was touched on it.
