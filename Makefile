@@ -61,3 +61,7 @@ fixture: ## Run the golden fixture on rules only (free, no network)
 .PHONY: api
 api: ## Run the API on :8000
 	cd py && uv run uvicorn jeve.api.app:app --host 127.0.0.1 --port 8000
+
+.PHONY: e2e
+e2e: ## Full stack from a clean checkout, plus the economics report
+	./scripts/e2e.sh

@@ -190,3 +190,23 @@ def test_the_stream_replays_from_a_cursor(client: TestClient) -> None:
             if line.startswith("data: "):
                 resumed.append(json.loads(line[6:])["seq"])
     assert resumed[0] == seqs[5], "a reconnect must not gap or duplicate"
+
+
+def test_cors_allows_any_local_port(client: TestClient) -> None:
+    """The web app is not always on 3000, and a hard-coded port fails as a
+    page that renders and then does nothing."""
+
+    for origin in (
+        "http://localhost:3000",
+        "http://localhost:3010",
+        "http://127.0.0.1:4173",
+    ):
+        response = client.get("/state", headers={"Origin": origin})
+        assert response.headers.get("access-control-allow-origin") == origin, (
+            f"{origin} was refused"
+        )
+
+
+def test_cors_refuses_a_remote_origin(client: TestClient) -> None:
+    response = client.get("/state", headers={"Origin": "https://evil.example"})
+    assert "access-control-allow-origin" not in response.headers

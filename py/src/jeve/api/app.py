@@ -30,11 +30,15 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Single instance, no auth, localhost only — a stated constraint. The dev web
-# app runs on another port, so it still needs to be allowed through.
+# Single instance, no auth, localhost only — a stated constraint.
+#
+# Any local port, not a fixed list: the dev app is on 3000, the end-to-end run
+# uses another to avoid colliding with it, and someone will pick a third. A
+# hard-coded port produces a page that renders from the server and then fails
+# every client fetch, which reads as a broken app rather than a CORS rule.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )

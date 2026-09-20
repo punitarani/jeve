@@ -46,3 +46,5 @@ blob-report/
 .DS_Store
 node_modules/
 .nx/
+test-results/
+playwright-report/
