@@ -1,0 +1,86 @@
+"""Typed settings, read from the environment once.
+
+Loading is explicit: nothing here reads a .env file. The Makefile passes
+`uv run --env-file .env` when the file exists, and a clean clone runs in replay
+mode where no key is needed.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from jeve.errors import ConfigError
+
+# LLM-0004: the ladder. Crossing a rung changes what the gateway will authorise.
+EXPLORE_CEILING_USD = 12.0
+HALT_CEILING_USD = 16.0
+HARD_CEILING_USD = 20.0
+
+
+class Settings(BaseModel):
+    """Everything the process needs from its environment."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    openrouter_api_key: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    ops_dir: Path = Field(default=Path("ops"))
+
+    explore_ceiling_usd: float = EXPLORE_CEILING_USD
+    halt_ceiling_usd: float = HALT_CEILING_USD
+    hard_ceiling_usd: float = HARD_CEILING_USD
+
+    @property
+    def ledger_path(self) -> Path:
+        return self.ops_dir / "ledger.jsonl"
+
+    @property
+    def spend_path(self) -> Path:
+        return self.ops_dir / "spend.json"
+
+    def require_api_key(self) -> str:
+        if not self.openrouter_api_key:
+            raise ConfigError(
+                "OPENROUTER_API_KEY is not set. Live calls need it; "
+                "replay runs do not — pass a replay gateway instead."
+            )
+        return self.openrouter_api_key
+
+
+def find_repo_root(start: Path | None = None) -> Path:
+    """Walk up to the directory holding `.git`.
+
+    The spend ledger must be one file for the whole project. Resolving `ops/`
+    against the current directory would give the simulation and a script run
+    from `py/` two different ledgers and two different ceilings.
+    """
+
+    here = (start or Path(__file__)).resolve()
+    for candidate in (here, *here.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return Path.cwd()
+
+
+def load_settings(*, ops_dir: Path | None = None) -> Settings:
+    """Read settings from os.environ.
+
+    Absent credentials are not an error here. Only issuing a live call is.
+    """
+
+    base_url = os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+    override = os.environ.get("JEVE_OPS_DIR")
+    if ops_dir is not None:
+        root = ops_dir
+    elif override:
+        root = Path(override)
+    else:
+        root = find_repo_root() / "ops"
+    return Settings(
+        openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
+        openrouter_base_url=base_url.rstrip("/"),
+        ops_dir=root,
+    )

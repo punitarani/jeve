@@ -4,10 +4,17 @@
 !.env.example
 
 # Operational state written at runtime (spend ledger, night/gate state).
-# ops/ itself is tracked so the directory exists on a clean clone.
-ops/*
-!ops/.gitkeep
-!ops/README.md
+# The repo-root ops/ is tracked so the directory exists on a clean clone; its
+# contents are not. A nested ops/ is a bug (something resolved it against the
+# wrong cwd) — ignore it so it can never be committed.
+/ops/*
+!/ops/.gitkeep
+!/ops/README.md
+# A nested ops/ means something resolved it against the wrong cwd. Ignored so
+# it can never be committed; `ops/` at the root is the only real one. (A bare
+# `ops/` here would also re-ignore the root one — later patterns win.)
+py/ops/
+apps/*/ops/
 
 # Python
 __pycache__/
