@@ -11,6 +11,7 @@ sampled draw out. Nothing upstream of here knows which one answered.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
@@ -51,6 +52,15 @@ class Decision:
 class Policy(Protocol):
     def decide(self, ctx: DecisionContext) -> Decision: ...
 
+    def decide_many(self, contexts: Sequence[DecisionContext]) -> list[Decision]:
+        """Decide several *independent* contexts at once.
+
+        Independent means no context's facts depend on another's outcome. A
+        model-backed policy issues them concurrently; the results must equal
+        deciding each alone, in order.
+        """
+        ...
+
 
 class RulesPolicy:
     """Deterministic given the world and the seed. No model, no network.
@@ -76,6 +86,9 @@ class RulesPolicy:
             raise KeyError(f"no rule for decision kind {ctx.kind!r}")
         chosen, draws = handler(ctx, rng)
         return Decision(chosen=chosen, source=self.source, draws=draws, prng_path=path)
+
+    def decide_many(self, contexts: Sequence[DecisionContext]) -> list[Decision]:
+        return [self.decide(ctx) for ctx in contexts]
 
     # -- the six flows ----------------------------------------------------
 

@@ -16,6 +16,9 @@ const config: NextConfig = {
   // inert. Naming both hosts means the app works at whichever one a person
   // or a test happens to type.
   allowedDevOrigins: ["127.0.0.1", "localhost"],
+  // `make e2e` builds into its own directory, so it can run beside a
+  // developer's `next dev` without the two fighting over `.next`.
+  distDir: process.env.JEVE_NEXT_DIST ?? ".next",
 };
 
 export default config;

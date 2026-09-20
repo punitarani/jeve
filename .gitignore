@@ -34,6 +34,8 @@ dist/
 # Node
 node_modules/
 .next/
+.next-e2e/
+next-env.d.ts
 out/
 .turbo/
 *.tsbuildinfo

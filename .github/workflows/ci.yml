@@ -100,3 +100,18 @@ jobs:
             echo "::error::An API key is committed. Rotate it."
             exit 1
           fi
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Nothing else compiles the TypeScript against the real page tree: the
+      # dev server type-strips, and a contract change that breaks a component
+      # would otherwise surface only in a browser.
+      - run: pnpm --filter @jeve/web exec tsc --noEmit

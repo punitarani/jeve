@@ -1,4 +1,64 @@
-# Handoff — overnight session, 2026-09-20
+# Handoff
+
+> **Session 2 is in progress.** Status blocks are appended here at each phase
+> gate, newest first. The session-1 handoff follows unchanged below them, and
+> the whole file is rewritten in that format at the end of the night.
+
+## Status — 2026-09-20 11:40 PDT — Phase 0 and Phase 1 gates passed
+
+**Jev is the decision layer, measured, and the persona question is answered.**
+
+- B1 is lifted. `make smoke` returns all three primitives with distributions;
+  `make providers` reaches Jev and all five escape-hatch models
+  (`ops/providers.md`).
+- `JevPolicy` runs all five decision kinds of the six flows behind the existing
+  `Policy` seam. Five-day fixture: 1,351 decisions, **1,163 by Jev (86%)**, 188
+  by code gates (unaffordable / not yet due / ticket already open — recorded as
+  `rules`, not credited to the model).
+- **Economics: MET, from real spend** (`ops/economics.md`). $0.00013 per
+  sim-day measured; $0.0027 per sim-day if no call were shared; target $2.00.
+  The verdict is judged against the no-sharing figure so it is not met on the
+  strength of the cache. 95% of model decisions shared a call.
+- **Persona probe: persona is preserved** (`ops/persona-probe.md`). 6 of 6 test
+  cases distinct at 500x-6,000x Jev's noise floor; the control (empty cafe
+  counter, where patience should not matter) stayed flat. Replicated twice.
+  What it does not show: that Jev's base rates are *true* (it has a patient
+  customer at an empty counter buying with p=0.84).
+- `make e2e` is strict replay from `py/fixtures/cassettes/golden.jsonl`: free,
+  keyless, never constructs a gateway; a miss is an error, not a fallback.
+  `LIVE=1 make e2e` is hit-or-call and is the only thing that writes the
+  tracked economics report.
+- Spend so far tonight: about $0.012 of $20.
+
+Found on the way, each fixed with a test that fails without it:
+
+1. **The session-1 e2e had been passing against a stale server.** An orphaned
+   `next dev` from last night was still holding port 3010 eight hours later
+   (killing the `pnpm` wrapper does not kill its child), so this morning's
+   first e2e health-checked *that*. e2e now refuses to start on a busy port,
+   builds for production, and cleans up by port.
+2. The spend ledger re-read its whole file ~4x per call: quadratic. Now
+   incremental. A torn final line also used to swallow the next real entry.
+3. 429s were booked as spend. Retries are now bounded and jittered, and a
+   rate-limited attempt books nothing.
+4. The cafe draws arrivals with replacement, so batching gave a repeat visitor
+   the same `decision_seq` twice. Each visit now gets its own.
+5. Jev returns `probabilities` in its own key order, and JSONB reorders again.
+   Sampling walks the *declared* order, or a replay would draw differently from
+   the call it recorded.
+6. A jaggedness note for the record: on `file.ticket`, "speaks up when
+   something blocks their work" (0.45) outranks "quick to complain and to
+   report any problem" (0.41). Jev reads the words, not an ordinal scale; the
+   middle trait's wording happens to match the situation literally.
+
+New records, all `agent-decided`: LLM-0005 (supersedes LLM-0002), DECIDE-0003.
+
+Next: spatial world (zones, encounters that alter the event graph, `make sim`),
+then the voxel renderer.
+
+---
+
+# Session 1 handoff — overnight session, 2026-09-20
 
 Branch `feat/mvp-overnight`, 9 commits, nothing pushed. `main` does not exist
 yet (the repo had zero commits when I started), so nothing was touched on it.

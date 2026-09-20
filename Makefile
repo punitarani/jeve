@@ -21,8 +21,9 @@ lint: ## ruff check + format check
 	cd py && uv run ruff format --check .
 
 .PHONY: types
-types: ## mypy --strict
+types: ## mypy --strict, and tsc over the web app
 	cd py && uv run mypy
+	pnpm --filter @jeve/web exec tsc --noEmit
 
 .PHONY: test
 test: ## pytest, no network
@@ -45,6 +46,10 @@ smoke: ## One real call through the gateway, under a cent
 providers: ## One tiny real call per model: reachable, not merely resolvable
 	$(UV) python scripts/probe_providers.py
 
+.PHONY: persona-probe
+persona-probe: ## Does sampling Jev preserve persona? 280 live calls, ~half a cent
+	$(UV) python scripts/persona_probe.py
+
 .PHONY: spend
 spend: ## What has been spent so far
 	@test -f ops/spend.json && cat ops/spend.json || echo '{"effective_usd": 0}'
@@ -59,8 +64,8 @@ db-down: ## Stop Postgres, keep the data
 	docker compose down
 
 .PHONY: fixture
-fixture: ## Run the golden fixture on rules only (free, no network)
-	$(UV) python scripts/run_fixture.py
+fixture: ## Run the golden fixture. POLICY=jev|rules CALLS=replay|record
+	$(UV) python scripts/run_fixture.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS))
 
 .PHONY: api
 api: ## Run the API on :8000

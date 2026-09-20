@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Gate 6: everything, from a clean checkout, in one command.
+# Everything, from a clean checkout, in one command.
 #
-# Brings up Postgres, migrates, seeds, runs the fixture on rules, starts the
-# API and the web app, runs the Playwright flow against them, writes the
+# Brings up Postgres, migrates, seeds, runs the world with Jev deciding, starts
+# the API and the web app, drives a real browser through them, writes the
 # measured economics report, and tears down.
 #
-# Rules-only by default, so it costs nothing and needs no API key — a clean
-# clone must not require credentials to prove the stack works. LIVE=1 is what
-# spends money, and that path is still blocked by BLOCKED.md B1.
+#   make e2e            strict replay from the committed cassette. Free, needs
+#                       no API key, and never constructs a gateway. A call the
+#                       cassette does not hold is a failure, not a fallback.
+#   LIVE=1 make e2e     hit-or-call: replays what the cassette has, pays for
+#                       what it lacks, appends it. The only mode that writes
+#                       the tracked ops/economics.md.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,21 +19,49 @@ cd "$ROOT"
 API_PORT="${JEVE_API_PORT:-8010}"
 WEB_PORT="${JEVE_WEB_PORT:-3010}"
 DAYS="${JEVE_DAYS:-5}"
+LOGS="$(mktemp -d "${TMPDIR:-/tmp}/jeve-e2e.XXXXXX")"
 API_PID=""; WEB_PID=""
+
+if [ "${LIVE:-0}" = "1" ]; then
+  CALLS=record
+  [ -f .env ] || { echo "LIVE=1 needs a .env with OPENROUTER_API_KEY"; exit 2; }
+  UVRUN=(uv run --directory py --env-file "$ROOT/.env")
+else
+  CALLS=replay
+  UVRUN=(uv run --directory py)
+fi
 
 cleanup() {
   [ -n "$WEB_PID" ] && kill "$WEB_PID" 2>/dev/null || true
   [ -n "$API_PID" ] && kill "$API_PID" 2>/dev/null || true
+  # `pnpm` and `uv run` are wrappers: killing them orphans the server they
+  # started, which then squats on the port and answers the *next* run's health
+  # checks. Both ports were verified free on the way in, so whatever is
+  # listening on them now is ours.
+  if [ "${PORTS_OURS:-0}" = "1" ]; then
+    for port in "$API_PORT" "$WEB_PORT"; do
+      lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
+    done
+  fi
   docker compose -p jeve-e2e down -v >/dev/null 2>&1 || true
+  echo "logs: $LOGS"
 }
 trap cleanup EXIT
 
 say() { printf '\n\033[1m── %s\033[0m\n' "$1"; }
 
+# A port someone else holds means the health checks below would pass against
+# *their* server, and the run would go green having tested nothing of ours.
+for port in "$API_PORT" "$WEB_PORT"; do
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "port $port is already in use; set JEVE_API_PORT / JEVE_WEB_PORT"; exit 2
+  fi
+done
+PORTS_OURS=1
+
 say "1/6  database"
 # A separate Compose project so a running dev stack is never disturbed, and
-# port 0 so Docker picks a free one — a fixed port collides with the dev stack
-# the moment anyone has it running, which is most of the time.
+# port 0 so Docker picks a free one.
 export JEVE_PG_PORT=0
 docker compose -p jeve-e2e up -d --wait
 PG_PORT="$(docker compose -p jeve-e2e port postgres 5432 | sed 's/.*://')"
@@ -44,41 +75,61 @@ pnpm install --frozen-lockfile --silent
 say "3/6  offline checks"
 make lint types test decisions
 
-say "4/6  the world, on rules"
-uv run --directory py python scripts/run_fixture.py --days "$DAYS" | tee /tmp/jeve-e2e-fixture.log
+say "4/6  the world, decided by Jev (${CALLS})"
+"${UVRUN[@]}" python scripts/run_fixture.py --days "$DAYS" --policy jev \
+  --calls "$CALLS" --stats "$LOGS/run.json" | tee "$LOGS/fixture.log"
 
 say "5/6  api + web + browser flow"
 uv run --directory py uvicorn jeve.api.app:app --host 127.0.0.1 --port "$API_PORT" \
-  > /tmp/jeve-e2e-api.log 2>&1 &
+  > "$LOGS/api.log" 2>&1 &
 API_PID=$!
 for _ in $(seq 1 40); do
   curl -sf "http://127.0.0.1:${API_PORT}/health" >/dev/null && break || sleep 1
 done
-curl -sf "http://127.0.0.1:${API_PORT}/health" >/dev/null || { cat /tmp/jeve-e2e-api.log; exit 1; }
+curl -sf "http://127.0.0.1:${API_PORT}/health" >/dev/null || { cat "$LOGS/api.log"; exit 1; }
 
-NEXT_PUBLIC_JEVE_API="http://127.0.0.1:${API_PORT}" \
-  pnpm --filter @jeve/web dev --port "$WEB_PORT" > /tmp/jeve-e2e-web.log 2>&1 &
+# A production build, not `next dev`: Next 16 holds a lock in its dev directory,
+# so a second dev server beside a developer's own refuses to start. It is also
+# the only place the TypeScript is compiled against the real page tree.
+export NEXT_PUBLIC_JEVE_API="http://127.0.0.1:${API_PORT}"
+export JEVE_NEXT_DIST=".next-e2e"
+pnpm --filter @jeve/web exec next build > "$LOGS/web-build.log" 2>&1 \
+  || { tail -40 "$LOGS/web-build.log"; exit 1; }
+pnpm --filter @jeve/web exec next start --port "$WEB_PORT" > "$LOGS/web.log" 2>&1 &
 WEB_PID=$!
 for _ in $(seq 1 60); do
   curl -sf "http://localhost:${WEB_PORT}/" >/dev/null && break || sleep 1
 done
-curl -sf "http://localhost:${WEB_PORT}/" >/dev/null || { tail -30 /tmp/jeve-e2e-web.log; exit 1; }
+curl -sf "http://localhost:${WEB_PORT}/" >/dev/null || { tail -30 "$LOGS/web.log"; exit 1; }
 
 JEVE_WEB_URL="http://localhost:${WEB_PORT}" pnpm --filter @jeve/web exec playwright test
 
 say "6/6  measured economics"
-uv run --directory py python scripts/economics.py --api "http://127.0.0.1:${API_PORT}" \
-  --days "$DAYS" | tee ops/economics.md
+# Only a live run writes the tracked report. A replay reproduces the same
+# figures — they are priced from the recorded calls — so it writes beside it
+# and says so if the two have drifted, which means the world changed and the
+# committed measurement no longer describes it.
+REPORT="ops/economics.replay.md"
+[ "$CALLS" = "record" ] && REPORT="ops/economics.md"
+set +e
+uv run --directory py python scripts/economics.py \
+  --api "http://127.0.0.1:${API_PORT}" --stats "$LOGS/run.json" > "$REPORT"
+VERDICT=$?
+set -e
+cat "$REPORT"
 
-# Deliberately not "ALL GATES PASSED". Gates 1-6 ran end to end, but every
-# decision was made by rules because Jev is unreachable (BLOCKED.md B1), so
-# the unit-economics gate has not been exercised. Saying otherwise here would
-# be the stub-and-call-it-passed failure the brief rules out.
-if grep -q "decided by a model | 0" ops/economics.md 2>/dev/null; then
-  printf '\n\033[1;33mSTACK GREEN, ECONOMICS NOT MET\033[0m\n'
-  printf 'Gates 1-6 ran from clean. Every decision was made by rules, so the\n'
-  printf 'measured cost is ~$0 and proves nothing about the typed-decision\n'
-  printf 'path. See BLOCKED.md B1 and ops/economics.md.\n'
+if [ "$CALLS" = "replay" ] && [ -f ops/economics.md ]; then
+  if ! diff <(grep -v '^\*\*This invocation' ops/economics.md) \
+            <(grep -v '^\*\*This invocation' "$REPORT") >/dev/null; then
+    printf '\n\033[1;33mnote:\033[0m this replay no longer matches the committed '
+    printf 'ops/economics.md. Re-measure with LIVE=1 make e2e.\n'
+  fi
+fi
+
+if [ "$VERDICT" = "0" ]; then
+  printf '\n\033[1;32mALL GATES PASSED\033[0m  economics MET (%s)  report: %s\n' "$CALLS" "$REPORT"
+elif [ "$VERDICT" = "3" ]; then
+  printf '\n\033[1;33mSTACK GREEN, ECONOMICS NOT MET\033[0m  see %s\n' "$REPORT"
 else
-  printf '\n\033[1;32mALL GATES PASSED\033[0m  report: ops/economics.md\n'
+  exit "$VERDICT"
 fi

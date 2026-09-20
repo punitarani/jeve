@@ -294,47 +294,130 @@ def person_decisions(
     return {"person": person, "decisions": rows}
 
 
+# Bookkeeping events: real, but not things that happened *in the economy*.
+# Counting them would flatter the per-1000-events figure for free.
+NON_ECONOMIC_EVENTS = ("agent.moved",)
+
+
 @app.get("/economics")
 def economics() -> dict[str, object]:
-    """Measured unit cost, read from the ledger — never a projection."""
+    """Measured unit cost of *this run*, from the calls its decisions used.
+
+    Not from the spend ledger: that is the whole project's history, so it would
+    report tonight's total against five sim-days, and $0 on a clean clone. A
+    decision row names the call that answered it, and the call row carries what
+    OpenRouter billed when it was first made — so the join prices exactly the
+    calls this world needed, whether they were live or replayed.
+    """
 
     with db.connect() as conn:
         counts = conn.execute(
             "SELECT (SELECT count(*) FROM persons) AS persons, "
             "       (SELECT count(*) FROM orgs) AS orgs, "
-            "       (SELECT count(*) FROM events) AS events, "
+            "       (SELECT count(*) FROM events WHERE kind <> ALL(%s)) AS events, "
             "       (SELECT count(*) FROM decisions) AS decisions, "
             "       (SELECT count(*) FROM decisions WHERE source <> 'rules') "
-            "         AS modelled"
+            "         AS modelled",
+            (list(NON_ECONOMIC_EVENTS),),
         ).fetchone()
-        meta = conn.execute("SELECT sim_time, tick_seq FROM sim_meta").fetchone()
+        meta = conn.execute("SELECT sim_time FROM sim_meta").fetchone()
+        span = conn.execute(
+            "SELECT min(sim_time) AS first, max(sim_time) AS last FROM events"
+        ).fetchone()
+        calls = conn.execute(
+            "SELECT count(*) AS calls, COALESCE(sum(m.cost_usd),0) AS usd, "
+            "       COALESCE(sum(m.input_tokens),0) AS input_tokens, "
+            "       count(*) FILTER (WHERE m.cost_estimated) AS estimated "
+            "FROM model_calls m WHERE m.hash IN "
+            "  (SELECT DISTINCT model_call FROM decisions "
+            "   WHERE model_call IS NOT NULL)"
+        ).fetchone()
+        undeduped = conn.execute(
+            "SELECT COALESCE(sum(m.cost_usd),0) AS usd FROM decisions d "
+            "JOIN model_calls m ON m.hash = d.model_call"
+        ).fetchone()
+        unpriced = conn.execute(
+            "SELECT count(*) AS n FROM decisions d WHERE d.model_call IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM model_calls m WHERE m.hash = d.model_call)"
+        ).fetchone()
+        by_model = conn.execute(
+            "SELECT m.model, count(*) AS decisions, "
+            "       count(DISTINCT m.hash) AS calls "
+            "FROM decisions d JOIN model_calls m ON m.hash = d.model_call "
+            "GROUP BY m.model ORDER BY m.model"
+        ).fetchall()
+        by_kind = conn.execute(
+            "SELECT question_set AS kind, source, count(*) AS decisions, "
+            "       count(DISTINCT model_call) AS calls "
+            "FROM decisions GROUP BY question_set, source "
+            "ORDER BY question_set, source"
+        ).fetchall()
+        kind_cost = {
+            (str(r["kind"]), str(r["source"])): float(r["usd"])
+            for r in conn.execute(
+                "SELECT u.question_set AS kind, u.source, sum(m.cost_usd) AS usd "
+                "FROM (SELECT DISTINCT question_set, source, model_call "
+                "      FROM decisions WHERE model_call IS NOT NULL) u "
+                "JOIN model_calls m ON m.hash = u.model_call "
+                "GROUP BY u.question_set, u.source"
+            ).fetchall()
+        }
 
-    from jeve.config import load_settings
-    from jeve.llm.ledger import SpendLedger
+    assert counts is not None and calls is not None and undeduped is not None
+    first = int(span["first"]) if span and span["first"] is not None else 0
+    now = int(meta["sim_time"]) if meta else first
+    # Whole sim-days the run has covered, counted from the day it began.
+    sim_days = max(1, SimTime(now).day - SimTime(first).day)
+    persons, orgs = int(counts["persons"]), int(counts["orgs"])
+    events_n, modelled = int(counts["events"]), int(counts["modelled"])
+    total, n_calls = float(calls["usd"]), int(calls["calls"])
 
-    settings = load_settings()
-    spend = SpendLedger(settings.ledger_path, checkpoint=settings.spend_path).read()
-
-    sim_days = max(1.0, SimTime(int(meta["sim_time"])).day if meta else 1)
-    persons = int(counts["persons"]) if counts else 0
-    orgs = int(counts["orgs"]) if counts else 0
-    events_n = int(counts["events"]) if counts else 0
-    total = spend.settled_usd
+    def per_day(usd: float) -> dict[str, float]:
+        daily = usd / sim_days
+        return {
+            "usd": round(daily, 6),
+            "usd_per_100_persons": round(daily / max(1, persons) * 100, 6),
+            "usd_per_10_orgs": round(daily / max(1, orgs) * 10, 6),
+            # Days cancel: (usd per day) over (events per day).
+            "usd_per_1000_events": round(usd / max(1, events_n) * 1000, 6),
+        }
 
     return {
         "spend_usd": round(total, 6),
-        "spend_is_estimated_calls": spend.estimated_calls,
-        "model_calls": spend.calls,
+        "spend_is_estimated_calls": int(calls["estimated"]),
+        "model_calls": n_calls,
+        "input_tokens": int(calls["input_tokens"]),
         "sim_days": sim_days,
-        "counts": dict(counts) if counts else {},
-        "per_sim_day": {
-            "usd_per_100_persons": round(total / sim_days / max(1, persons) * 100, 6),
-            "usd_per_10_orgs": round(total / sim_days / max(1, orgs) * 10, 6),
-            "usd_per_1000_events": round(total / sim_days / max(1, events_n) * 1000, 6),
+        "counts": {k: int(v) for k, v in dict(counts).items()},
+        "per_sim_day": per_day(total),
+        "without_dedup": {
+            "spend_usd": round(float(undeduped["usd"]), 6),
+            "per_sim_day": per_day(float(undeduped["usd"])),
         },
+        "dedup_rate": round(1 - n_calls / modelled, 4) if modelled else 0.0,
+        "unpriced_decisions": int(unpriced["n"]) if unpriced else 0,
+        "decisions_by_model": [
+            {
+                "model": str(r["model"]),
+                "decisions": int(r["decisions"]),
+                "calls": int(r["calls"]),
+            }
+            for r in by_model
+        ],
+        "by_kind": [
+            {
+                "kind": str(r["kind"]),
+                "source": str(r["source"]),
+                "decisions": int(r["decisions"]),
+                "calls": int(r["calls"]),
+                "usd": round(kind_cost.get((str(r["kind"]), str(r["source"])), 0.0), 6),
+            }
+            for r in by_kind
+        ],
         "note": (
-            "Read from the spend ledger. Decisions made by rules cost nothing, "
-            "so a run with `modelled` = 0 reports $0 — that is honest, not a bug."
+            "Priced from the calls this run's decisions used, at what OpenRouter "
+            "billed when each was first made. `without_dedup` prices every "
+            "decision as its own call; it is an upper bound, not a measurement."
         ),
     }
 

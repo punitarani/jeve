@@ -43,6 +43,17 @@ def connect(*, autocommit: bool = False) -> Iterator[Connection[DictRow]]:
         yield conn
 
 
+def connect_autocommit() -> Connection[DictRow]:
+    """A long-lived connection that commits each statement on its own.
+
+    For writes that must survive the tick they happened in being rolled back —
+    a recorded model response has been paid for whatever the tick does next.
+    The caller closes it.
+    """
+
+    return psycopg.connect(dsn(), row_factory=dict_row, autocommit=True)
+
+
 def migration_files() -> list[Path]:
     return sorted(MIGRATIONS.glob("[0-9]*.sql"))
 

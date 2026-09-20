@@ -21,7 +21,7 @@ from psycopg.rows import DictRow
 from jeve import db
 from jeve.core.clock import DAY, TICK, SimTime, next_office_open
 from jeve.core.seed import derive_rng
-from jeve.decide.policy import DecisionContext, Policy
+from jeve.decide.policy import Decision, DecisionContext, Policy
 
 # Tallybird's hazard: chance per business-hours tick that a module falls over.
 # Elevated because the fixture starts with debt high and a risky deploy queued.
@@ -38,6 +38,15 @@ def _seq_of(value: object) -> list[int]:
 
 
 SUPPORT_ROLES = ("support", "support_lead")
+
+
+@dataclass(frozen=True, slots=True)
+class Made:
+    """A decision after it has been written down."""
+
+    id: int
+    chosen: dict[str, Any]
+    source: str
 
 
 @dataclass(slots=True)
@@ -105,14 +114,29 @@ class Engine:
         report.add(kind)
         return int(row["seq"])
 
-    def _decide(self, report: TickReport, ctx: DecisionContext) -> dict[str, Any]:
-        """Run a policy and record the decision. Returns what was chosen."""
+    def _decide(self, report: TickReport, ctx: DecisionContext) -> Made:
+        """Run a policy and record the decision."""
 
-        decision = self._policy.decide(ctx)
-        self._conn.execute(
+        return self._record(report, ctx, self._policy.decide(ctx))
+
+    def _decide_many(
+        self, report: TickReport, contexts: list[DecisionContext]
+    ) -> list[Made]:
+        """Decide independent contexts together, record them in order."""
+
+        decisions = self._policy.decide_many(contexts)
+        return [
+            self._record(report, ctx, decision)
+            for ctx, decision in zip(contexts, decisions, strict=True)
+        ]
+
+    def _record(
+        self, report: TickReport, ctx: DecisionContext, decision: Decision
+    ) -> Made:
+        row = self._conn.execute(
             "INSERT INTO decisions (person_id, decision_seq, sim_time, tick_seq, "
             "question_set, model_call, source, distributions, prng_path, draws, "
-            "chosen) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            "chosen) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
             (
                 ctx.person_id,
                 ctx.decision_seq,
@@ -126,13 +150,14 @@ class Engine:
                 json.dumps(decision.draws),
                 json.dumps(decision.chosen),
             ),
-        )
+        ).fetchone()
+        assert row is not None
         self._conn.execute(
             "UPDATE persons SET decision_seq = decision_seq + 1 WHERE id = %s",
             (ctx.person_id,),
         )
         report.decisions += 1
-        return decision.chosen
+        return Made(int(row["id"]), decision.chosen, decision.source)
 
     def _next_seq(self, person_id: str) -> int:
         row = self._conn.execute(
@@ -345,7 +370,7 @@ class Engine:
                 "LIMIT 1",
                 (person_id,),
             ).fetchone()
-            chosen = self._decide(
+            made = self._decide(
                 report,
                 DecisionContext(
                     person_id=person_id,
@@ -360,7 +385,7 @@ class Engine:
                     traits=dict(row["traits"] or {}),
                 ),
             )
-            if not chosen.get("file"):
+            if not made.chosen.get("file"):
                 continue
             module_id = down[0]
             ticket = self._conn.execute(
@@ -380,6 +405,7 @@ class Engine:
                 actor_id=person_id,
                 org_id="tallybird",
                 causes=causes,
+                decision_id=made.id,
                 payload={
                     "ticket_id": int(ticket["id"]),
                     "reporter_id": person_id,
@@ -416,7 +442,7 @@ class Engine:
             ).fetchone()
             if untriaged is not None:
                 module_id = untriaged["module_id"]
-                chosen = self._decide(
+                made = self._decide(
                     report,
                     DecisionContext(
                         person_id=person_id,
@@ -425,6 +451,7 @@ class Engine:
                         sim_time=report.sim_time,
                         kind="ticket.triage",
                         facts={
+                            "subject": str(untriaged["subject"]),
                             "module_down": bool(
                                 module_id and self._module_down(str(module_id))
                             ),
@@ -439,9 +466,9 @@ class Engine:
                     "queue = %s, severity = %s, decided_by = %s WHERE id = %s",
                     (
                         person_id,
-                        chosen["queue"],
-                        chosen["severity"],
-                        "rules",
+                        made.chosen["queue"],
+                        made.chosen["severity"],
+                        made.source,
                         untriaged["id"],
                     ),
                 )
@@ -455,12 +482,13 @@ class Engine:
                         if untriaged["opened_seq"]
                         else []
                     ),
+                    decision_id=made.id,
                     payload={
                         "ticket_id": int(untriaged["id"]),
                         "assignee_id": person_id,
-                        "queue": chosen["queue"],
-                        "severity": chosen["severity"],
-                        "decided_by": "rules",
+                        "queue": made.chosen["queue"],
+                        "severity": made.chosen["severity"],
+                        "decided_by": made.source,
                     },
                 )
                 continue
@@ -468,11 +496,11 @@ class Engine:
             # Otherwise answer something already triaged.
             triaged = self._conn.execute(
                 "SELECT id FROM tickets WHERE status = 'triaged' "
-                "ORDER BY severity DESC, opened_sim LIMIT 1"
+                "ORDER BY severity DESC, opened_sim, id LIMIT 1"
             ).fetchone()
             if triaged is None:
                 continue
-            chosen = self._decide(
+            made = self._decide(
                 report,
                 DecisionContext(
                     person_id=person_id,
@@ -484,7 +512,7 @@ class Engine:
                     traits=traits,
                 ),
             )
-            if not chosen.get("answer_now"):
+            if not made.chosen.get("answer_now"):
                 continue
             self._conn.execute(
                 "UPDATE tickets SET status = 'answered' WHERE id = %s", (triaged["id"],)
@@ -494,7 +522,12 @@ class Engine:
                 "ticket.answered",
                 actor_id=person_id,
                 org_id="tallybird",
-                payload={"ticket_id": int(triaged["id"]), "assignee_id": person_id},
+                decision_id=made.id,
+                payload={
+                    "ticket_id": int(triaged["id"]),
+                    "assignee_id": person_id,
+                    "decided_by": made.source,
+                },
             )
 
     # -- flow 3: month-end invoicing, blocked while Invoicing is down ------
@@ -673,7 +706,7 @@ class Engine:
             days_until_due = (int(due["due_sim"]) - report.sim_time) // DAY
             person_id = str(payer["id"])
 
-            chosen = self._decide(
+            made = self._decide(
                 report,
                 DecisionContext(
                     person_id=person_id,
@@ -691,18 +724,19 @@ class Engine:
             )
             causes = [int(due["issued_seq"])] if due["issued_seq"] else []
             days_late = max(0, -days_until_due)
-            if not chosen.get("pay"):
+            if not made.chosen.get("pay"):
                 self._emit(
                     report,
                     "payment.deferred",
                     actor_id=person_id,
                     org_id=org_id,
                     causes=causes,
+                    decision_id=made.id,
                     payload={
                         "invoice_id": int(due["id"]),
                         "days_late": days_late,
-                        "reason": str(chosen.get("reason", "")),
-                        "decided_by": "rules",
+                        "reason": str(made.chosen.get("reason", "")),
+                        "decided_by": made.source,
                     },
                 )
                 continue
@@ -714,11 +748,12 @@ class Engine:
                 actor_id=person_id,
                 org_id=org_id,
                 causes=causes,
+                decision_id=made.id,
                 payload={
                     "invoice_id": int(due["id"]),
                     "amount_cents": amount,
                     "days_late": days_late,
-                    "decided_by": "rules",
+                    "decided_by": made.source,
                 },
             )
             txn = self._post(
@@ -771,7 +806,7 @@ class Engine:
                 "SELECT traits FROM persons WHERE id = %s", (person_id,)
             ).fetchone()
             days_until_due = (int(invoice["due_sim"]) - report.sim_time) // DAY
-            chosen = self._decide(
+            made = self._decide(
                 report,
                 DecisionContext(
                     person_id=person_id,
@@ -791,18 +826,19 @@ class Engine:
             days_late = max(0, -days_until_due)
             payee = str(invoice["from_org_id"])
             amount = int(invoice["amount_cents"])
-            if not chosen.get("pay"):
+            if not made.chosen.get("pay"):
                 self._emit(
                     report,
                     "payment.deferred",
                     actor_id=person_id,
                     org_id=payee,
                     causes=causes,
+                    decision_id=made.id,
                     payload={
                         "invoice_id": int(invoice["id"]),
                         "days_late": days_late,
-                        "reason": str(chosen.get("reason", "")),
-                        "decided_by": "rules",
+                        "reason": str(made.chosen.get("reason", "")),
+                        "decided_by": made.source,
                     },
                 )
                 continue
@@ -812,11 +848,12 @@ class Engine:
                 actor_id=person_id,
                 org_id=payee,
                 causes=causes,
+                decision_id=made.id,
                 payload={
                     "invoice_id": int(invoice["id"]),
                     "amount_cents": amount,
                     "days_late": days_late,
-                    "decided_by": "rules",
+                    "decided_by": made.source,
                 },
             )
             txn = self._post(
@@ -853,46 +890,63 @@ class Engine:
             return
 
         servers = 1.0 if pos_down else 2.0
+        # Who walks in, and what they find, is settled before anyone decides:
+        # an arrival waits behind the arrivals ahead of it, not behind what
+        # those people went on to choose. That independence is what lets the
+        # whole tick's customers be asked at once.
+        contexts: list[DecisionContext] = []
+        seen: dict[str, int] = {}
         for arrival in range(arrivals):
-            # What a customer actually waits behind: arrivals ahead of them,
-            # less what the counter has served.
             queue_length = max(0, int(arrival - servers))
             row = customers[int(rng.random() * len(customers))]
             person_id = str(row["id"])
-            chosen = self._decide(
-                report,
+            # Arrivals are drawn with replacement, so one person can walk in
+            # twice in a tick. Each visit is its own decision, with its own
+            # place in that person's sequence and so its own draw.
+            repeat = seen.get(person_id, 0)
+            seen[person_id] = repeat + 1
+            contexts.append(
                 DecisionContext(
                     person_id=person_id,
                     role="customer",
-                    decision_seq=self._next_seq(person_id),
+                    decision_seq=self._next_seq(person_id) + repeat,
                     sim_time=report.sim_time,
                     kind="cafe.purchase",
                     facts={"pos_down": pos_down, "queue_length": queue_length},
                     traits=dict(row["traits"] or {}),
-                ),
+                )
             )
-            if not chosen.get("buy"):
+
+        for ctx, made in zip(
+            contexts, self._decide_many(report, contexts), strict=True
+        ):
+            person_id = ctx.person_id
+            if not made.chosen.get("buy"):
                 self._emit(
                     report,
                     "cafe.walkout",
                     actor_id=person_id,
                     org_id="thirdrail",
+                    decision_id=made.id,
                     payload={
                         "person_id": person_id,
-                        "reason": str(chosen.get("reason", "queue")),
+                        "reason": str(made.chosen.get("reason", "queue")),
+                        "decided_by": made.source,
                     },
                 )
                 continue
-            amount = int(chosen["amount_cents"])
+            amount = int(made.chosen["amount_cents"])
             seq = self._emit(
                 report,
                 "cafe.sale",
                 actor_id=person_id,
                 org_id="thirdrail",
+                decision_id=made.id,
                 payload={
                     "person_id": person_id,
                     "amount_cents": amount,
                     "pos_down": pos_down,
+                    "decided_by": made.source,
                 },
             )
             txn = self._post(

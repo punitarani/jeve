@@ -168,7 +168,10 @@ def test_economics_reports_measured_spend(client: TestClient) -> None:
     assert body["sim_days"] >= 1
     assert body["counts"]["persons"] == 424
     # A rules-only run costs nothing, and saying so is the honest answer.
-    assert body["spend_usd"] >= 0.0
+    assert body["spend_usd"] == 0.0
+    assert body["model_calls"] == 0
+    assert body["decisions_by_model"] == []
+    assert body["counts"]["modelled"] == 0
     assert "usd_per_100_persons" in body["per_sim_day"]
 
 

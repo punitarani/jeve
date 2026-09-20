@@ -110,16 +110,40 @@ export const PersonDecisions = z.object({
   decisions: z.array(Decision),
 });
 
+const PerSimDay = z.object({
+  usd: z.number(),
+  usd_per_100_persons: z.number(),
+  usd_per_10_orgs: z.number(),
+  usd_per_1000_events: z.number(),
+});
+
 export const Economics = z.object({
   spend_usd: z.number(),
+  spend_is_estimated_calls: z.number().int(),
   model_calls: z.number().int(),
+  input_tokens: z.number().int(),
   sim_days: z.number(),
   counts: z.record(z.string(), z.number().int()),
-  per_sim_day: z.object({
-    usd_per_100_persons: z.number(),
-    usd_per_10_orgs: z.number(),
-    usd_per_1000_events: z.number(),
-  }),
+  per_sim_day: PerSimDay,
+  without_dedup: z.object({ spend_usd: z.number(), per_sim_day: PerSimDay }),
+  dedup_rate: z.number(),
+  unpriced_decisions: z.number().int(),
+  decisions_by_model: z.array(
+    z.object({
+      model: z.string(),
+      decisions: z.number().int(),
+      calls: z.number().int(),
+    }),
+  ),
+  by_kind: z.array(
+    z.object({
+      kind: z.string(),
+      source: z.string(),
+      decisions: z.number().int(),
+      calls: z.number().int(),
+      usd: z.number(),
+    }),
+  ),
   note: z.string(),
 });
 export type Economics = z.infer<typeof Economics>;
