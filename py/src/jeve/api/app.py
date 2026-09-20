@@ -283,7 +283,8 @@ def economics() -> dict[str, object]:
             "       (SELECT count(*) FROM orgs) AS orgs, "
             "       (SELECT count(*) FROM events) AS events, "
             "       (SELECT count(*) FROM decisions) AS decisions, "
-            "       (SELECT count(*) FROM decisions WHERE source <> 'rules') AS modelled"
+            "       (SELECT count(*) FROM decisions WHERE source <> 'rules') "
+            "         AS modelled"
         ).fetchone()
         meta = conn.execute("SELECT sim_time, tick_seq FROM sim_meta").fetchone()
 
