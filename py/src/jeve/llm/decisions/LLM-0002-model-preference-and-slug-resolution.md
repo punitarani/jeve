@@ -1,13 +1,13 @@
 ---
 id: LLM-0002
 title: Resolve model slugs against the live catalogue and fail loudly
-status: accepted
+status: superseded
 date: 2026-09-20
 deciders: ["punitarani"]
 scope: ["py/src/jeve/llm/catalog.py"]
 tags: ["openrouter", "models", "configuration"]
 supersedes: []
-superseded-by: null
+superseded-by: "LLM-0005"
 relates-to: ["LLM-0001", "DECIDE-0002"]
 confirmation: "cd py && uv run pytest tests/test_catalog.py"
 ---

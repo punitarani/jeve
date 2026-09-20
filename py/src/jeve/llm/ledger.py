@@ -94,6 +94,20 @@ class SpendLedger:
     def __init__(self, path: Path, *, checkpoint: Path | None = None) -> None:
         self._path = path
         self._checkpoint = checkpoint
+        self._reset()
+
+    def _reset(self) -> None:
+        """Forget everything folded so far; the next read starts from byte 0."""
+
+        self._offset = 0
+        self._inode: int | None = None
+        self._settled = 0.0
+        self._calls = 0
+        self._estimated = 0
+        self._open: dict[str, float] = {}
+        self._baseline: float | None = None
+        self._remote: float | None = None
+        self._remote_at: float | None = None
 
     @property
     def path(self) -> Path:
@@ -102,57 +116,82 @@ class SpendLedger:
     def _append_locked(self, entry: dict[str, object]) -> None:
         entry.setdefault("ts", time.time())
         entry.setdefault("pid", os.getpid())
-        with open(self._path, "a") as handle:
-            handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        with open(self._path, "ab+") as handle:
+            # A process killed mid-write leaves a torn final line. Appending
+            # straight onto it would weld this entry to the fragment and lose
+            # both, so close the fragment off first.
+            size = handle.seek(0, os.SEEK_END)
+            if size > 0:
+                handle.seek(size - 1)
+                if handle.read(1) != b"\n":
+                    handle.write(b"\n")
+            handle.write((json.dumps(entry, sort_keys=True) + "\n").encode())
+
+    def _fold(self, entry: dict[str, object]) -> None:
+        kind = entry.get("kind")
+        if kind == "reserve":
+            self._open[str(entry["id"])] = float(str(entry["amount_usd"]))
+        elif kind == "settle":
+            self._open.pop(str(entry["id"]), None)
+            self._settled += float(str(entry["amount_usd"]))
+            self._calls += 1
+            if entry.get("estimated"):
+                self._estimated += 1
+        elif kind == "release":
+            self._open.pop(str(entry["id"]), None)
+        elif kind == "baseline":
+            self._baseline = float(str(entry["amount_usd"]))
+        elif kind == "remote":
+            self._remote = float(str(entry["amount_usd"]))
+            self._remote_at = float(str(entry["ts"]))
 
     def _read_locked(self) -> Spend:
-        if not self._path.exists():
+        """Fold in whatever was appended since the last read.
+
+        Re-parsing the whole file on every call is quadratic in the number of
+        calls, and a night of decisions is tens of thousands of them. The file
+        stays the source of truth; this process only remembers how far into it
+        it has read. Every writer holds the same lock, so "up to the last
+        newline" is a consistent prefix.
+        """
+
+        try:
+            stat = os.stat(self._path)
+        except FileNotFoundError:
+            self._reset()
             return Spend(0.0, 0.0, 0, 0, None, None, None)
 
-        settled = 0.0
-        calls = 0
-        estimated = 0
-        open_reservations: dict[str, float] = {}
-        baseline: float | None = None
-        remote: float | None = None
-        remote_at: float | None = None
+        if stat.st_ino != self._inode or stat.st_size < self._offset:
+            # Replaced or truncated underneath us: start again from the top.
+            self._reset()
+            self._inode = stat.st_ino
 
-        with open(self._path) as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
+        if stat.st_size > self._offset:
+            with open(self._path, "rb") as handle:
+                handle.seek(self._offset)
+                chunk = handle.read()
+            complete = chunk[: chunk.rfind(b"\n") + 1]
+            self._offset += len(complete)
+            for raw in complete.splitlines():
+                if not raw.strip():
                     continue
                 try:
-                    entry = json.loads(line)
+                    entry = json.loads(raw)
                 except json.JSONDecodeError:
-                    # A torn final line from a killed process. Everything
-                    # before it still counts.
+                    # A torn line from a killed process. Everything around it
+                    # still counts.
                     continue
-                kind = entry.get("kind")
-                if kind == "reserve":
-                    open_reservations[str(entry["id"])] = float(entry["amount_usd"])
-                elif kind == "settle":
-                    open_reservations.pop(str(entry["id"]), None)
-                    settled += float(entry["amount_usd"])
-                    calls += 1
-                    if entry.get("estimated"):
-                        estimated += 1
-                elif kind == "release":
-                    open_reservations.pop(str(entry["id"]), None)
-                elif kind == "baseline":
-                    baseline = float(entry["amount_usd"])
-                elif kind == "remote":
-                    remote = float(entry["amount_usd"])
-                    remote_at = float(entry["ts"])
+                if isinstance(entry, dict):
+                    self._fold(entry)
 
         return Spend(
-            settled_usd=settled,
-            reserved_usd=sum(open_reservations.values()),
-            calls=calls,
-            estimated_calls=estimated,
-            baseline_usd=baseline,
-            remote_usd=remote,
-            remote_checked_at=remote_at,
+            settled_usd=self._settled,
+            reserved_usd=sum(self._open.values()),
+            calls=self._calls,
+            estimated_calls=self._estimated,
+            baseline_usd=self._baseline,
+            remote_usd=self._remote,
+            remote_checked_at=self._remote_at,
         )
 
     def read(self) -> Spend:

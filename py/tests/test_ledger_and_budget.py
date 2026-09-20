@@ -205,3 +205,69 @@ def test_remote_recheck_is_due_after_fifteen_minutes(tmp_path: Path) -> None:
     assert checked_at is not None
     assert guard.needs_remote_check(now=checked_at + 60) is False
     assert guard.needs_remote_check(now=checked_at + 15 * 60 + 1) is True
+
+
+def test_an_entry_after_a_torn_line_is_not_welded_to_it(tmp_path: Path) -> None:
+    """A killed process leaves half a line. Appending straight onto it turns
+    the *next* real entry into garbage too, and that one was real money."""
+
+    ledger = _ledger(tmp_path)
+    ledger.reserve("a", 1.0, purpose="gate", model="m")
+    ledger.settle("a", 0.25, estimated=False, model="m", outcome="ok")
+    with open(ledger.path, "a") as handle:
+        handle.write('{"kind": "settle", "id": "torn", "amount_')
+
+    ledger.reserve("b", 1.0, purpose="gate", model="m")
+    ledger.settle("b", 0.50, estimated=False, model="m", outcome="ok")
+
+    assert ledger.read().settled_usd == pytest.approx(0.75)
+    assert _ledger(tmp_path).read().settled_usd == pytest.approx(0.75)
+
+
+def test_two_ledger_objects_on_one_file_agree(tmp_path: Path) -> None:
+    """The sim and a script share the file. Each remembers only how far it has
+    read, so each must see what the other wrote since."""
+
+    sim, script = _ledger(tmp_path), _ledger(tmp_path)
+    sim.reserve("s1", 1.0, purpose="gate", model="m")
+    assert script.read().reserved_usd == pytest.approx(1.0)
+
+    script.reserve("x1", 2.0, purpose="gate", model="m")
+    script.settle("x1", 0.1, estimated=False, model="m", outcome="ok")
+    sim.settle("s1", 0.2, estimated=False, model="m", outcome="ok")
+
+    for view in (sim.read(), script.read(), _ledger(tmp_path).read()):
+        assert view.settled_usd == pytest.approx(0.3)
+        assert view.reserved_usd == 0.0
+        assert view.calls == 2
+
+
+def test_reading_does_not_rescan_the_file(tmp_path: Path) -> None:
+    """Quadratic reads were minutes of blocked event loop at tonight's volume.
+    Asserted on bytes read, not on a stopwatch."""
+
+    ledger = _ledger(tmp_path)
+    for index in range(200):
+        ledger.reserve(f"c{index}", 0.001, purpose="gate", model="m")
+        ledger.settle(f"c{index}", 0.0001, estimated=False, model="m", outcome="ok")
+
+    before = ledger._offset
+    ledger.reserve("last", 0.001, purpose="gate", model="m")
+    grew_by = ledger._offset - before
+
+    assert before > 20_000
+    assert grew_by < 300
+    assert ledger.read().calls == 200
+
+
+def test_a_replaced_ledger_file_is_read_from_the_top(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    ledger.reserve("a", 1.0, purpose="gate", model="m")
+    ledger.settle("a", 0.9, estimated=False, model="m", outcome="ok")
+    assert ledger.read().settled_usd == pytest.approx(0.9)
+
+    ledger.path.unlink()
+    assert ledger.read().settled_usd == 0.0
+    ledger.reserve("b", 1.0, purpose="gate", model="m")
+    ledger.settle("b", 0.1, estimated=False, model="m", outcome="ok")
+    assert ledger.read().settled_usd == pytest.approx(0.1)

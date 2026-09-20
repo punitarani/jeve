@@ -56,3 +56,9 @@ modify it.
 adapter behind the same `DecisionModel` port, the economics gate is reported as
 missed with the reason, and the Jev comparison moves to a later session. That is
 a finding, not a workaround — it will be labelled as such in `HANDOFF.md`.
+
+**Resolved 2026-09-20 ~11:05 PDT.** Punit added `typesafe` to the allowlist.
+`make smoke` now returns all three primitives with distributions (206 ms,
+$0.000023, 548 input tokens), and `make providers` reaches Jev and all five
+escape-hatch models — see `ops/providers.md`. The status line above is left as
+written; this file is append-only.

@@ -13,14 +13,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, Self
 
 import httpx
 
 from jeve.config import Settings, load_settings
-from jeve.errors import ResponseShapeError, TransportError
+from jeve.errors import (
+    BudgetExceededError,
+    ModelResolutionError,
+    ResponseShapeError,
+    TransportError,
+)
 from jeve.llm.budget import BudgetGuard
 from jeve.llm.catalog import (
     DECISION_PREFERENCE,
@@ -64,7 +71,15 @@ MIN_RESERVATION_USD = 0.0005
 # Statuses where the request was rejected before any inference happened, so the
 # reservation can be given back. Anything else settles at the reserved amount:
 # we cannot prove we were not billed.
-UNBILLED_STATUSES = frozenset({400, 401, 403, 404, 422})
+UNBILLED_STATUSES = frozenset({400, 401, 403, 404, 422, 429})
+
+# Worth another attempt. 429 is rejected before inference, so its reservation is
+# released; a 5xx or a dropped connection may have been billed, so that attempt
+# settles at worst case and the retry reserves afresh.
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+MAX_ATTEMPTS = 4
+BACKOFF_BASE_S = 0.5
+BACKOFF_CAP_S = 8.0
 
 
 def _approx_tokens(payload: object) -> int:
@@ -82,8 +97,17 @@ class Gateway:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 60.0,
         max_concurrency: int = 8,
+        run_cap_usd: float | None = None,
+        backoff_base_s: float = BACKOFF_BASE_S,
     ) -> None:
         self._settings = settings or load_settings()
+        self._run_cap_usd = (
+            self._settings.run_cap_usd if run_cap_usd is None else run_cap_usd
+        )
+        self._run_spent_usd = 0.0
+        self._run_reserved_usd = 0.0
+        self._backoff_base_s = backoff_base_s
+        self._generative: tuple[str, ...] = ()
         self._ledger = SpendLedger(
             self._settings.ledger_path, checkpoint=self._settings.spend_path
         )
@@ -119,14 +143,37 @@ class Gateway:
         await self.aclose()
 
     async def start(self) -> ModelCatalog:
-        """Resolve slugs and take a spend baseline. Fails loudly, early."""
+        """Resolve slugs and take a spend baseline. Fails loudly, early.
+
+        Resolution is per path (LLM-0005). The decision model is the product,
+        so an unknown decision slug is fatal here. Prose is a projection: a
+        retired generative slug drops out of the preference list, and only a
+        list that resolves to nothing is an error — raised by `complete`, when
+        prose is actually asked for, not at startup where it would take the
+        decision path down with it.
+        """
 
         catalog = await ModelCatalog.fetch(self._client)
-        catalog.resolve_all(GENERATIVE_PREFERENCE)
         catalog.resolve_all(DECISION_PREFERENCE)
+        self._generative = tuple(s for s in GENERATIVE_PREFERENCE if s in catalog)
         self._catalog = catalog
         await self._sync_remote(force=True)
         return catalog
+
+    @property
+    def generative_models(self) -> tuple[str, ...]:
+        """The escape-hatch models that exist right now, in preference order."""
+
+        if not self._generative:
+            raise ModelResolutionError(
+                "no generative model resolved; tried: "
+                + ", ".join(GENERATIVE_PREFERENCE)
+            )
+        return self._generative
+
+    @property
+    def run_spent_usd(self) -> float:
+        return self._run_spent_usd
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -221,6 +268,31 @@ class Gateway:
             cost_is_estimated=False,
         )
 
+    def _check_run_cap(self, worst_case_usd: float) -> None:
+        """Refuse a call that could take this process past its own cap.
+
+        The ladder protects the night; this protects one run from a loop. It
+        counts in-flight reservations for the same reason the ladder does.
+        """
+
+        projected = self._run_spent_usd + self._run_reserved_usd + worst_case_usd
+        if projected > self._run_cap_usd:
+            raise BudgetExceededError(
+                f"run cap reached: ${self._run_spent_usd:.4f} spent by this "
+                f"process, cap ${self._run_cap_usd:.2f} (JEVE_RUN_CAP_USD)."
+            )
+
+    async def _backoff(self, attempt: int, retry_after: str | None) -> None:
+        delay = min(BACKOFF_CAP_S, self._backoff_base_s * (2**attempt))
+        if retry_after is not None:
+            try:
+                delay = max(delay, min(BACKOFF_CAP_S, float(retry_after)))
+            except ValueError:
+                pass
+        # Full jitter on top: eight workers hitting a limit together must not
+        # come back together.
+        await asyncio.sleep(delay + random.uniform(0.0, delay))
+
     async def _post(
         self,
         path: str,
@@ -231,69 +303,119 @@ class Gateway:
         worst_case_usd: float,
         purpose: Purpose,
     ) -> tuple[dict[str, Any], float]:
-        """Reserve, issue, settle. Returns the payload and its latency."""
+        """Reserve, issue, settle — with bounded retries.
 
+        Each attempt is its own reservation, so every attempt is accounted for
+        on its own terms and the ledger never shows one id settling twice.
+        """
+
+        last_error: TransportError | None = None
+        for attempt in range(MAX_ATTEMPTS):
+            attempt_id = call_id if attempt == 0 else f"{call_id}-r{attempt}"
+            try:
+                return await self._attempt(
+                    path,
+                    body,
+                    call_id=attempt_id,
+                    model=model,
+                    worst_case_usd=worst_case_usd,
+                    purpose=purpose,
+                )
+            except _Retryable as retry:
+                last_error = retry.error
+                if attempt + 1 < MAX_ATTEMPTS:
+                    await self._backoff(attempt, retry.retry_after)
+        assert last_error is not None
+        raise last_error
+
+    async def _attempt(
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        call_id: str,
+        model: str,
+        worst_case_usd: float,
+        purpose: Purpose,
+    ) -> tuple[dict[str, Any], float]:
         await self._sync_remote()
+        self._check_run_cap(worst_case_usd)
         self._guard.authorise(
             call_id, worst_case_usd=worst_case_usd, purpose=purpose, model=model
         )
+        self._run_reserved_usd += worst_case_usd
 
         started = time.perf_counter()
         try:
-            async with self._permits:
-                response = await self._client.post(path, json=body)
-        except httpx.HTTPError as error:
-            # Unknown whether it was billed. Keep the reservation as spend.
-            self._ledger.settle(
-                call_id,
-                worst_case_usd,
-                estimated=True,
-                model=model,
-                outcome=f"transport-error: {type(error).__name__}",
-            )
-            raise TransportError(f"{path} failed: {error}") from error
-
-        latency = time.perf_counter() - started
-
-        if response.status_code != 200:
-            if response.status_code in UNBILLED_STATUSES:
-                self._ledger.release(
-                    call_id, reason=f"http-{response.status_code}-unbilled"
-                )
-            else:
+            try:
+                async with self._permits:
+                    response = await self._client.post(path, json=body)
+            except httpx.HTTPError as error:
+                # Unknown whether it was billed. Keep the reservation as spend.
                 self._ledger.settle(
                     call_id,
                     worst_case_usd,
                     estimated=True,
                     model=model,
-                    outcome=f"http-{response.status_code}",
-                    latency_s=latency,
+                    outcome=f"transport-error: {type(error).__name__}",
                 )
-            raise TransportError(
-                f"{path} returned {response.status_code}: {response.text[:400]}"
+                self._run_spent_usd += worst_case_usd
+                raise _Retryable(
+                    TransportError(f"{path} failed: {error}"), None
+                ) from error
+
+            latency = time.perf_counter() - started
+
+            if response.status_code != 200:
+                status = response.status_code
+                if status in UNBILLED_STATUSES:
+                    self._ledger.release(call_id, reason=f"http-{status}-unbilled")
+                else:
+                    self._ledger.settle(
+                        call_id,
+                        worst_case_usd,
+                        estimated=True,
+                        model=model,
+                        outcome=f"http-{status}",
+                        latency_s=latency,
+                    )
+                    self._run_spent_usd += worst_case_usd
+                failure = TransportError(
+                    f"{path} returned {status}: {response.text[:400]}"
+                )
+                if status in RETRYABLE_STATUSES:
+                    raise _Retryable(failure, response.headers.get("retry-after"))
+                raise failure
+
+            payload: dict[str, Any] = response.json()
+            usage = self._usage_from(model, payload.get("usage") or {})
+            self._ledger.settle(
+                call_id,
+                usage.cost_usd,
+                estimated=usage.cost_is_estimated,
+                model=payload.get("model") or model,
+                outcome="ok",
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                latency_s=latency,
+                provider=payload.get("provider"),
             )
+            self._run_spent_usd += usage.cost_usd
+            payload["__usage"] = usage
+            payload["__latency"] = latency
+            return payload, latency
+        finally:
+            self._run_reserved_usd -= worst_case_usd
 
-        payload: dict[str, Any] = response.json()
-        usage = self._usage_from(model, payload.get("usage") or {})
-        self._ledger.settle(
-            call_id,
-            usage.cost_usd,
-            estimated=usage.cost_is_estimated,
-            model=payload.get("model") or model,
-            outcome="ok",
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            latency_s=latency,
-            provider=payload.get("provider"),
-        )
-        payload["__usage"] = usage
-        payload["__latency"] = latency
-        return payload, latency
-
-    async def decide(
+    async def decide_raw(
         self, request: DecisionRequest, *, purpose: Purpose = "gate"
-    ) -> DecisionResponse:
-        """Ask Jev a set of typed questions about one state."""
+    ) -> RawDecision:
+        """Issue a decision request and return the response *unparsed*.
+
+        The recorder stores this before anyone interprets it. A response we
+        paid for and then failed to parse must not be paid for again on retry,
+        and the stored bytes are what a replay reads back.
+        """
 
         card = self.catalog.get(request.model)
         body: dict[str, Any] = {
@@ -326,27 +448,22 @@ class Gateway:
             worst_case_usd=worst_case,
             purpose=purpose,
         )
+        usage: Usage = payload.pop("__usage")
+        payload.pop("__latency", None)
+        return RawDecision(payload=payload, usage=usage, latency_s=latency)
 
-        raw_answers = payload.get("answers")
-        if not isinstance(raw_answers, dict) or not raw_answers:
-            raise ResponseShapeError(
-                f"decisions response carried no answers: {str(payload)[:300]}"
-            )
-        answers: dict[str, Answer] = {}
-        for key, value in raw_answers.items():
-            answers[key] = _parse_answer(value)
-        missing = set(request.questions) - set(answers)
-        if missing:
-            raise ResponseShapeError(f"no answer for questions: {sorted(missing)}")
+    async def decide(
+        self, request: DecisionRequest, *, purpose: Purpose = "gate"
+    ) -> DecisionResponse:
+        """Ask Jev a set of typed questions about one state."""
 
-        usage: Usage = payload["__usage"]
-        return DecisionResponse(
-            model=str(payload.get("model") or request.model),
-            answers=answers,
-            usage=usage,
-            provider=payload.get("provider"),
-            request_id=payload.get("id"),
-            latency_s=latency,
+        raw = await self.decide_raw(request, purpose=purpose)
+        return parse_decision(
+            raw.payload,
+            expected=set(request.questions),
+            fallback_model=request.model,
+            usage=raw.usage,
+            latency_s=raw.latency_s,
         )
 
     async def complete(
@@ -415,6 +532,55 @@ class Gateway:
             request_id=payload.get("id"),
             latency_s=latency,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class RawDecision:
+    """A decisions response exactly as it arrived, plus what it cost."""
+
+    payload: dict[str, Any]
+    usage: Usage
+    latency_s: float
+
+
+class _Retryable(Exception):
+    """Internal: this attempt failed in a way worth repeating."""
+
+    def __init__(self, error: TransportError, retry_after: str | None) -> None:
+        super().__init__(str(error))
+        self.error = error
+        self.retry_after = retry_after
+
+
+def parse_decision(
+    payload: dict[str, Any],
+    *,
+    expected: set[str],
+    fallback_model: str,
+    usage: Usage,
+    latency_s: float = 0.0,
+) -> DecisionResponse:
+    """Interpret a stored or fresh decisions payload. Pure: no I/O, no spend."""
+
+    raw_answers = payload.get("answers")
+    if not isinstance(raw_answers, dict) or not raw_answers:
+        raise ResponseShapeError(
+            f"decisions response carried no answers: {str(payload)[:300]}"
+        )
+    answers: dict[str, Answer] = {
+        key: _parse_answer(value) for key, value in raw_answers.items()
+    }
+    missing = expected - set(answers)
+    if missing:
+        raise ResponseShapeError(f"no answer for questions: {sorted(missing)}")
+    return DecisionResponse(
+        model=str(payload.get("model") or fallback_model),
+        answers=answers,
+        usage=usage,
+        provider=payload.get("provider"),
+        request_id=payload.get("id"),
+        latency_s=latency_s,
+    )
 
 
 def _parse_answer(value: object) -> Answer:

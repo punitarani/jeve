@@ -7,7 +7,7 @@ from jeve.llm.catalog import (
     ModelCard,
     ModelCatalog,
 )
-from jeve.llm.gateway import Gateway
+from jeve.llm.gateway import Gateway, RawDecision, parse_decision
 from jeve.llm.ledger import Spend, SpendLedger
 from jeve.llm.protocol import (
     Answer,
@@ -51,9 +51,11 @@ __all__ = [
     "ProviderPrefs",
     "Purpose",
     "Question",
+    "RawDecision",
     "Score",
     "ScoreAnswer",
     "Spend",
     "SpendLedger",
     "Usage",
+    "parse_decision",
 ]

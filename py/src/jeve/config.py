@@ -18,6 +18,9 @@ from jeve.errors import ConfigError
 EXPLORE_CEILING_USD = 12.0
 HALT_CEILING_USD = 16.0
 HARD_CEILING_USD = 20.0
+# One process may not spend more than this, whatever the ladder says. A loop
+# that re-issues the same call should cost a dollar, not the night.
+RUN_CAP_USD = 1.0
 
 
 class Settings(BaseModel):
@@ -32,6 +35,7 @@ class Settings(BaseModel):
     explore_ceiling_usd: float = EXPLORE_CEILING_USD
     halt_ceiling_usd: float = HALT_CEILING_USD
     hard_ceiling_usd: float = HARD_CEILING_USD
+    run_cap_usd: float = RUN_CAP_USD
 
     @property
     def ledger_path(self) -> Path:
@@ -83,4 +87,5 @@ def load_settings(*, ops_dir: Path | None = None) -> Settings:
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
         openrouter_base_url=base_url.rstrip("/"),
         ops_dir=root,
+        run_cap_usd=float(os.environ.get("JEVE_RUN_CAP_USD") or RUN_CAP_USD),
     )

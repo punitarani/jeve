@@ -51,6 +51,17 @@ def test_health(client: TestClient) -> None:
     assert client.get("/health").json()["ok"] is True
 
 
+def test_health_is_not_200_when_the_database_is_gone(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """e2e waits on this endpoint. A 200 here means "go", whatever the body says."""
+
+    monkeypatch.setenv("JEVE_DATABASE_URL", "postgresql://jeve:jeve@127.0.0.1:1/nope")
+    response = client.get("/health")
+    assert response.status_code == 503
+    assert response.json()["ok"] is False
+
+
 def test_state_is_one_read_with_a_cursor(client: TestClient) -> None:
     body = client.get("/state").json()
     assert body["seq"] > 0, "state must say what seq it is current as of"

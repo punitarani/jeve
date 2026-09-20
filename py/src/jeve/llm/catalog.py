@@ -19,11 +19,15 @@ import httpx
 
 from jeve.errors import ModelResolutionError, TransportError
 
-# The preference order, as chosen. Qwen is deliberately absent.
+# The escape-hatch order, as chosen (LLM-0005). Qwen is deliberately absent.
+# `deepseek-v4-pro-0813` is the dated August build; the undated
+# `deepseek/deepseek-v4-pro` still resolves, but to the April weights.
 GENERATIVE_PREFERENCE: tuple[str, ...] = (
-    "z-ai/glm-5.3-flash",
     "deepseek/deepseek-v4.1-flash",
+    "z-ai/glm-5.3-flash",
+    "google/gemini-3.8-flash",
     "openai/gpt-5.6-luna",
+    "deepseek/deepseek-v4-pro-0813",
 )
 DECISION_PREFERENCE: tuple[str, ...] = ("typesafe/jev-1.13",)
 

@@ -122,7 +122,7 @@ async def _chat(gateway: Gateway) -> tuple[bool, str]:
     try:
         chat = await gateway.complete(
             ChatRequest(
-                model=GENERATIVE_PREFERENCE[0],
+                model=gateway.generative_models[0],
                 messages=[
                     ChatMessage(
                         role="system", content="Reply with exactly one short sentence."
@@ -178,7 +178,7 @@ async def main() -> int:
         if not decisions_ok:
             print(f"     BLOCKED: {decisions_note}")
 
-        print(f"\n2/2  chat completion via {GENERATIVE_PREFERENCE[0]} ...")
+        print(f"\n2/2  chat completion via {gateway.generative_models[0]} ...")
         chat_ok, chat_note = await _chat(gateway)
         if not chat_ok:
             print(f"     BLOCKED: {chat_note}")

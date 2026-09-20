@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from psycopg import Connection
 from psycopg.rows import DictRow
 
@@ -66,13 +66,19 @@ def _max_seq(conn: Connection[DictRow]) -> int:
 
 
 @app.get("/health")
-def health() -> dict[str, object]:
+def health() -> JSONResponse:
+    """200 only when the database answers.
+
+    A wait loop polls this for a 2xx. Reporting a dead database as 200 with
+    `ok: false` in the body let a stale server pass for a healthy one.
+    """
+
     try:
         with db.connect() as conn:
             conn.execute("SELECT 1")
-        return {"ok": True}
+        return JSONResponse({"ok": True})
     except Exception as error:  # reporting any failure is this endpoint's job
-        return {"ok": False, "error": str(error)}
+        return JSONResponse({"ok": False, "error": str(error)}, status_code=503)
 
 
 @app.get("/state")

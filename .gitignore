@@ -10,6 +10,11 @@
 /ops/*
 !/ops/.gitkeep
 !/ops/README.md
+# Measurements are evidence, not state: written only by a LIVE run, and tracked
+# so a morning reader sees exactly what was measured, against which commit.
+!/ops/economics.md
+!/ops/providers.md
+!/ops/persona-probe.md
 # A nested ops/ means something resolved it against the wrong cwd. Ignored so
 # it can never be committed; `ops/` at the root is the only real one. (A bare
 # `ops/` here would also re-ignore the root one — later patterns win.)

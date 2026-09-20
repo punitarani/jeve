@@ -41,6 +41,10 @@ gen: ## Regenerate the decision index and Cursor rules
 smoke: ## One real call through the gateway, under a cent
 	$(UV) python scripts/smoke.py
 
+.PHONY: providers
+providers: ## One tiny real call per model: reachable, not merely resolvable
+	$(UV) python scripts/probe_providers.py
+
 .PHONY: spend
 spend: ## What has been spent so far
 	@test -f ops/spend.json && cat ops/spend.json || echo '{"effective_usd": 0}'
