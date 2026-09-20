@@ -54,6 +54,7 @@ export type WorldState = z.infer<typeof WorldState>;
 export const SimEvent = z.object({
   seq: z.number().int(),
   sim_time: z.number().int(),
+  tick_seq: z.number().int().optional(),
   kind: z.string(),
   actor_id: z.string().nullable(),
   org_id: z.string().nullable(),
@@ -154,3 +155,4 @@ export const ORG_COLORS: Record<string, string> = {
   ledgerline: "#5bb98c",
   thirdrail: "#e0757c",
 };
+export * from "./world";

@@ -1,4 +1,5 @@
 import { Dashboard } from "@/components/Dashboard";
+import { WorldHero } from "@/components/WorldHero";
 import { fetchEvents, fetchState } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -7,7 +8,12 @@ export default async function Page() {
   try {
     const state = await fetchState();
     const page = await fetchEvents(0, 400);
-    return <Dashboard initialState={state} initialEvents={page.events} />;
+    return (
+      <>
+        <WorldHero />
+        <Dashboard initialState={state} initialEvents={page.events} />
+      </>
+    );
   } catch (error) {
     return (
       <main style={{ padding: 32 }}>

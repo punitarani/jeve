@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import psycopg
+import psycopg.sql
 from psycopg import Connection
 from psycopg.rows import DictRow, dict_row
 
@@ -111,6 +112,81 @@ def executemany(
 
     with conn.cursor() as cursor:
         cursor.executemany(sql, params)
+
+
+# One writer per database (SIM-0001). An arbitrary constant: "jeve" in hex.
+WRITER_LOCK_KEY = 0x6A657665
+
+
+class WriterBusyError(RuntimeError):
+    """Another session holds the writer lock on this database."""
+
+
+def take_writer_lock(conn: Connection[DictRow], *, wait_s: float = 0.0) -> None:
+    """Become the one process allowed to advance or reset this world.
+
+    A session-level advisory lock: held until the connection closes, released
+    by Postgres itself if the process dies, and re-entrant within a session.
+    After a `kill -9` the dead backend can hold it for a moment until Postgres
+    notices the socket is gone, which is what `wait_s` is for — without it a
+    supervisor's immediate restart loses the race against its own corpse.
+    """
+
+    import time  # wall-clock: this is about real processes, not sim time
+
+    deadline = time.monotonic() + wait_s
+    while True:
+        row = conn.execute(
+            "SELECT pg_try_advisory_lock(%s) AS ok", (WRITER_LOCK_KEY,)
+        ).fetchone()
+        conn.commit()
+        if row is not None and row["ok"]:
+            return
+        if time.monotonic() >= deadline:
+            raise WriterBusyError(
+                f"another process is writing to {dsn().rsplit('@', 1)[-1]} — "
+                "a sim daemon is probably running. Stop it (`make sim-stop`) or "
+                "point JEVE_DATABASE_URL somewhere else."
+            )
+        time.sleep(0.25)
+
+
+def resync_sequences(conn: Connection[DictRow]) -> int:
+    """Set every serial column's sequence to max+1 (WORLD-0002).
+
+    Postgres sequences do not roll back. A tick that dies mid-transaction undoes
+    its rows but not the ids it drew, so the re-run gets different `events.seq`
+    values — and those are *content*: they appear inside `causes` and payloads.
+    With one writer it is safe to simply put the counters back. The columns are
+    read from the catalogue, so a table added later is covered without anyone
+    remembering to list it here.
+    """
+
+    owned = conn.execute(
+        """
+        SELECT s.oid::regclass::text AS sequence,
+               t.oid::regclass::text AS tbl,
+               a.attname             AS col
+        FROM pg_class s
+        JOIN pg_depend d    ON d.objid = s.oid AND d.deptype IN ('a', 'i')
+        JOIN pg_class t     ON t.oid = d.refobjid
+        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+        WHERE s.relkind = 'S' AND t.relnamespace = 'public'::regnamespace
+        ORDER BY 1
+        """
+    ).fetchall()
+    for row in owned:
+        conn.execute(
+            psycopg.sql.SQL(
+                "SELECT setval({seq}, COALESCE((SELECT max({col}) FROM {tbl}), 0) + 1, "
+                "false)"
+            ).format(
+                seq=psycopg.sql.Literal(row["sequence"]),
+                col=psycopg.sql.Identifier(row["col"]),
+                tbl=psycopg.sql.SQL(row["tbl"]),
+            )
+        )
+    return len(owned)
 
 
 def seed_path() -> Path:

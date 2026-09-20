@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 const config: NextConfig = {
   // The contracts package ships TypeScript source, not a build artefact:
   // one less build step between changing a schema and seeing it fail.
-  transpilePackages: ["@jeve/contracts"],
+  transpilePackages: ["@jeve/contracts", "@jeve/world"],
   reactStrictMode: true,
   // Next generates its own AGENTS.md/CLAUDE.md describing Next conventions.
   // This repo already tells agents where decisions live and how to read them

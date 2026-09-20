@@ -448,6 +448,200 @@ def _interpret_cafe(
     )
 
 
+# -- agent.tick: where next, and whether to stop and talk (WORLD-0003) --------
+
+ORG_WORDS: dict[str, str] = {
+    "tallybird": "the software company",
+    "halloran": "the law firm",
+    "ledgerline": "the accounting firm",
+    "thirdrail": "the cafe",
+}
+_PLACE_WORDS: dict[str, str] = {
+    "software_office": "the software company's office",
+    "law_office": "the law firm's office",
+    "accounting_office": "the accounting firm's office",
+    "cafe": "the neighbourhood cafe",
+    "plaza": "the plaza outside, by the fountain",
+}
+MOODS: tuple[str, ...] = (
+    "Stressed and short-tempered.",
+    "Flat; just getting through the day.",
+    "Content and settled.",
+    "Upbeat and energetic.",
+)
+
+
+def slot(index: int) -> str:
+    """A neutral label for someone present. Names and ids are noise to Jev,
+    and would stop two identical rooms sharing a call."""
+
+    return f"person_{chr(ord('a') + index)}"
+
+
+def describe(person: dict[str, object]) -> str:
+    role = str(person.get("role", "employee")).replace("_", " ")
+    return f"a {role} from {ORG_WORDS.get(str(person.get('org')), 'another firm')}"
+
+
+def _present(ctx: DecisionContext) -> list[dict[str, object]]:
+    present = ctx.facts.get("present")
+    return (
+        [p for p in present if isinstance(p, dict)] if isinstance(present, list) else []
+    )
+
+
+def _next_zone(org: str) -> Ask:
+    criteria: dict[str, str] = {
+        "stay": "Stay where they are for the next fifteen minutes.",
+        "own_workplace": "Go back to their own workplace and get on with work.",
+        "cafe": "Walk over to the cafe for a coffee or something to eat.",
+        "plaza": "Step out into the plaza for some air.",
+    }
+    if org != "tallybird":
+        criteria["software_office"] = (
+            "Walk over to the software company's office to speak to them in person."
+        )
+    criteria["other"] = "Something else."
+    return Ask(
+        "next_zone",
+        "P",
+        Choice(
+            instructions="Where does this person go in the next fifteen minutes?",
+            criteria=dict(criteria),
+        ),
+    )
+
+
+_INTERACT = Ask(
+    "interact",
+    "P",
+    Noul(
+        instructions=(
+            "In the next fifteen minutes, does this person stop and have a "
+            "conversation with one of the people listed as being here?"
+        ),
+        criteria=_yes_no(
+            "They stop and talk with someone who is here.",
+            "They keep to themselves.",
+        ),
+    ),
+)
+_MOOD = Ask(
+    "mood",
+    "J",
+    Score(instructions="What is this person's mood right now?", criteria=list(MOODS)),
+)
+_RAISE = Ask(
+    "raise_outage",
+    "P",
+    Noul(
+        instructions=(
+            "Does this person bring up the broken software with the software "
+            "company's employee who is here, and press them to get it fixed?"
+        ),
+        criteria=_yes_no(
+            "They raise the outage and push for it to be fixed.",
+            "They do not bring it up.",
+        ),
+    ),
+)
+
+
+def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    here = str(ctx.facts.get("here", ""))
+    at_own = here == ctx.facts.get("own_zone")
+    present = _present(ctx)
+    outage = ctx.facts.get("outage")
+
+    state: dict[str, object] = {
+        "person": f"a {ctx.role.replace('_', ' ')} at {ORG_WORDS.get(org, 'a firm')}",
+        "temperament": trait_words("sociability", ctx.traits.get("sociability")),
+        "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
+        "time": time_of_day_words(ctx.sim_time),
+        "where": (
+            "at their own workplace" if at_own else f"in {_PLACE_WORDS.get(here, here)}"
+        ),
+        "on_their_mind": (
+            f"The {outage} software has been down and it is disrupting the day."
+            if outage
+            else "Nothing unusual; an ordinary working day."
+        ),
+    }
+    asks: list[Ask] = [_next_zone(org), _MOOD]
+    if present:
+        state["who_is_here"] = {slot(i): describe(p) for i, p in enumerate(present)}
+        topics: dict[str, str] = {
+            "work": "Their own work and clients.",
+            "money": "Bills and invoices; who owes whom.",
+            "small_talk": "The weather, the weekend, nothing in particular.",
+        }
+        if outage:
+            topics = {"the_outage": "The software outage.", **topics}
+        topics["other"] = "Something else."
+        people: dict[str, str] = {
+            slot(i): describe(p).capitalize() + "." for i, p in enumerate(present)
+        }
+        people["other"] = "Nobody in particular."
+        asks += [
+            _INTERACT,
+            Ask(
+                "with_whom",
+                "P",
+                Choice(
+                    instructions=(
+                        "If this person talks to someone here, who is it most "
+                        "likely to be?"
+                    ),
+                    criteria=dict(people),
+                ),
+            ),
+            Ask(
+                "topic",
+                "P",
+                Choice(
+                    instructions="If they talk, what is it most likely about?",
+                    criteria=dict(topics),
+                ),
+            ),
+        ]
+        if ctx.facts.get("can_raise"):
+            asks.append(_RAISE)
+    else:
+        state["who_is_here"] = "Nobody they would stop to talk to."
+    return Prepared(ctx.kind, asks=tuple(asks), state=state)
+
+
+def _interpret_agent_tick(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    here = str(ctx.facts.get("here", ""))
+    own = str(ctx.facts.get("own_zone", here))
+    choice = str(got["next_zone"].value)
+    next_zone = {"stay": here, "other": here, "own_workplace": own}.get(choice, choice)
+
+    present = _present(ctx)
+    with_id: str | None = None
+    if "interact" in got and got["interact"].value:
+        picked = str(got["with_whom"].value)
+        for index, person in enumerate(present):
+            if slot(index) == picked:
+                with_id = str(person["id"])
+    return Outcome(
+        {
+            "next_zone": next_zone,
+            "interact": with_id is not None,
+            "with": with_id,
+            "topic": str(got["topic"].value) if with_id and "topic" in got else None,
+            "mood": int(str(got["mood"].value)),
+            "raise_outage": bool(
+                with_id and "raise_outage" in got and got["raise_outage"].value
+            ),
+        },
+        {},
+    )
+
+
 QUESTION_SETS: dict[str, QuestionSet] = {
     s.kind: s
     for s in (
@@ -456,5 +650,6 @@ QUESTION_SETS: dict[str, QuestionSet] = {
         QuestionSet("ticket.answer", _prepare_answer, _interpret_answer),
         QuestionSet("payment.timing", _prepare_payment, _interpret_payment),
         QuestionSet("cafe.purchase", _prepare_cafe, _interpret_cafe),
+        QuestionSet("agent.tick", _prepare_agent_tick, _interpret_agent_tick),
     )
 }

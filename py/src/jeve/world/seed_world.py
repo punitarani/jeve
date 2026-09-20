@@ -90,6 +90,8 @@ def _traits(rng: object, role: str) -> dict[str, float]:
         "patience": round(0.30 + 0.6 * draw(), 3),
         "vocality": round(0.15 + 0.6 * draw(), 3),
         "risk_appetite": round(0.15 + 0.6 * draw(), 3),
+        # Drawn last: adding a trait must not re-roll the ones before it.
+        "sociability": round(0.15 + 0.7 * draw(), 3),
     }
 
 
@@ -100,13 +102,19 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
     # TRUNCATE fail with ObjectInUse, so start from a clean slate.
     conn.commit()
 
+    # Resetting a world that a daemon is writing to destroys it mid-tick. The
+    # lock is re-entrant, so a daemon seeding its own world passes straight
+    # through; a test run against a live daemon's database fails here, loudly,
+    # instead of truncating underneath it.
+    db.take_writer_lock(conn)
+
     with conn.transaction():
         conn.execute(
             """
             TRUNCATE sim_meta, scheduled, events, orgs, persons, accounts,
                      ledger_txns, ledger_entries, modules, incidents,
                      subscriptions, tickets, invoices, payments, cafe_sales,
-                     decisions RESTART IDENTITY CASCADE
+                     decisions, positions RESTART IDENTITY CASCADE
             """
         )
         conn.execute(
@@ -198,6 +206,13 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             "INSERT INTO persons (id, org_id, name, role, kind, traits) "
             "VALUES (%s, %s, %s, %s, %s, %s)",
             persons,
+        )
+
+        # Everyone starts the run at home; the first open tick brings them in.
+        db.executemany(
+            conn,
+            "INSERT INTO positions (person_id, zone) VALUES (%s, 'home')",
+            [(row[0],) for row in persons if row[4] == "staff"],
         )
 
         # Subscriptions: the three firms use Tallybird, plus outside subscribers.

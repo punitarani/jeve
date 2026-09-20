@@ -10,6 +10,9 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
+  // One worker, files in name order: `a-world` has to run while the paced
+  // daemon is still ticking, and the rest do not care.
+  workers: 1,
   retries: 0,
   reporter: [["list"]],
   use: {

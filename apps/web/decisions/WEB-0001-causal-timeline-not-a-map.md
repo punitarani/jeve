@@ -1,13 +1,13 @@
 ---
 id: WEB-0001
 title: Show a state and event dashboard built around a causal timeline, not a map
-status: accepted
+status: superseded
 date: 2026-09-20
 deciders: ["punitarani"]
 scope: []
 tags: ["frontend", "visualisation"]
 supersedes: []
-superseded-by: null
+superseded-by: "WEB-0002"
 relates-to: ["CORE-0007"]
 confirmation: null
 ---

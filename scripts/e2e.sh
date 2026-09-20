@@ -20,7 +20,7 @@ API_PORT="${JEVE_API_PORT:-8010}"
 WEB_PORT="${JEVE_WEB_PORT:-3010}"
 DAYS="${JEVE_DAYS:-5}"
 LOGS="$(mktemp -d "${TMPDIR:-/tmp}/jeve-e2e.XXXXXX")"
-API_PID=""; WEB_PID=""
+API_PID=""; WEB_PID=""; SIM_PID=""
 
 if [ "${LIVE:-0}" = "1" ]; then
   CALLS=record
@@ -32,6 +32,7 @@ else
 fi
 
 cleanup() {
+  [ -n "$SIM_PID" ] && kill "$SIM_PID" 2>/dev/null || true
   [ -n "$WEB_PID" ] && kill "$WEB_PID" 2>/dev/null || true
   [ -n "$API_PID" ] && kill "$API_PID" 2>/dev/null || true
   # `pnpm` and `uv run` are wrappers: killing them orphans the server they
@@ -76,8 +77,14 @@ say "3/6  offline checks"
 make lint types test decisions
 
 say "4/6  the world, decided by Jev (${CALLS})"
-"${UVRUN[@]}" python scripts/run_fixture.py --days "$DAYS" --policy jev \
-  --calls "$CALLS" --stats "$LOGS/run.json" | tee "$LOGS/fixture.log"
+# Flat out to Friday lunchtime, when people are out and about. The last
+# afternoon is left for a *paced* daemon to run while the browser watches, so
+# "the hero advances on its own" is tested against a process that is really
+# ticking. Same loop, same horizon: `--until` is what lets a wall-clock process
+# and its replay end in the same place.
+PACED_FROM=$(( 4 * 86400 + 13 * 3600 ))
+"${UVRUN[@]}" python -m jeve.sim --seed-world --until "$PACED_FROM" --day-minutes 0 \
+  --policy jev --calls "$CALLS" --stats "$LOGS/run-1.json" --verbose | tee "$LOGS/fixture.log"
 
 say "5/6  api + web + browser flow"
 uv run --directory py uvicorn jeve.api.app:app --host 127.0.0.1 --port "$API_PORT" \
@@ -102,7 +109,21 @@ for _ in $(seq 1 60); do
 done
 curl -sf "http://localhost:${WEB_PORT}/" >/dev/null || { tail -30 "$LOGS/web.log"; exit 1; }
 
+# The last afternoon, at four real seconds a tick, while the browser looks on.
+"${UVRUN[@]}" python -m jeve.sim --until-day "$DAYS" --day-minutes 6.4 \
+  --policy jev --calls "$CALLS" --stats "$LOGS/run-2.json" --verbose \
+  > "$LOGS/daemon.log" 2>&1 &
+SIM_PID=$!
+
 JEVE_WEB_URL="http://localhost:${WEB_PORT}" pnpm --filter @jeve/web exec playwright test
+
+# The report is about the whole fixture, so let the daemon reach its horizon.
+for _ in $(seq 1 180); do kill -0 "$SIM_PID" 2>/dev/null || break; sleep 1; done
+if kill -0 "$SIM_PID" 2>/dev/null; then
+  echo "the paced daemon did not reach its horizon"; tail -20 "$LOGS/daemon.log"; exit 1
+fi
+wait "$SIM_PID" || { echo "the paced daemon failed"; tail -20 "$LOGS/daemon.log"; exit 1; }
+tail -4 "$LOGS/daemon.log"
 
 say "6/6  measured economics"
 # Only a live run writes the tracked report. A replay reproduces the same
@@ -113,7 +134,8 @@ REPORT="ops/economics.replay.md"
 [ "$CALLS" = "record" ] && REPORT="ops/economics.md"
 set +e
 uv run --directory py python scripts/economics.py \
-  --api "http://127.0.0.1:${API_PORT}" --stats "$LOGS/run.json" > "$REPORT"
+  --api "http://127.0.0.1:${API_PORT}" \
+  --stats "$LOGS/run-1.json" --stats "$LOGS/run-2.json" > "$REPORT"
 VERDICT=$?
 set -e
 cat "$REPORT"

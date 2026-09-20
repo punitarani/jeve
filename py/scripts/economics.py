@@ -26,11 +26,24 @@ DAILY_CAP_USD = 10.00
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default="http://127.0.0.1:8000")
-    parser.add_argument("--stats", type=Path, help="call statistics from the run")
+    parser.add_argument(
+        "--stats",
+        type=Path,
+        action="append",
+        default=[],
+        help="call statistics from a sim process; repeat for a run made of several",
+    )
     args = parser.parse_args()
+    parts = [json.loads(p.read_text()) for p in args.stats if p.exists()]
     stats = (
-        json.loads(args.stats.read_text())
-        if args.stats is not None and args.stats.exists()
+        {
+            "mode": parts[0]["mode"],
+            **{
+                key: sum(part[key] for part in parts)
+                for key in ("asked", "from_cache", "live_calls", "live_usd")
+            },
+        }
+        if parts
         else None
     )
 

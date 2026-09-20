@@ -1,0 +1,16 @@
+{
+  "name": "@jeve/world",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@jeve/contracts": "workspace:*",
+    "three": "0.186.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/three": "0.186.0"
+  }
+}

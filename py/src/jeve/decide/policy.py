@@ -186,6 +186,57 @@ class RulesPolicy:
         draw = _uniform(rng)
         return {"file": draw < vocality}, {"file": draw}
 
+    def _agent_tick(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """Where next, and whether to stop and talk. Null model N1 for space.
+
+        Always takes the same five draws in the same order, whatever branch is
+        taken, so a change to one rule cannot shift the luck of another.
+        """
+
+        go, talk, who, about, push = (_uniform(rng) for _ in range(5))
+        here = str(ctx.facts.get("here", ""))
+        own = str(ctx.facts.get("own_zone", here))
+        present = ctx.facts.get("present")
+        people = (
+            [p for p in present if isinstance(p, dict)]
+            if isinstance(present, list)
+            else []
+        )
+        outage = bool(ctx.facts.get("outage"))
+        hour = (ctx.sim_time % 86400) // 3600
+        lunch = 12 <= hour < 14
+
+        if here != own:
+            next_zone = own if go < 0.5 else here
+        elif ctx.facts.get("org") == "thirdrail":
+            next_zone = here  # someone has to mind the counter
+        else:
+            cafe = 0.25 if lunch else 0.04
+            next_zone = "cafe" if go < cafe else "plaza" if go < cafe + 0.04 else here
+
+        sociability = _num(ctx.traits.get("sociability"), 0.5)
+        with_id: str | None = None
+        if people and talk < 0.6 * sociability:
+            with_id = str(people[int(who * len(people))]["id"])
+        topic = None
+        if with_id is not None:
+            topic = "the_outage" if outage and about < 0.6 else "small_talk"
+        vocality = _num(ctx.traits.get("vocality"), 0.4)
+        raised = bool(with_id and ctx.facts.get("can_raise") and push < vocality)
+        return (
+            {
+                "next_zone": next_zone,
+                "interact": with_id is not None,
+                "with": with_id,
+                "topic": topic,
+                "mood": 1 if outage else 2,
+                "raise_outage": raised,
+            },
+            {"go": go, "talk": talk, "who": who, "about": about, "push": push},
+        )
+
 
 def _num(value: object, default: float) -> float:
     """Facts and traits come back from JSONB as `object`."""

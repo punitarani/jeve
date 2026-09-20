@@ -134,7 +134,7 @@ class Recorder:
             "cost_estimated": cost_estimated,
             "latency_s": round(latency_s, 4),
         }
-        inserted = _insert(self._connection(), row)
+        inserted = insert_call(self._connection(), row)
         self.stats.live_calls += 1
         self.stats.live_cost_usd += cost_usd
         if inserted and self._cassette is not None:
@@ -149,7 +149,9 @@ class Recorder:
         self.stats.by_kind[kind] = self.stats.by_kind.get(kind, 0) + 1
 
 
-def _insert(conn: Connection[DictRow], row: dict[str, Any]) -> bool:
+def insert_call(conn: Connection[DictRow], row: dict[str, Any]) -> bool:
+    """Keep one model response. First writer wins. True if this row was new."""
+
     cursor = conn.execute(
         "INSERT INTO model_calls (hash, kind, model, provider, request, response, "
         "input_tokens, output_tokens, cost_usd, cost_estimated, latency_s) "
@@ -186,7 +188,7 @@ def load_cassette(conn: Connection[DictRow], path: Path) -> int:
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue  # a torn final line from a killed recording run
-            added += 1 if _insert(conn, row) else 0
+            added += 1 if insert_call(conn, row) else 0
     return added
 
 

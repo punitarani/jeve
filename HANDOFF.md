@@ -4,6 +4,66 @@
 > gate, newest first. The session-1 handoff follows unchanged below them, and
 > the whole file is rewritten in that format at the end of the night.
 
+## Status — 2026-09-20 14:35 PDT — space, the voxel town, and kill -9 are in
+
+**The wake-up definition of done is met.** `make e2e` from this tree brings up
+Postgres, the sim daemon, the API and the web app; the hero shows voxel people
+moving between four buildings and advancing on its own; clicking a person at
+`/world` shows the distribution Jev returned for their last decision; and the
+cascade query finds events caused by a spatial encounter.
+
+- **Space is load-bearing (WORLD-0003).** Six zones, A* over a town built in
+  code, one `agent.tick` Jev call per person per open tick. In the recorded run
+  a junior associate at Halloran & Pike *walked to the software office* on
+  Thursday and pressed Tallybird's support about invoicing: `encounter` →
+  `ticket.escalated` (1,005 minutes saved) → `incident.ended` → 24 ×
+  `invoice.issued`, every link decided by Jev. With encounters switched off the
+  same seed issues those invoices later and blocks more runs;
+  `tests/test_space.py` asserts both arms.
+- **Voxel town (WEB-0002).** `@jeve/world`: a GL-free scene model with three.js
+  as a view over it. Hero on `/`, explorer at `/world` (pan, zoom, click a
+  person, click a building, typed-topic speech bubbles in the viewport only).
+  Six browser specs, none by screenshot. Headless Chromium here *does* get WebGL
+  (SwiftShader) and the first spec records which renderer it got.
+- **kill -9 is proven, and it found a real bug (WORLD-0002).** A Jev-replay run
+  SIGKILLed three times mid-transaction and restarted is byte-identical across
+  13 tables, `seq`, ids and `causes` included. Writing that test showed that
+  "one transaction per tick" had been **one transaction per sim-day**: in
+  psycopg 3, `conn.transaction()` inside an implicit transaction is a savepoint.
+  Nothing was committed until the night skip, so a kill lost the day and a
+  second session saw nothing until nightfall. Invisible to every earlier test,
+  because a writer always sees its own rows.
+- **`make sim` (SIM-0001).** One run loop for fixture and daemon, `--until` for
+  replayability, an advisory lock for single-writer, a governor that pauses at
+  `JEVE_DAILY_BUDGET_USD`. Nights are compressed 10x, which departs from "one
+  sim-day per 24 real minutes" — the record says why.
+- **Dialogue is a projection (GEN-0001).** "imagine what was said" on a clicked
+  encounter renders 2–4 lines from the first reachable escape-hatch model,
+  cached by content hash, imported by nothing that computes the world — and
+  `tests/test_layering.py` walks the AST to keep it so (the test CORE-0006
+  promised). Verified live once: $0.00016. DeepSeek V4.1 Flash did not return
+  usable JSON and the chain fell through to GLM 5.3 Flash, as designed.
+- Spend so far tonight: about $0.06 of $20.
+
+Things that cost time, for the record:
+
+1. **OrbStack's Docker engine wedged after the Mac slept** (~35 minutes lost).
+   `docker ps` hung while `orbctl status` said Running; `orbctl stop && orbctl
+   start` fixed it. I restarted it without asking because nothing of anyone's
+   was reachable in that state; your Supabase stack came back by itself, and
+   `jeve-postgres` needed `make db-up` (it has no restart policy).
+2. A test connection that only reads must be autocommit, or its open
+   transaction blocks the daemon's `TRUNCATE` for ever. That was a ten-minute
+   hang, not a failure.
+3. **Open, unexplained:** twice, on the second page load after a fresh `next
+   start`, the ~1 MB three.js chunk never finished downloading and the page did
+   not hydrate. Not reproducible on demand; the machine was at load average
+   15-30 from another job at the time. The spec reloads once and *annotates the
+   test when it had to*, so it is recorded rather than hidden.
+
+`ops/economics.md` is stale relative to this commit (it was measured before
+space existed); a replay says so out loud. It is re-measured live at the end.
+
 ## Status — 2026-09-20 11:40 PDT — Phase 0 and Phase 1 gates passed
 
 **Jev is the decision layer, measured, and the persona question is answered.**

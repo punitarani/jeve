@@ -67,6 +67,14 @@ db-down: ## Stop Postgres, keep the data
 fixture: ## Run the golden fixture. POLICY=jev|rules CALLS=replay|record
 	$(UV) python scripts/run_fixture.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS))
 
+.PHONY: sim
+sim: ## The ever-running world: Jev live, paced, budget-governed, restart-safe
+	$(UV) python -m jeve.sim --calls $(or $(CALLS),record) $(if $(POLICY),--policy $(POLICY)) --verbose
+
+.PHONY: sim-stop
+sim-stop: ## Ask the daemon to stop at the end of its current tick
+	-pkill -TERM -f "jeve.sim" && echo "asked it to stop" || echo "no daemon running"
+
 .PHONY: api
 api: ## Run the API on :8000
 	cd py && uv run uvicorn jeve.api.app:app --host 127.0.0.1 --port 8000

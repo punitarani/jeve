@@ -12,6 +12,8 @@ what is possible and what it costs. Money is never moved by a model.
 from __future__ import annotations
 
 import json
+import os
+import signal
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +24,7 @@ from jeve import db
 from jeve.core.clock import DAY, TICK, SimTime, next_office_open
 from jeve.core.seed import derive_rng
 from jeve.decide.policy import Decision, DecisionContext, Policy
+from jeve.world import space
 
 # Tallybird's hazard: chance per business-hours tick that a module falls over.
 # Elevated because the fixture starts with debt high and a risky deploy queued.
@@ -29,6 +32,8 @@ BASE_HAZARD = 0.004
 DEBT_MULTIPLIER = 2.5
 
 CAFE_ARRIVALS_PER_TICK = 6
+
+_DIE_AT_EVENT = int(os.environ.get("JEVE_TEST_DIE_AT_EVENT") or 0)
 
 
 def _seq_of(value: object) -> list[int]:
@@ -70,11 +75,28 @@ class Engine:
         *,
         root_seed: int,
         debt_level: float = 1.0,
+        encounters: bool = True,
+        spatial: bool = True,
     ) -> None:
         self._conn = conn
         self._policy = policy
         self._root = root_seed
         self._debt = debt_level
+        self.encounters = encounters
+        """Off, people still move but meeting changes nothing: the control arm
+        for "does space matter?"."""
+        self.spatial = spatial
+        # Whatever ran before us may have died mid-tick (WORLD-0002).
+        db.resync_sequences(self._conn)
+        self._conn.commit()
+
+    @property
+    def conn(self) -> Connection[DictRow]:
+        return self._conn
+
+    @property
+    def root_seed(self) -> int:
+        return self._root
 
     # -- state helpers -----------------------------------------------------
 
@@ -112,7 +134,13 @@ class Engine:
         ).fetchone()
         assert row is not None
         report.add(kind)
-        return int(row["seq"])
+        seq = int(row["seq"])
+        if _DIE_AT_EVENT and seq >= _DIE_AT_EVENT:
+            # Test hook for tests/test_resume.py: die the hardest way there is,
+            # with this tick's rows written and not committed. No handler runs,
+            # nothing is flushed — what a power cut looks like to Postgres.
+            os.kill(os.getpid(), signal.SIGKILL)
+        return seq
 
     def _decide(self, report: TickReport, ctx: DecisionContext) -> Made:
         """Run a policy and record the decision."""
@@ -166,6 +194,11 @@ class Engine:
         assert row is not None
         return int(row["decision_seq"])
 
+    # What `jeve.world.space` needs of the engine, by its public name.
+    emit = _emit
+    decide_many = _decide_many
+    next_seq = _next_seq
+
     def _post(
         self, sim_time: int, memo: str, legs: list[tuple[str, int]], event_seq: int
     ) -> int:
@@ -195,30 +228,59 @@ class Engine:
     # -- the tick ----------------------------------------------------------
 
     def tick(self) -> TickReport:
-        """Advance the world by one quantum, atomically."""
+        """Advance the world by one quantum, atomically and durably.
 
-        meta = self._meta()
-        report = TickReport(
-            tick_seq=int(meta["tick_seq"]) + 1, sim_time=int(meta["sim_time"])
-        )
-        now = SimTime(report.sim_time)
+        The tick has to *own* its transaction. On a connection that is not in
+        autocommit mode any earlier statement — even a SELECT — has already
+        opened one implicitly, and `conn.transaction()` inside that is only a
+        savepoint: the tick's writes then sit uncommitted until somebody else
+        happens to commit. That is how "one transaction per tick" was, for a
+        while, one transaction per sim-day: invisible to every other session
+        until nightfall, and lost whole by a `kill -9`. So: end whatever is
+        open, then do everything, including reading the clock, inside one real
+        BEGIN...COMMIT.
+        """
 
-        with self._conn.transaction():
-            self._run_due(report)
-            if now.in_office_hours:
-                self._maybe_incident(report, now)
-                self._support(report, now)
-                self._customers(report, now)
-                self._payments(report, now)
-                self._client_payments(report, now)
-            if now.cafe_open:
-                self._cafe(report, now)
-
-            self._conn.execute(
-                "UPDATE sim_meta SET sim_time = %s, tick_seq = %s, updated_at = now()",
-                (report.sim_time + TICK, report.tick_seq),
-            )
+        self._conn.commit()
+        try:
+            with self._conn.transaction():
+                meta = self._meta()
+                report = TickReport(
+                    tick_seq=int(meta["tick_seq"]) + 1, sim_time=int(meta["sim_time"])
+                )
+                self._advance(report, SimTime(report.sim_time))
+        except BaseException:
+            # The rows are gone but the ids they drew are not. Put the counters
+            # back before anything retries, or the retry numbers its events
+            # differently from a run that never failed.
+            if not self._conn.closed:
+                db.resync_sequences(self._conn)
+                self._conn.commit()
+            raise
         return report
+
+    def _advance(self, report: TickReport, now: SimTime) -> None:
+        """Everything one tick does. Runs inside the tick's transaction."""
+
+        self._run_due(report)
+        if now.in_office_hours:
+            self._maybe_incident(report, now)
+        if self.spatial:
+            # Before the desks do their work: someone cornered in the cafe
+            # this tick changes what support sees in the queue this tick.
+            space.run(self, report, now)
+        if now.in_office_hours:
+            self._support(report, now)
+            self._customers(report, now)
+            self._payments(report, now)
+            self._client_payments(report, now)
+        if now.cafe_open:
+            self._cafe(report, now)
+
+        self._conn.execute(
+            "UPDATE sim_meta SET sim_time = %s, tick_seq = %s, updated_at = now()",
+            (report.sim_time + TICK, report.tick_seq),
+        )
 
     def run_until(
         self, end_sim_time: int, *, max_ticks: int = 20_000
@@ -250,7 +312,10 @@ class Engine:
                 self._month_end(report, payload)
             elif kind == "invoice.run":
                 self._issue_invoices(
-                    report, str(row["subject_id"]), cause=int(payload.get("cause", 0))
+                    report,
+                    str(row["subject_id"]),
+                    cause=int(payload.get("cause", 0)),
+                    was_blocked=bool(payload.get("blocked")),
                 )
             elif kind == "subscription.run":
                 self._subscriptions(report)
@@ -315,11 +380,15 @@ class Engine:
         incident_id = int(payload.get("incident_id", 0))
         row = self._conn.execute(
             "UPDATE incidents SET ended_sim = %s WHERE id = %s AND ended_sim IS NULL "
-            "RETURNING started_sim",
+            "RETURNING started_sim, escalation_event_seq",
             (report.sim_time, incident_id),
         ).fetchone()
         if row is None:
             return
+        # If someone got this fixed sooner by raising it in person, that is a
+        # cause of *when* it ended, and everything downstream inherits it.
+        causes = [int(payload["cause"])] if payload.get("cause") else []
+        causes += _seq_of(row["escalation_event_seq"])
         self._conn.execute(
             "UPDATE modules SET status = 'up' WHERE id = %s", (module_id,)
         )
@@ -327,11 +396,12 @@ class Engine:
             report,
             "incident.ended",
             org_id="tallybird",
-            causes=[int(payload["cause"])] if payload.get("cause") else [],
+            causes=causes,
             payload={
                 "module_id": module_id,
                 "incident_id": incident_id,
                 "minutes": (report.sim_time - int(row["started_sim"])) // 60,
+                "escalated": row["escalation_event_seq"] is not None,
             },
         )
 
@@ -540,7 +610,9 @@ class Engine:
         for org_id in ("halloran", "ledgerline"):
             self._issue_invoices(report, org_id, cause=seq)
 
-    def _issue_invoices(self, report: TickReport, org_id: str, *, cause: int) -> None:
+    def _issue_invoices(
+        self, report: TickReport, org_id: str, *, cause: int, was_blocked: bool = False
+    ) -> None:
         """The cascade's first link: no Invoicing module, no invoices."""
 
         if self._module_down("invoicing"):
@@ -575,7 +647,10 @@ class Engine:
             )
             # Try again next tick; the block is recorded each time it bites.
             self._schedule(
-                report.sim_time + TICK, "invoice.run", org_id, {"cause": cause}
+                report.sim_time + TICK,
+                "invoice.run",
+                org_id,
+                {"cause": cause, "blocked": True},
             )
             self._conn.execute(
                 "UPDATE invoices SET blocked_ticks = blocked_ticks + 1 "
@@ -591,6 +666,16 @@ class Engine:
             (org_id,),
         ).fetchall()
         rng = derive_rng(self._root, "invoice", org_id, report.tick_seq)
+        # A run that had been blocked goes out *because the outage ended*, and
+        # when it ended is itself caused. Citing only month-end here would cut
+        # the chain exactly where an outage turns into late money.
+        causes = [cause] if cause else []
+        if was_blocked:
+            ended = self._conn.execute(
+                "SELECT seq FROM events WHERE kind = 'incident.ended' "
+                "AND payload->>'module_id' = 'invoicing' ORDER BY seq DESC LIMIT 1"
+            ).fetchone()
+            causes += _seq_of(ended["seq"]) if ended else []
         for client in clients:
             amount = 80_000 + int(rng.random() * 540_000)
             invoice = self._conn.execute(
@@ -610,7 +695,7 @@ class Engine:
                 report,
                 "invoice.issued",
                 org_id=org_id,
-                causes=[cause],
+                causes=causes,
                 payload={
                     "invoice_id": int(invoice["id"]),
                     "from_org_id": org_id,

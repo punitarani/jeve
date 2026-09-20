@@ -74,5 +74,8 @@ select = ["E", "F", "W", "I", "UP", "B", "TID", "ASYNC", "RUF"]
 # CORE-0005: the sanctioned home of randomness. Everywhere else must come
 # through derive_rng, which is why the ban exists at all.
 "src/jeve/core/seed.py" = ["TID251"]
+# SIM-0001: the daemon paces itself against the wall clock, and the writer lock
+# waits in real time. Neither value ever reaches simulation state.
+"src/jeve/sim/daemon.py" = ["TID251"]
 "tests/*.py" = ["TID251"]
 "scripts/*.py" = ["TID251"]

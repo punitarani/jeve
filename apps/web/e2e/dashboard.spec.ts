@@ -105,8 +105,11 @@ test("a person's decisions show what was chosen and the draw behind it", async (
   const first = rows.first();
   // Which decider answered — the research question, one row at a time.
   await expect(first).toContainText(/rules|jev|llm/);
-  // Something was actually chosen, not left blank.
-  await expect(first).toContainText(/pay|answer|queue|buy|file/);
+  // Something was actually chosen, not left blank. Since WORLD-0003 the most
+  // recent thing anyone decided is usually where to go next.
+  await expect(first).toContainText(/pay|answer|queue|buy|file|next_zone/);
+  // And this world is decided by the model, not by the rules twin.
+  await expect(rows.filter({ hasText: "jev" }).first()).toBeVisible();
 });
 
 test("filtering to one org narrows the timeline", async ({ page }) => {

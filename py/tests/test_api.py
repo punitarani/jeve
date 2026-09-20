@@ -224,3 +224,80 @@ def test_cors_allows_any_local_port(client: TestClient) -> None:
 def test_cors_refuses_a_remote_origin(client: TestClient) -> None:
     response = client.get("/state", headers={"Origin": "https://evil.example"})
     assert "access-control-allow-origin" not in response.headers
+
+
+# -- the spatial world -----------------------------------------------------
+
+
+def test_the_map_is_served_as_data(client: TestClient) -> None:
+    body = client.get("/world/map").json()
+    assert (body["width"], body["height"]) == (40, 28)
+    assert len(body["tiles"]) == 28 and len(body["tiles"][0]) == 40
+    assert {b["org_id"] for b in body["buildings"]} == {
+        "tallybird",
+        "halloran",
+        "ledgerline",
+        "thirdrail",
+    }
+    for building in body["buildings"]:
+        x, y = building["door"]
+        assert body["tiles"][y][x] == "door"
+        assert body["zones"][y][x] == building["zone"]
+    assert body["crowd_spots"]["cafe"]
+
+
+def test_the_agents_frame_places_all_staff(client: TestClient) -> None:
+    body = client.get("/world/agents").json()
+    assert len(body["agents"]) == 24
+    assert body["seq"] > 0 and body["tick_seq"] > 0
+    world = client.get("/world/map").json()
+    for agent in body["agents"]:
+        if agent["zone"] == "home":
+            assert agent["x"] is None and agent["y"] is None
+        else:
+            assert world["zones"][agent["y"]][agent["x"]] == agent["zone"]
+
+
+def test_an_agent_shows_the_decision_and_the_draw_behind_it(client: TestClient) -> None:
+    body = client.get("/world/agents/tallybird.support.6").json()
+    assert body["name"] == "Kwame Boateng"
+    assert body["org_name"] == "Tallybird Software"
+    # The words a model is shown, alongside the number they stand for.
+    assert set(body["trait_words"]) <= set(body["traits"])
+    assert body["trait_words"]["diligence"]
+    decision = body["last_decision"]
+    assert decision is not None
+    assert decision["source"] in ("rules", "jev")
+    assert decision["chosen"]
+    assert client.get("/world/agents/nobody.at.all").status_code == 404
+
+
+def test_an_org_panel_has_its_books_and_its_people(client: TestClient) -> None:
+    body = client.get("/orgs/thirdrail").json()
+    assert body["name"] == "Third Rail Cafe"
+    assert body["zone"] == "cafe"
+    assert body["staff_total"] == 6
+    assert body["cash_cents"] > 0
+    assert client.get("/orgs/nowhere").status_code == 404
+
+
+def test_movement_stays_out_of_the_timeline_unless_asked_for(
+    client: TestClient,
+) -> None:
+    """One line per person per change of room would bury the outage."""
+
+    default = client.get("/events?limit=1000").json()["events"]
+    assert default
+    assert all(e["kind"] != "agent.moved" for e in default)
+
+    moves = client.get("/events?kinds=agent.moved&limit=50&latest=true").json()
+    assert moves["events"]
+    assert all(e["kind"] == "agent.moved" for e in moves["events"])
+    seqs = [e["seq"] for e in moves["events"]]
+    assert seqs == sorted(seqs)
+    # Each carries the tiles walked: what a client animates, live or replayed.
+    walked = moves["events"][-1]["payload"]["path"]
+    assert len(walked) >= 2 and all(len(step) == 2 for step in walked)
+
+    everything = client.get("/events?limit=1000&background=true").json()["events"]
+    assert any(e["kind"] == "agent.moved" for e in everything)

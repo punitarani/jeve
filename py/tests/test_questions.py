@@ -28,6 +28,17 @@ ASKING: dict[str, dict[str, object]] = {
     "ticket.answer": {"backlog": 12},
     "payment.timing": {"days_until_due": -4, "can_afford": True, "runway_days": 9},
     "cafe.purchase": {"pos_down": True, "queue_length": 3},
+    "agent.tick": {
+        "org": "halloran",
+        "here": "cafe",
+        "own_zone": "law_office",
+        "present": [
+            {"id": "tallybird.sre.4", "org": "tallybird", "role": "sre"},
+            {"id": "thirdrail.barista.20", "org": "thirdrail", "role": "barista"},
+        ],
+        "outage": "invoicing",
+        "can_raise": True,
+    },
 }
 TRAITS: dict[str, object] = {
     "diligence": 0.41,
@@ -35,6 +46,7 @@ TRAITS: dict[str, object] = {
     "patience": 0.33,
     "vocality": 0.7,
     "risk_appetite": 0.2,
+    "sociability": 0.8,
 }
 
 
@@ -153,3 +165,37 @@ def test_hazard_handles_certainty_and_impossibility() -> None:
     assert per_tick_hazard(1.0) == 1.0
     assert per_tick_hazard(0.0) == 0.0
     assert per_tick_hazard(1.7) == 1.0
+
+
+def test_people_in_the_room_are_described_not_named() -> None:
+    """A name or an id is noise to Jev, and would stop two identical rooms
+    sharing one call. The mapping back to a person lives in code."""
+
+    prepared = _prepare("agent.tick")
+    assert prepared.state is not None
+    here = prepared.state["who_is_here"]
+    assert here == {
+        "person_a": "a sre from the software company",
+        "person_b": "a barista from the cafe",
+    }
+    assert "tallybird.sre.4" not in str(prepared.state)
+    keys = [ask.key for ask in prepared.asks]
+    assert keys == [
+        "next_zone",
+        "mood",
+        "interact",
+        "with_whom",
+        "topic",
+        "raise_outage",
+    ]
+
+
+def test_alone_there_is_nobody_to_ask_about() -> None:
+    facts = {**ASKING["agent.tick"], "present": [], "can_raise": False}
+    keys = [ask.key for ask in _prepare("agent.tick", facts).asks]
+    assert keys == ["next_zone", "mood"]
+
+
+def test_raising_the_outage_is_only_asked_of_someone_who_can() -> None:
+    facts = {**ASKING["agent.tick"], "can_raise": False}
+    assert "raise_outage" not in [a.key for a in _prepare("agent.tick", facts).asks]

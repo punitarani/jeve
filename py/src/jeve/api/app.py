@@ -169,27 +169,42 @@ def state() -> dict[str, object]:
         }
 
 
+# Hidden from the timeline unless asked for. They are real events, and the
+# causal view still walks through them; but one line per person per change of
+# room would bury the outage the dashboard exists to show.
+BACKGROUND_EVENTS = ("agent.moved",)
+
+
 @app.get("/events")
 def events(
     after: int = Query(0, ge=0),
     limit: int = Query(200, ge=1, le=1000),
     kind: str | None = None,
     org: str | None = None,
+    kinds: str | None = Query(None, description="comma-separated; overrides `kind`"),
+    background: bool = Query(False, description="include movement"),
+    latest: bool = Query(False, description="the newest `limit` instead of the oldest"),
 ) -> dict[str, object]:
     clauses = ["seq > %s"]
     params: list[Any] = [after]
-    if kind:
-        clauses.append("kind = %s")
-        params.append(kind)
+    wanted = [k for k in (kinds or kind or "").split(",") if k]
+    if wanted:
+        clauses.append("kind = ANY(%s)")
+        params.append(wanted)
+    elif not background:
+        clauses.append("kind <> ALL(%s)")
+        params.append(list(BACKGROUND_EVENTS))
     if org:
         clauses.append("org_id = %s")
         params.append(org)
     params.append(limit)
+    order = "DESC" if latest else "ASC"
     rows = _rows(
         f"SELECT seq, sim_time, tick_seq, kind, actor_id, org_id, payload, causes "
-        f"FROM events WHERE {' AND '.join(clauses)} ORDER BY seq LIMIT %s",
+        f"FROM events WHERE {' AND '.join(clauses)} ORDER BY seq {order} LIMIT %s",
         tuple(params),
     )
+    rows.sort(key=lambda row: int(row["seq"]))
     for row in rows:
         row["label"] = SimTime(int(row["sim_time"])).label()
     return {"events": rows, "seq": rows[-1]["seq"] if rows else after}
@@ -422,6 +437,368 @@ def economics() -> dict[str, object]:
     }
 
 
+# -- the spatial world (WORLD-0003, WEB-0002) ------------------------------
+
+
+@app.get("/world/map")
+def world_map() -> dict[str, object]:
+    """The town, as data. Static: safe to cache for the life of the page."""
+
+    from jeve.world.map import BUILDINGS, HEIGHT, WIDTH, ZONE_ORG, Zone, town
+    from jeve.world.seed_world import ORGS
+
+    names = {org_id: name for org_id, name, _ in ORGS}
+    plan = town()
+    return {
+        "width": WIDTH,
+        "height": HEIGHT,
+        "tiles": [list(row) for row in plan.tiles],
+        "zones": [list(row) for row in plan.zones],
+        "buildings": [
+            {
+                "zone": b.zone.value,
+                "org_id": ZONE_ORG[b.zone],
+                "name": names[ZONE_ORG[b.zone]],
+                "x0": b.x0,
+                "y0": b.y0,
+                "x1": b.x1,
+                "y1": b.y1,
+                "door": list(b.door),
+            }
+            for b in BUILDINGS
+        ],
+        # Where the sampled crowd of counterparties may stand.
+        "crowd_spots": {
+            Zone.CAFE.value: [list(t) for t in plan.visitor_spots[Zone.CAFE]],
+            Zone.PLAZA.value: [list(t) for t in plan.visitor_spots[Zone.PLAZA]],
+        },
+    }
+
+
+@app.get("/world/agents")
+def world_agents() -> dict[str, object]:
+    """The current frame: where every member of staff is, and how they got there."""
+
+    with db.connect() as conn:
+        meta = conn.execute(
+            "SELECT sim_time, tick_seq, status FROM sim_meta"
+        ).fetchone()
+        if meta is None:
+            raise HTTPException(503, "the world has not been seeded")
+        agents = conn.execute(
+            "SELECT p.id, p.name, p.org_id, p.role, s.zone, s.x, s.y, s.path, "
+            "       s.moved_tick, s.mood "
+            "FROM persons p JOIN positions s ON s.person_id = p.id ORDER BY p.id"
+        ).fetchall()
+        # Counterparties have no positions; they are demand. Draw as many as
+        # actually turned up at the cafe in the last tick that had any.
+        crowd = conn.execute(
+            "SELECT count(*) AS n FROM events "
+            "WHERE kind IN ('cafe.sale','cafe.walkout') "
+            "AND tick_seq = (SELECT max(tick_seq) FROM events "
+            "                WHERE kind IN ('cafe.sale','cafe.walkout') "
+            "                  AND tick_seq > %s - 2)",
+            (int(meta["tick_seq"]),),
+        ).fetchone()
+        down = conn.execute(
+            "SELECT id FROM modules WHERE status = 'down' ORDER BY id"
+        ).fetchall()
+        seq = _max_seq(conn)
+
+    in_cafe = int(crowd["n"]) if crowd else 0
+    now = SimTime(int(meta["sim_time"]))
+    return {
+        "seq": seq,
+        "tick_seq": int(meta["tick_seq"]),
+        "sim_time": now.seconds,
+        "label": now.label(),
+        "status": str(meta["status"]),
+        "agents": [dict(row) for row in agents],
+        "crowd": {"cafe": in_cafe, "plaza": in_cafe // 2 if now.in_office_hours else 0},
+        "down_modules": [str(row["id"]) for row in down],
+    }
+
+
+@app.get("/world/agents/{person_id}")
+def world_agent(person_id: str) -> dict[str, object]:
+    """One person: who they are, what they last decided, and whom they last met.
+
+    The distribution is what Jev returned; the draw is what was sampled from it.
+    Both are typed fields off the decision row — nothing here is generated text.
+    """
+
+    from jeve.decide.questions import _TRAIT_WORDS, trait_words
+
+    with db.connect() as conn:
+        person = conn.execute(
+            "SELECT p.id, p.name, p.org_id, p.role, p.traits, o.name AS org_name, "
+            "       s.zone, s.mood "
+            "FROM persons p JOIN orgs o ON o.id = p.org_id "
+            "JOIN positions s ON s.person_id = p.id WHERE p.id = %s",
+            (person_id,),
+        ).fetchone()
+        if person is None:
+            raise HTTPException(404, f"no staff member {person_id!r}")
+        decision = conn.execute(
+            "SELECT d.id, d.sim_time, d.question_set, d.source, d.chosen, "
+            "       d.distributions, d.draws, m.model "
+            "FROM decisions d LEFT JOIN model_calls m ON m.hash = d.model_call "
+            "WHERE d.person_id = %s ORDER BY d.id DESC LIMIT 1",
+            (person_id,),
+        ).fetchone()
+        met = conn.execute(
+            "SELECT e.seq, e.sim_time, e.payload, "
+            "  ARRAY(SELECT DISTINCT c.kind FROM events c WHERE e.seq = ANY(c.causes)) "
+            "    AS led_to "
+            "FROM events e WHERE e.kind = 'encounter' "
+            "AND (e.payload->>'a' = %s OR e.payload->>'b' = %s) "
+            "ORDER BY e.seq DESC LIMIT 1",
+            (person_id, person_id),
+        ).fetchone()
+        other_name = None
+        if met is not None:
+            payload = met["payload"]
+            other_id = payload["b"] if payload["a"] == person_id else payload["a"]
+            other = conn.execute(
+                "SELECT name FROM persons WHERE id = %s", (other_id,)
+            ).fetchone()
+            other_name = (other_id, str(other["name"]) if other else other_id)
+
+    traits = {k: float(v) for k, v in dict(person["traits"] or {}).items()}
+    return {
+        "id": person["id"],
+        "name": person["name"],
+        "org_id": person["org_id"],
+        "org_name": person["org_name"],
+        "role": person["role"],
+        "zone": person["zone"],
+        "mood": int(person["mood"]),
+        "traits": traits,
+        # The words Jev is actually shown, not the numbers behind them.
+        "trait_words": {
+            k: trait_words(k, v) for k, v in traits.items() if k in _TRAIT_WORDS
+        },
+        "last_decision": None
+        if decision is None
+        else {
+            "id": int(decision["id"]),
+            "sim_time": int(decision["sim_time"]),
+            "label": SimTime(int(decision["sim_time"])).label(),
+            "question_set": decision["question_set"],
+            "source": decision["source"],
+            "model": decision["model"],
+            "chosen": decision["chosen"],
+            "distributions": decision["distributions"],
+            "draws": decision["draws"],
+        },
+        "last_encounter": None
+        if met is None or other_name is None
+        else {
+            "seq": int(met["seq"]),
+            "label": SimTime(int(met["sim_time"])).label(),
+            "with_id": other_name[0],
+            "with_name": other_name[1],
+            "zone": met["payload"]["zone"],
+            "topic": met["payload"]["topic"],
+            "initiated": met["payload"]["a"] == person_id,
+            "led_to": sorted(met["led_to"] or []),
+        },
+    }
+
+
+@app.get("/orgs/{org_id}")
+def org_detail(org_id: str) -> dict[str, object]:
+    """One firm: its books, its people, and what is going on there."""
+
+    from jeve.world.map import ORG_ZONE
+
+    with db.connect() as conn:
+        org = conn.execute(
+            "SELECT id, name, kind FROM orgs WHERE id = %s", (org_id,)
+        ).fetchone()
+        if org is None or org_id not in ORG_ZONE:
+            raise HTTPException(404, f"no org {org_id!r}")
+        money = conn.execute(
+            "SELECT a.kind, COALESCE(sum(e.amount_cents),0) AS cents "
+            "FROM accounts a LEFT JOIN ledger_entries e ON e.account_id = a.id "
+            "WHERE a.org_id = %s AND a.kind IN ('cash','receivable') GROUP BY a.kind",
+            (org_id,),
+        ).fetchall()
+        staff = conn.execute(
+            "SELECT count(*) AS total, "
+            "       count(*) FILTER (WHERE s.zone = %s) AS present "
+            "FROM persons p JOIN positions s ON s.person_id = p.id WHERE p.org_id = %s",
+            (ORG_ZONE[org_id].value, org_id),
+        ).fetchone()
+        tickets = conn.execute(
+            "SELECT count(*) AS n FROM tickets t "
+            "WHERE t.status <> 'closed' AND (%s = 'tallybird' OR t.module_id IN "
+            "  (SELECT module_id FROM subscriptions WHERE org_id = %s))",
+            (org_id, org_id),
+        ).fetchone()
+        unpaid = conn.execute(
+            "SELECT count(*) AS n FROM invoices WHERE paid_sim IS NULL "
+            "AND (from_org_id = %s OR to_org_id = %s)",
+            (org_id, org_id),
+        ).fetchone()
+        affected = conn.execute(
+            "SELECT m.id FROM modules m WHERE m.status = 'down' AND (%s = 'tallybird' "
+            "  OR m.id IN (SELECT module_id FROM subscriptions WHERE org_id = %s)) "
+            "ORDER BY m.id",
+            (org_id, org_id),
+        ).fetchall()
+        blocked = conn.execute(
+            "SELECT 1 FROM scheduled WHERE kind = 'invoice.run' AND subject_id = %s "
+            "AND (payload->>'blocked')::boolean LIMIT 1",
+            (org_id,),
+        ).fetchone()
+
+    cents = {str(r["kind"]): int(r["cents"]) for r in money}
+    active = [f"{row['id']} outage" for row in affected]
+    if blocked is not None:
+        active.append("month-end invoicing blocked")
+    assert staff is not None and tickets is not None and unpaid is not None
+    return {
+        "id": org["id"],
+        "name": org["name"],
+        "kind": org["kind"],
+        "zone": ORG_ZONE[org_id].value,
+        "cash_cents": cents.get("cash", 0),
+        "receivable_cents": cents.get("receivable", 0),
+        "staff_present": int(staff["present"]),
+        "staff_total": int(staff["total"]),
+        "open_tickets": int(tickets["n"]),
+        "unpaid_invoices": int(unpaid["n"]),
+        "active": active,
+    }
+
+
+# -- prose, on demand (GEN-0001) -------------------------------------------
+
+_gateway: Any = None
+_gateway_lock = asyncio.Lock()
+
+
+async def _open_gateway() -> Any:
+    """The API's own gateway, opened the first time prose is asked for.
+
+    This is the only endpoint in the API that can spend money, and it does so
+    through the same budget-guarded module as everything else (LLM-0004).
+    """
+
+    global _gateway
+    from jeve.llm import Gateway
+
+    async with _gateway_lock:
+        if _gateway is None:
+            gateway = Gateway()
+            await gateway.start()
+            _gateway = gateway
+    return _gateway
+
+
+@app.get("/encounters/{seq}/dialogue")
+async def encounter_dialogue(
+    seq: int, generate: bool = Query(True, description="false: cached prose only")
+) -> dict[str, object]:
+    """One encounter: the typed record always, and prose if it can be had.
+
+    The typed record is what happened. The prose is a rendering of it for a
+    reader — generated on demand, cached by content hash, and read by nothing.
+    """
+
+    from jeve.config import load_settings
+    from jeve.decide.recorder import insert_call
+    from jeve.errors import JeveError
+    from jeve.gen import dialogue
+    from jeve.llm import GENERATIVE_PREFERENCE, ChatRequest
+
+    def look() -> tuple[Any, Any]:
+        with db.connect() as conn:
+            found = dialogue.load_encounter(conn, seq)
+            if found is None:
+                return None, None
+            return found, dialogue.cached(conn, found, GENERATIVE_PREFERENCE)
+
+    encounter, prose = await asyncio.to_thread(look)
+    if encounter is None:
+        raise HTTPException(404, f"event {seq} is not an encounter")
+    body: dict[str, object] = {
+        "typed": encounter.typed(),
+        "prose": prose,
+        "reason": None,
+    }
+    if prose is not None or not generate:
+        if prose is None:
+            body["reason"] = "not rendered yet"
+        return body
+
+    if not load_settings().openrouter_api_key:
+        body["reason"] = "no API key here, so only the typed record is shown"
+        return body
+
+    failures: list[str] = []
+    try:
+        gateway = await _open_gateway()
+        models = gateway.generative_models
+    except JeveError as error:
+        body["reason"] = f"the model gateway would not start: {error}"
+        return body
+
+    for model in models:
+        request = ChatRequest(
+            model=model,
+            messages=dialogue.messages_for(encounter),
+            max_tokens=dialogue.MAX_TOKENS,
+            seed=seq,
+            response_schema=dialogue.SCHEMA,
+        )
+        try:
+            # `explore`: prose is never gate work, so it is the first thing the
+            # budget ladder refuses.
+            reply = await gateway.complete(request, purpose="explore")
+        except JeveError as error:
+            failures.append(f"{model}: {type(error).__name__}")
+            continue
+        lines = dialogue.parse_lines(reply.text)
+        if not lines:
+            failures.append(f"{model}: unusable reply")
+            continue
+
+        def keep(model: str = model, reply: Any = reply) -> None:
+            with db.connect(autocommit=True) as conn:
+                insert_call(
+                    conn,
+                    {
+                        "hash": dialogue.request_key(model, encounter),
+                        "kind": dialogue.KIND,
+                        "model": model,
+                        "provider": reply.provider,
+                        "request": {"typed": encounter.typed()},
+                        "response": {"text": reply.text},
+                        "input_tokens": reply.usage.input_tokens,
+                        "output_tokens": reply.usage.output_tokens,
+                        "cost_usd": reply.usage.cost_usd,
+                        "cost_estimated": reply.usage.cost_is_estimated,
+                        "latency_s": reply.latency_s,
+                    },
+                )
+
+        await asyncio.to_thread(keep)
+        body["prose"] = {
+            "lines": lines,
+            "model": model,
+            "cost_usd": reply.usage.cost_usd,
+            "cached": False,
+            # Models earlier in the preference order that did not deliver.
+            "skipped": failures,
+        }
+        return body
+
+    body["reason"] = "no model produced usable dialogue: " + "; ".join(failures)
+    return body
+
+
 @app.get("/stream")
 async def stream(
     after: int = Query(0, ge=0),
@@ -446,8 +823,8 @@ async def stream(
         while asyncio.get_running_loop().time() < deadline:
             rows = await asyncio.to_thread(
                 _rows,
-                "SELECT seq, sim_time, kind, actor_id, org_id, payload, causes "
-                "FROM events WHERE seq > %s ORDER BY seq LIMIT 200",
+                "SELECT seq, sim_time, tick_seq, kind, actor_id, org_id, payload, "
+                "causes FROM events WHERE seq > %s ORDER BY seq LIMIT 200",
                 (cursor,),
             )
             if rows:
