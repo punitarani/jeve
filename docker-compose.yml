@@ -1,0 +1,39 @@
+# Local stateful dependencies. Nothing here is a cloud resource.
+#
+# The port is deliberately not 5432: a developer machine usually has a
+# Postgres already, and a silent connection to the wrong database is a bad
+# morning. Override with JEVE_PG_PORT if 55432 is also taken.
+
+name: jeve
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: jeve
+      POSTGRES_PASSWORD: jeve
+      POSTGRES_DB: jeve
+      # The world is reproducible; the database must not add its own locale
+      # or timezone opinions to that.
+      TZ: UTC
+      PGTZ: UTC
+    command:
+      - postgres
+      - -c
+      - timezone=UTC
+      - -c
+      - log_min_duration_statement=500
+    ports:
+      - "${JEVE_PG_PORT:-55432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Without this, migrations race the first boot and fail on a cold clone.
+      test: ["CMD-SHELL", "pg_isready -U jeve -d jeve"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+volumes:
+  pgdata:

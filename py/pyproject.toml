@@ -5,6 +5,7 @@ description = "A continuously-running simulation of a small interconnected econo
 requires-python = ">=3.14"
 dependencies = [
     "httpx>=0.28",
+    "psycopg[binary]>=3.2",
     "pydantic>=2.9",
 ]
 

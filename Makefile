@@ -44,3 +44,12 @@ smoke: ## One real call through the gateway, under a cent
 .PHONY: spend
 spend: ## What has been spent so far
 	@test -f ops/spend.json && cat ops/spend.json || echo '{"effective_usd": 0}'
+
+.PHONY: db-up
+db-up: ## Start Postgres and apply migrations
+	docker compose up -d --wait
+	cd py && uv run python -c "from jeve import db; print('applied:', db.migrate() or 'nothing')"
+
+.PHONY: db-down
+db-down: ## Stop Postgres, keep the data
+	docker compose down
