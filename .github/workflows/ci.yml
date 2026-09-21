@@ -248,13 +248,26 @@ jobs:
       # NEXT_PUBLIC_* is inlined at build time — wrangler vars are not (the
       # site is a static export, WEB-0005).
       - env:
-          NEXT_PUBLIC_JEVE_API: https://jeve-api.punitarani.com
+          NEXT_PUBLIC_JEVE_API: ${{ vars.NEXT_PUBLIC_JEVE_API }}
         run: pnpm --filter @jeve/web build
+      # The only secret in this repo is DOPPLER_TOKEN: a read-only service
+      # token scoped to infra/ci, which holds just the deploy credentials —
+      # rotating a token in Doppler is the whole rotation.
+      - uses: dopplerhq/cli-action@v4
+      - name: Fetch deploy credentials from Doppler
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: |
+          for s in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            v="$(doppler secrets get "$s" -p infra -c ci --plain)"
+            echo "::add-mask::$v"
+            echo "$s=$v" >> "$GITHUB_ENV"
+          done
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          apiToken: ${{ env.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/web
           command: deploy
 
@@ -267,9 +280,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: dopplerhq/cli-action@v4
+      - name: Fetch deploy credentials from Doppler
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: |
+          v="$(doppler secrets get FLY_API_TOKEN -p infra -c ci --plain)"
+          echo "::add-mask::$v"
+          echo "FLY_API_TOKEN=$v" >> "$GITHUB_ENV"
       # One deploy ships every process group in fly.toml (api and sim) from
       # one image; the release_command in fly.toml runs migrations first.
       - name: Deploy api+sim to Fly.io
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: fly deploy --config fly.toml
