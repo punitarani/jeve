@@ -28,7 +28,9 @@ export WEB="http://localhost:${WEB_PORT}"
 export API="http://127.0.0.1:${API_PORT}"
 export JEVE_DATABASE_URL="postgresql://jeve:jeve@127.0.0.1:${JEVE_PG_PORT:-55432}/${DB}"
 LOGS="$PWD/ops/shots-${WEB_PORT}"; mkdir -p "$LOGS"   # ops/* is ignored
-DIST=".next-shots-${WEB_PORT}"
+# One name, listed in apps/web/tsconfig.json: Next adds any distDir it has not
+# seen to that file, and a tracked file should not change because shots ran.
+DIST=".next-shots"
 
 listening() { lsof -nP -t -iTCP:"$1" -sTCP:LISTEN 2>/dev/null; }
 for port in "$API_PORT" "$WEB_PORT"; do

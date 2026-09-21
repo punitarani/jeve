@@ -36,7 +36,7 @@ dist/
 node_modules/
 .next/
 .next-e2e/
-.next-shots-*/
+.next-shots/
 next-env.d.ts
 out/
 .turbo/
