@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import sys
 import time
 from dataclasses import dataclass
 from types import TracebackType
@@ -136,6 +137,7 @@ class Gateway:
         self._call_seq = 0
         self._remote_lock = asyncio.Lock()
         self._throttle_until = 0.0
+        self._discrepancy_log_disabled = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -227,25 +229,35 @@ class Gateway:
             return usage
 
     def _log_discrepancy(self, remote_usage: float, divergence: float) -> None:
+        if self._discrepancy_log_disabled:
+            return
         path = self._settings.ops_dir / "discrepancies.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        spend = self._ledger.read()
-        with open(path, "a") as handle:
-            handle.write(
-                json.dumps(
-                    {
-                        "ts": time.time(),
-                        "remote_usage_usd": remote_usage,
-                        "remote_delta_usd": spend.remote_delta_usd,
-                        "local_usd": spend.local_usd,
-                        "divergence": round(divergence, 4),
-                        "effective_usd": spend.effective_usd,
-                        "note": "remote is authoritative when higher; local is a floor",
-                    },
-                    sort_keys=True,
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            spend = self._ledger.read()
+            with open(path, "a") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "ts": time.time(),
+                            "remote_usage_usd": remote_usage,
+                            "remote_delta_usd": spend.remote_delta_usd,
+                            "local_usd": spend.local_usd,
+                            "divergence": round(divergence, 4),
+                            "effective_usd": spend.effective_usd,
+                            "note": "remote is authoritative when higher; "
+                            "local is a floor",
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
                 )
-                + "\n"
-            )
+        except OSError as error:
+            # Same class of failure as the spend checkpoint: an unwritable
+            # ops dir must not take the call path down with it — this one
+            # did, as a PermissionError inside a decision call on Fly.
+            print(f"discrepancy log disabled: {error}", file=sys.stderr)
+            self._discrepancy_log_disabled = True
 
     # -- the two call paths ------------------------------------------------
 

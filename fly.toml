@@ -40,6 +40,10 @@ primary_region = "iad"  # Washington D.C. — closest to us-east-1
   JEVE_HALT_CEILING_USD = "10000"
   JEVE_HARD_CEILING_USD = "10000"
   JEVE_CASSETTE = "off"
+  # ops/ is a humans-only checkpoint dir; in the image the cwd is /app, which
+  # the runtime user can't write. /tmp is tmpfs and writable — the Postgres
+  # ledger remains authoritative regardless (LLM-0007).
+  JEVE_OPS_DIR = "/tmp/ops"
 
 [processes]
   api = "uvicorn jeve.api.app:app --host 0.0.0.0 --port 8000"

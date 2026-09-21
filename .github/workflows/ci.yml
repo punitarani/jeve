@@ -302,4 +302,7 @@ jobs:
       # One deploy ships every process group in fly.toml (api and sim) from
       # one image; the release_command in fly.toml runs migrations first.
       - name: Deploy api+sim to Fly.io
-        run: flyctl deploy --config fly.toml
+        # --ha=false: the default creates a spare machine per group — 2 api +
+        # 2 sim for a workload that is one public reader and one writer
+        # pinned singleton by its advisory lock.
+        run: flyctl deploy --config fly.toml --ha=false
