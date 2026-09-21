@@ -1,24 +1,27 @@
-# Dependencies
-node_modules
-.venv
-__pycache__
+# Dependencies — `**/`: dockerignore patterns are root-relative, so a bare
+# `node_modules` ignored only the root one and every nested copy still shipped
+# (the build context was ~700 MB, mostly apps/web/node_modules and py/.venv).
+**/node_modules
+**/.venv
+**/__pycache__
 *.pyc
 *.pyo
 *.pyd
 .Python
 
 # Build outputs
-.next
-dist
-build
+**/.next
+**/.next-*
+**/out
+**/dist
+**/build
 *.tsbuildinfo
 
 # Development
 .env
-.env.local
-.env.development
-.env.test
-.env.production
+.env.*
+!.env.*.example
+!.env.example
 
 # IDE
 .vscode
@@ -33,16 +36,21 @@ Thumbs.db
 # Git
 .git
 .gitignore
+**/.nx
+**/coverage
+**/.nyc_output
+**/.pytest_cache
+**/.turbo
+**/playwright-report
+**/test-results
 
-# Documentation
+# Documentation not needed at runtime
 docs/
+tools/
+decisions/
+apps/web/e2e/
 *.md
 !README.md
-
-# Testing
-coverage
-.nyc_output
-.pytest_cache
 
 # CI/CD
 .github/
@@ -58,10 +66,11 @@ docker-compose*.yml
 .dockerignore
 
 # Ops (runtime state)
-ops/ledger.jsonl
-ops/*.log
+ops/
+worktrees/
 
-# Generated files
-packages/contracts/src/generated/
-decisions/index.jsonl
-decisions/INDEX.md
+# Tests and fixtures are not needed in the production image
+py/tests/
+py/fixtures/
+py/scripts/
+scripts/
