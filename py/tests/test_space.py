@@ -114,7 +114,18 @@ def test_a_path_walks_one_tile_at_a_time_and_never_through_a_wall() -> None:
 
 
 def test_there_is_no_path_into_a_desk() -> None:
-    assert find_path((19, 0), (4, 4)) == []
+    # Looked up, not written down: the layouts decide where the desks are
+    # (WEB-0004), and they are allowed to move them.
+    world = town()
+    desks = [
+        (x, y)
+        for y, row in enumerate(world.tiles)
+        for x, kind in enumerate(row)
+        if kind == "desk"
+    ]
+    assert desks
+    for desk in desks:
+        assert find_path((19, 0), desk) == []
 
 
 # -- people in it ----------------------------------------------------------

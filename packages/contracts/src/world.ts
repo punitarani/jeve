@@ -30,6 +30,21 @@ export const TILE_KINDS = [
   "table",
   "tree",
   "fountain",
+  // WEB-0004: furniture that tells the four buildings apart. `chair` and
+  // `bench` can be walked onto and sat on; the rest are in the way.
+  "chair",
+  "bench",
+  "whiteboard",
+  "server_rack",
+  "bookshelf",
+  "conference",
+  "reception",
+  "filing",
+  "partition",
+  "kitchen",
+  "plant",
+  "planter",
+  "lamp",
 ] as const;
 export const TileKind = z.enum(TILE_KINDS);
 export type TileKind = z.infer<typeof TileKind>;
@@ -56,6 +71,12 @@ export const TownMap = z.object({
   zones: z.array(z.array(Zone)),
   buildings: z.array(Building),
   crowd_spots: z.record(z.string(), z.array(Tile)),
+  /**
+   * Per zone, the tiles somebody sits on rather than stands on: chairs and
+   * benches, whether they belong to staff or to visitors (WEB-0004). A barista's
+   * place behind the counter is not one.
+   */
+  seats: z.record(z.string(), z.array(Tile)),
 });
 export type TownMap = z.infer<typeof TownMap>;
 
