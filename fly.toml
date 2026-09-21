@@ -11,7 +11,8 @@ primary_region = "iad"  # Washington D.C. - closest to us-east-1 database
 [env]
   NODE_ENV = "production"
   PYTHONPATH = "/app/src"
-  JEVE_DATABASE_URL = "postgresql://jeve:jeve@jeve-db.internal:5432/jeve"
+  API_HOST = "0.0.0.0"
+  API_PORT = "8000"
 
 # API service
 [[services]]

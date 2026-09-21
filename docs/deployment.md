@@ -112,7 +112,7 @@ JEVE_BUDGET_CEILING_USD=20.0
 # Fly.io deployment
 FLY_API_TOKEN=your-fly-api-token
 FLY_APP_NAME=jeve-backend
-FLY_REGION=sjc
+FLY_REGION=iad  # Washington D.C. - closest to us-east-1 database
 ```
 
 ### Infrastructure (.env.infra.example)

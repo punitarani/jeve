@@ -30,7 +30,7 @@ simulation ever reads generated text.
 | `docs/research/` | Ground truth on Jev, prior-art mapping, validation survey |
 | `docs/design/` | Long-form analysis behind the decision records |
 | `ops/` | Runtime state (spend ledger) and tracked measurements (`economics.md`, `soak.md`, `persona-probe.md`, `providers.md`) |
-| `tools/` | The screenshot harness: the same shots every time, for before and after |
+| `tools/` | Contract generation and utility scripts |
 
 ## Decisions
 
@@ -75,7 +75,7 @@ This project uses nested AGENTS.md files for area-specific standards:
 
 * **Tool versions**: `mise.toml` manages Node.js, Python, uv, and pnpm versions
 * **Task runner**: Nx orchestrates TypeScript and Python tasks with caching
-* **Contract generation**: `make contracts` generates zod schemas from pydantic models
+* **Contract generation**: `make contracts` generates zod schemas from pydantic models; `make contracts-check` verifies they are in sync
 * **Dependency management**: `pnpm` for TypeScript, `uv` for Python
 
 ## Money

@@ -23,4 +23,4 @@ which commit.
 | `discrepancies.jsonl` | `jeve.llm.gateway` | Times the local ledger and OpenRouter's `/key` disagreed by more than 10%. `/key` lags by minutes; the local figure is a floor. |
 | `provider-settings.before.json` | captured by hand | The account's provider allowlist as found in session 1, so any change is reversible. |
 | `economics.replay.md` | `make e2e` | The same report from a replay run. |
-| `night.json`, `gates.json` | session 1 | Historical. |
+| `provider-settings.before.json` | captured by hand | The account's provider allowlist as found in session 1, so any change is reversible. |
