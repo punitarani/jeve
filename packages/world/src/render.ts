@@ -27,8 +27,11 @@ import {
   PERSON_BOXES,
   RIG,
   SKIN_TONES,
+  SURFACES,
   TROUSER_TONES,
   buildVoxels,
+  facingAt,
+  fountainOf,
   lookFor,
   shade,
   type Glow,
@@ -453,19 +456,18 @@ export class WorldView {
    * (`seats`); what is next to them is in the tiles.
    */
   private learnSeats(map: TownMap): void {
-    const surfaces = new Set(["desk", "table", "counter", "conference", "reception"]);
-    const sides: [number, number][] = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    const fountain = fountainOf(map);
     const seats = new Set<number>();
-    for (const tiles of Object.values(map.seats ?? {})) {
+    for (const tiles of Object.values(map.seats)) {
       for (const [x, y] of tiles) seats.add(y * map.width + x);
     }
     for (let ty = 0; ty < map.height; ty++) {
       for (let tx = 0; tx < map.width; tx++) {
         const kind = map.tiles[ty]?.[tx];
-        if (kind === undefined || surfaces.has(kind)) continue;
-        const side = sides.find(([dx, dy]) => surfaces.has(map.tiles[ty + dy]?.[tx + dx] ?? ""));
+        if (kind === undefined || SURFACES.has(kind)) continue;
+        const side = facingAt(map, tx, ty, fountain);
         const key = ty * map.width + tx;
-        if (side !== undefined) this.faceYaw.set(key, Math.atan2(side[0], side[1]));
+        if (side !== null) this.faceYaw.set(key, Math.atan2(side[0], side[1]));
         if (seats.has(key)) this.seatYaw.set(key, side ? Math.atan2(side[0], side[1]) : 0);
       }
     }
@@ -826,11 +828,16 @@ export class WorldView {
         const body = `#${this.color.setRGB(grey, grey, grey * 1.05, THREE.SRGBColorSpace).getHexString()}`;
         look = this.lookOf(key, null, body, body);
       }
+      // The model scatters the crowd a little about its spots. On a chair that
+      // would seat somebody half off it, so a seated customer is drawn square.
       const tile = Math.round(dot.y) * this.mapWidth + Math.round(dot.x);
-      const yaw = this.faceYaw.get(tile) ?? dot.phase;
+      const seat = this.seatYaw.get(tile);
+      const [x, y] = seat === undefined ? [dot.x, dot.y] : [Math.round(dot.x), Math.round(dot.y)];
+      const yaw = seat ?? this.faceYaw.get(tile) ?? dot.phase;
       const breath = Math.sin(now / 900 + dot.phase) * 0.012;
-      this.pose(count, look, dot.x, dot.y, yaw, 0, 0, 0, breath);
-      this.blob(count, dot.x, dot.y);
+      const sit = seat === undefined ? 0 : 1;
+      this.pose(count, look, x, y, yaw, 0, sit, sit * 0.6, breath);
+      this.blob(count, x, y);
       count++;
     }
 

@@ -73,7 +73,85 @@ const SOLID: Partial<Record<TileKind, [number, number]>> = {
   table: [0.42, 0.45],
   tree: [1.1, 0.4],
   fountain: [0.42, 1],
+  chair: [0.3, 0.25],
+  bench: [0.3, 0.4],
+  server_rack: [1.5, 0.75],
+  bookshelf: [1.4, 0.5],
+  conference: [0.46, 0.85],
+  reception: [0.95, 0.7],
+  filing: [1.1, 0.5],
+  partition: [1.25, 0.25],
+  kitchen: [0.92, 0.75],
+  plant: [0.9, 0.3],
+  planter: [0.7, 0.8],
 };
+
+/** What one sits at, or stands at: a chair is drawn up to it and faces it. */
+export const SURFACES: ReadonlySet<TileKind> = new Set<TileKind>([
+  "desk",
+  "table",
+  "counter",
+  "conference",
+  "reception",
+]);
+
+/** Unit steps on the grid, as (dx, dz). North is -z. */
+export type Dir = [number, number];
+const SIDES: Dir[] = [
+  [0, -1],
+  [0, 1],
+  [-1, 0],
+  [1, 0],
+];
+
+/** The side of a tile on which a neighbour of one of `kinds` lies, if any. */
+export function sideWith(
+  map: TownMap,
+  tx: number,
+  ty: number,
+  kinds: ReadonlySet<TileKind>,
+): Dir | null {
+  for (const side of SIDES) {
+    const kind = map.tiles[ty + side[1]]?.[tx + side[0]];
+    if (kind !== undefined && kinds.has(kind)) return side;
+  }
+  return null;
+}
+
+const BACKING: ReadonlySet<TileKind> = new Set<TileKind>(["wall"]);
+
+/** The middle of the fountain, which is what the plaza looks at. */
+export function fountainOf(map: TownMap): [number, number] | null {
+  let n = 0;
+  let sx = 0;
+  let sz = 0;
+  map.tiles.forEach((row, ty) =>
+    row.forEach((kind, tx) => {
+      if (kind !== "fountain") return;
+      n++;
+      sx += tx;
+      sz += ty;
+    }),
+  );
+  return n === 0 ? null : [sx / n, sz / n];
+}
+
+/**
+ * Which way a tile faces when nobody has said: towards the desk, table or
+ * counter beside it, or, from a bench, towards the fountain. The chair is
+ * drawn by this and the person on it is turned by this, so they agree.
+ */
+export function facingAt(
+  map: TownMap,
+  tx: number,
+  ty: number,
+  fountain: [number, number] | null,
+): Dir | null {
+  if (map.tiles[ty]?.[tx] !== "bench") return sideWith(map, tx, ty, SURFACES);
+  if (fountain === null) return null;
+  const [dx, dz] = [fountain[0] - tx, fountain[1] - ty];
+  return Math.abs(dx) >= Math.abs(dz) ? [Math.sign(dx), 0] : [0, Math.sign(dz)];
+}
 
 /**
  * What each firm walks on. A floor is most of what the camera sees of a
@@ -252,6 +330,9 @@ export function buildVoxels(map: TownMap): Voxel[] {
   ) => voxels.push({ x, y, z, sx, sy, sz, color, ao: OPEN, glow: kind });
 
   const kindAt = (tx: number, ty: number) => map.tiles[ty]?.[tx];
+  const inside = (tx: number, ty: number) =>
+    map.buildings.some((b) => tx >= b.x0 && tx <= b.x1 && ty >= b.y0 && ty <= b.y1);
+  const fountain = fountainOf(map);
 
   for (let ty = 0; ty < map.height; ty++) {
     for (let tx = 0; tx < map.width; tx++) {
@@ -265,16 +346,34 @@ export function buildVoxels(map: TownMap): Voxel[] {
       // The ground under everything but walls, which stand on their own foot.
       // Interiors take a tint of the firm's colour, so a building reads as
       // belonging to someone from any zoom. Outdoors is laid in 2x2 pavers.
+      const indoors = inside(tx, ty);
       if (kind !== "wall") {
         const base = GROUND[kind];
+        const paving = jitter(GROUND.plaza ?? "#cfc6b2", 0.05, tx >> 1, ty >> 1, 3);
         const ground =
           base !== undefined
             ? kind === "plaza" || kind === "fountain"
-              ? jitter(base, 0.05, tx >> 1, ty >> 1, 3)
+              ? paving
               : jitter(base, kind === "path" ? 0.035 : 0.09, tx, ty, 1)
-            : floorOf(zone, tx, ty, palette?.floor ?? "#dddddd");
+            : indoors
+              ? floorOf(zone, tx, ty, palette?.floor ?? "#dddddd")
+              : kind === "chair" || kind === "table"
+                ? // A terrace: boards under the tables outside the cafe.
+                  jitter("#a9825a", 0.08, tx, ty >> 1, 36)
+                : paving;
         box(null, tx, -0.1, ty, 1, 0.2, 1, ground);
       }
+      // Furniture is drawn in its own frame: +z is the way it faces.
+      const facing = (dir: Dir | null): Dir => dir ?? [0, 1];
+      const away = (dir: Dir | null): Dir => (dir === null ? [0, 1] : [-dir[0], -dir[1]]);
+      const place =
+        ([dx, dz]: Dir) =>
+        (lx: number, y: number, lz: number, sx: number, sy: number, sz: number, color: string) =>
+          box(own, tx + lx * dz + lz * dx, y, ty - lx * dx + lz * dz, dx !== 0 ? sz : sx, sy, dx !== 0 ? sx : sz, color);
+      const light =
+        ([dx, dz]: Dir) =>
+        (k: Glow, lx: number, y: number, lz: number, sx: number, sy: number, sz: number, color: string) =>
+          glow(k, tx + lx * dz + lz * dx, y, ty - lx * dx + lz * dz, dx !== 0 ? sz : sx, sy, dx !== 0 ? sx : sz, color);
 
       switch (kind) {
         case "wall": {
@@ -299,21 +398,195 @@ export function buildVoxels(map: TownMap): Voxel[] {
         case "door":
           box(own, tx, 0.02, ty, 1, 0.05, 1, palette?.accent ?? "#555555");
           break;
-        case "desk":
-          box(own, tx, 0.4, ty, 0.94, 0.1, 0.72, jitter("#b98a55", 0.06, tx, ty));
-          box(own, tx - 0.36, 0.175, ty, 0.1, 0.35, 0.62, "#7d5a36");
-          box(own, tx + 0.36, 0.175, ty, 0.1, 0.35, 0.62, "#7d5a36");
-          box(own, tx + 0.12, 0.62, ty - 0.1, 0.46, 0.32, 0.06, "#23262f");
-          glow("screen", tx + 0.12, 0.63, ty - 0.066, 0.4, 0.25, 0.01, "#9fd0ff");
-          box(own, tx + 0.12, 0.47, ty - 0.1, 0.08, 0.06, 0.08, "#23262f");
+        case "desk": {
+          // Turned to whoever sits at it: the screen faces the chair.
+          const chairs = new Set<TileKind>(["chair"]);
+          const at = place(facing(sideWith(map, tx, ty, chairs)));
+          const front = facing(sideWith(map, tx, ty, chairs));
+          at(0, 0.4, 0, 0.94, 0.1, 0.72, jitter("#b98a55", 0.06, tx, ty));
+          at(-0.36, 0.175, 0, 0.1, 0.35, 0.62, "#7d5a36");
+          at(0.36, 0.175, 0, 0.1, 0.35, 0.62, "#7d5a36");
+          at(0.1, 0.64, -0.14, 0.5, 0.34, 0.06, "#23262f");
+          light(front)("screen", 0.1, 0.65, -0.105, 0.43, 0.27, 0.01, "#9fd0ff");
+          at(0.1, 0.47, -0.14, 0.08, 0.06, 0.08, "#23262f");
+          at(-0.05, 0.46, 0.14, 0.34, 0.02, 0.12, "#d9dde1");
           break;
+        }
         case "counter":
           box(own, tx, 0.4, ty, 1, 0.8, 0.72, jitter("#8b5a3c", 0.06, tx, ty));
           box(own, tx, 0.85, ty, 1, 0.1, 0.84, jitter("#eadfca", 0.04, tx, ty));
           break;
         case "table":
-          box(own, tx, 0.38, ty, 0.74, 0.08, 0.74, jitter("#eadfca", 0.05, tx, ty));
-          box(own, tx, 0.17, ty, 0.14, 0.34, 0.14, "#5f4331");
+          if (zone === "software_office") {
+            // A high table to stand round: nobody sits in a stand-up.
+            box(own, tx, 1.0, ty, 0.8, 0.07, 0.8, "#e9edf2");
+            box(own, tx, 0.5, ty, 0.12, 0.96, 0.12, "#3a3f4a");
+            box(own, tx, 0.03, ty, 0.5, 0.05, 0.5, "#3a3f4a");
+            box(own, tx + 0.15, 1.08, ty - 0.1, 0.22, 0.02, 0.3, "#2b2f3a");
+          } else {
+            const cloth = indoors ? "#eadfca" : "#f3efe6";
+            box(own, tx, 0.4, ty, 0.78, 0.08, 0.78, jitter(cloth, 0.05, tx, ty));
+            box(own, tx, 0.18, ty, 0.14, 0.36, 0.14, "#5f4331");
+            box(own, tx + 0.12, 0.49, ty + 0.1, 0.1, 0.1, 0.1, "#fafafa");
+            if (!indoors) {
+              // A parasol: the terrace is the one place with a roof of any kind.
+              const stripe = hash2(tx, ty, 41) > 0.5 ? "#c8453c" : "#e9b44c";
+              box(own, tx, 1.05, ty, 0.07, 1.3, 0.07, "#6f4d31");
+              box(own, tx, 1.72, ty, 1.5, 0.08, 1.5, stripe);
+              box(own, tx, 1.8, ty, 0.8, 0.08, 0.8, "#f3efe6");
+            }
+          }
+          break;
+        case "chair": {
+          const at = place(facing(facingAt(map, tx, ty, fountain)));
+          const [seat, frame] =
+            zone === "law_office"
+              ? ["#6b3f2a", "#3a2a20"]
+              : zone === "cafe"
+                ? ["#c99a62", "#7d5a36"]
+                : zone === "accounting_office"
+                  ? ["#52705f", "#2f3a34"]
+                  : ["#3d4558", "#23262f"];
+          at(0, 0.235, 0, 0.5, 0.07, 0.5, seat);
+          at(0, 0.11, 0, 0.1, 0.2, 0.1, frame);
+          at(0, 0.025, 0, 0.42, 0.05, 0.42, frame);
+          at(0, 0.52, -0.27, 0.5, 0.5, 0.07, seat);
+          break;
+        }
+        case "bench": {
+          // Benches look at the fountain.
+          const at = place(facing(facingAt(map, tx, ty, fountain)));
+          at(0, 0.235, 0, 0.98, 0.07, 0.46, "#a9825a");
+          at(-0.4, 0.1, 0, 0.08, 0.2, 0.4, "#3a3f4a");
+          at(0.4, 0.1, 0, 0.08, 0.2, 0.4, "#3a3f4a");
+          at(0, 0.5, -0.24, 0.98, 0.36, 0.06, "#a9825a");
+          break;
+        }
+        case "whiteboard": {
+          const at = place(away(sideWith(map, tx, ty, BACKING)));
+          at(0, 1.0, -0.45, 0.96, 0.66, 0.05, "#8a9099");
+          at(0, 1.0, -0.42, 0.88, 0.58, 0.03, "#f6f8fa");
+          at(0, 0.66, -0.4, 0.9, 0.04, 0.1, "#8a9099");
+          const inks = ["#d2453c", "#2f6fd0", "#2f8a57", "#23262f"];
+          for (let i = 0; i < 3; i++) {
+            const ink = inks[Math.floor(hash2(tx, ty, 50 + i) * inks.length)] ?? "#23262f";
+            const wide = 0.25 + hash2(tx, ty, 60 + i) * 0.4;
+            at(-0.3 + wide / 2 + hash2(tx, ty, 70 + i) * 0.1, 1.17 - i * 0.16, -0.4, wide, 0.04, 0.01, ink);
+          }
+          break;
+        }
+        case "server_rack": {
+          const front = away(sideWith(map, tx, ty, BACKING));
+          const at = place(front);
+          at(0, 0.78, -0.05, 0.84, 1.56, 0.8, "#262932");
+          at(0, 1.575, -0.05, 0.6, 0.03, 0.56, "#15171c");
+          const lights = ["#5dff8a", "#5dc8ff", "#ffb84d"];
+          for (let row = 0; row < 5; row++) {
+            for (let col = 0; col < 3; col++) {
+              if (hash2(tx * 7 + col, ty * 5 + row, 80) < 0.35) continue;
+              const led = lights[Math.floor(hash2(tx + col, ty + row, 81) * lights.length)] ?? "#5dff8a";
+              light(front)("screen", -0.24 + col * 0.24, 0.3 + row * 0.26, 0.355, 0.1, 0.05, 0.01, led);
+            }
+          }
+          break;
+        }
+        case "bookshelf": {
+          const at = place(away(sideWith(map, tx, ty, BACKING)));
+          at(0, 0.72, -0.28, 0.98, 1.44, 0.42, "#6b4a2f");
+          const spines = ["#8a2430", "#2f4a7a", "#2f6a4a", "#c9a227", "#5a3b22", "#d8d2c4"];
+          for (let shelf = 0; shelf < 3; shelf++) {
+            let x = -0.42;
+            for (let book = 0; book < 4; book++) {
+              const wide = 0.16 + hash2(tx * 3 + book, ty * 3 + shelf, 90) * 0.08;
+              const tall = 0.26 + hash2(tx * 3 + book, ty * 3 + shelf, 91) * 0.1;
+              const spine = spines[Math.floor(hash2(tx + book, ty + shelf, 92) * spines.length)] ?? "#8a2430";
+              at(x + wide / 2, 0.18 + shelf * 0.45 + tall / 2, -0.055, wide - 0.02, tall, 0.04, spine);
+              x += wide;
+            }
+          }
+          break;
+        }
+        case "conference":
+          box(own, tx, 0.43, ty, 1, 0.08, 0.9, jitter("#5a3d2b", 0.04, tx, ty));
+          box(own, tx, 0.2, ty, 0.5, 0.4, 0.3, "#3a2a20");
+          break;
+        case "reception":
+          box(own, tx, 0.45, ty, 1, 0.9, 0.56, blend(palette?.wall ?? "#888888", "#3a2a20", 0.35));
+          box(own, tx, 0.93, ty, 1, 0.06, 0.7, "#efe6d2");
+          break;
+        case "filing": {
+          const front = away(sideWith(map, tx, ty, BACKING));
+          const at = place(front);
+          at(0, 0.55, -0.18, 0.92, 1.1, 0.58, jitter("#b7b2a4", 0.05, tx, ty));
+          for (let drawer = 0; drawer < 3; drawer++) {
+            at(0, 0.2 + drawer * 0.36, 0.115, 0.8, 0.02, 0.01, "#6d6a60");
+            at(0, 0.33 + drawer * 0.36, 0.12, 0.2, 0.04, 0.02, "#54524b");
+          }
+          break;
+        }
+        case "partition": {
+          // Glass: pale, framed, low enough to see over.
+          const solid = new Set<TileKind>(["partition", "wall"]);
+          const isSolid = (x: number, y: number) => solid.has(kindAt(x, y) ?? "grass");
+          const alongX = isSolid(tx - 1, ty) || isSolid(tx + 1, ty);
+          const alongZ = isSolid(tx, ty - 1) || isSolid(tx, ty + 1);
+          if (alongX || !alongZ) {
+            box(own, tx, 0.62, ty, 1, 1.2, 0.08, "#cfe4ec");
+            box(own, tx, 1.25, ty, 1, 0.07, 0.14, "#56606b");
+          }
+          if (alongZ) {
+            box(own, tx, 0.62, ty, 0.08, 1.2, 1, "#cfe4ec");
+            box(own, tx, 1.25, ty, 0.14, 0.07, 1, "#56606b");
+          }
+          break;
+        }
+        case "kitchen": {
+          const front = away(sideWith(map, tx, ty, BACKING));
+          const at = place(front);
+          const what = Math.floor(hash2(tx, ty, 95) * 4);
+          if (what === 0) {
+            at(0, 0.78, -0.12, 0.92, 1.56, 0.72, "#e4e7ea"); // a fridge
+            at(0.34, 0.9, 0.25, 0.05, 0.5, 0.03, "#8a9099");
+          } else {
+            at(0, 0.45, -0.12, 1, 0.9, 0.72, "#b9bec4");
+            at(0, 0.925, -0.12, 1, 0.05, 0.76, "#d9dde1");
+            if (what === 1) {
+              at(0, 0.45, 0.245, 0.7, 0.5, 0.01, "#2b2f3a"); // an oven, lit
+              light(front)("lamp", 0, 0.45, 0.255, 0.5, 0.3, 0.01, "#ffb060");
+            } else if (what === 2) {
+              at(-0.22, 0.96, -0.1, 0.3, 0.03, 0.3, "#23262f"); // a hob and a pot
+              at(0.22, 0.96, -0.1, 0.3, 0.03, 0.3, "#23262f");
+              at(0.22, 1.06, -0.1, 0.26, 0.18, 0.26, "#8a9099");
+            } else {
+              at(0, 0.955, -0.1, 0.6, 0.02, 0.4, "#7f8790"); // a sink
+              at(0, 1.08, -0.36, 0.06, 0.26, 0.06, "#8a9099");
+            }
+          }
+          break;
+        }
+        case "plant": {
+          const leaf = jitter("#3f8f4f", 0.1, tx, ty, 6);
+          box(own, tx, 0.18, ty, 0.42, 0.36, 0.42, "#b5673f");
+          box(own, tx, 0.62, ty, 0.64, 0.52, 0.64, leaf);
+          box(own, tx, 1.0, ty, 0.4, 0.3, 0.4, shade(leaf, 0.15));
+          break;
+        }
+        case "planter": {
+          const leaf = jitter("#3f8f4f", 0.1, tx, ty, 7);
+          box(own, tx, 0.2, ty, 0.92, 0.4, 0.92, "#9c968a");
+          box(own, tx, 0.5, ty, 0.8, 0.24, 0.8, leaf);
+          for (let i = 0; i < 3; i++) {
+            const petal = ["#f2e27a", "#e0757c", "#f7f4ec"][i] ?? "#f2e27a";
+            box(own, tx + (hash2(tx, ty, 30 + i) - 0.5) * 0.6, 0.66, ty + (hash2(tx, ty, 33 + i) - 0.5) * 0.6, 0.14, 0.1, 0.14, petal);
+          }
+          break;
+        }
+        case "lamp":
+          box(own, tx, 0.06, ty, 0.32, 0.12, 0.32, "#2c2f38");
+          box(own, tx, 1.15, ty, 0.12, 2.2, 0.12, "#2c2f38");
+          box(own, tx, 2.36, ty, 0.46, 0.08, 0.46, "#2c2f38");
+          glow("lamp", tx, 2.2, ty, 0.32, 0.24, 0.32, "#fff1c4");
+          glow("pool", tx, 0.035, ty, 7, 0, 7, "#d9923f");
           break;
         case "tree": {
           // Three sizes of tree, from where it stands.
@@ -404,13 +677,66 @@ export function buildVoxels(map: TownMap): Voxel[] {
     });
   }
 
+  // What each building wears outside (audit D4). No roofs (WEB-0002): an
+  // awning, a portico, a mast, window boxes. Doors are in north or south walls.
+  const plain = (x: number, y: number, z: number, sx: number, sy: number, sz: number, color: string) =>
+    voxels.push({ x, y, z, sx, sy, sz, color, ao: OPEN });
+  for (const building of map.buildings) {
+    const [dx, dz] = building.door;
+    if (dz !== building.y0 && dz !== building.y1) continue;
+    const out = dz === building.y1 ? 1 : -1;
+    const tall = WALL_HEIGHT[building.zone] ?? DEFAULT_WALL;
+    if (building.zone === "cafe") {
+      // A striped awning the length of the front, in two steps so it slopes,
+      // with a scalloped edge. It shades the first row outside the door.
+      for (let tx = building.x0 + 1; tx < building.x1; tx++) {
+        const stripe = tx % 2 === 0 ? "#c8453c" : "#f3efe6";
+        plain(tx, tall + 0.3, dz + out * 0.72, 1, 0.08, 0.5, stripe);
+        plain(tx, tall + 0.16, dz + out * 1.2, 1, 0.08, 0.5, stripe);
+        plain(tx, tall + 0.03, dz + out * 1.43, 1, 0.2, 0.05, stripe);
+      }
+      for (const tx of [building.x0 + 1, dx - 1, dx + 1, building.x1 - 1]) {
+        plain(tx + (tx < dx ? -0.4 : 0.4), (tall + 0.12) / 2, dz + out * 1.38, 0.08, tall + 0.12, 0.08, "#f3efe6");
+      }
+    } else if (building.zone === "law_office") {
+      // Two columns and a pediment: a firm that wants to look like a bank.
+      for (const side of [-1, 1]) {
+        plain(dx + side, 0.08, dz + out * 0.85, 0.66, 0.16, 0.66, "#d8d0bd");
+        plain(dx + side, (tall + 0.16) / 2, dz + out * 0.85, 0.44, tall + 0.16, 0.44, "#ece5d3");
+        plain(dx + side, tall + 0.2, dz + out * 0.85, 0.62, 0.12, 0.62, "#d8d0bd");
+      }
+      plain(dx, tall + 0.37, dz + out * 0.85, 3.2, 0.22, 0.8, "#ece5d3");
+      plain(dx, tall + 0.55, dz + out * 0.85, 2.2, 0.16, 0.7, "#ece5d3");
+      plain(dx, tall + 0.69, dz + out * 0.85, 1.1, 0.12, 0.6, "#ece5d3");
+    } else if (building.zone === "software_office") {
+      // A mast and a dish on the back corner, with a light that is on at night.
+      const mx = building.x0;
+      const mz = out === 1 ? building.y0 : building.y1;
+      plain(mx, tall + 0.9, mz, 0.12, 1.6, 0.12, "#5c6670");
+      plain(mx + 0.3, tall + 0.75, mz, 0.5, 0.5, 0.08, "#dfe5ec");
+      plain(mx + 0.3, tall + 0.75, mz + 0.08, 0.12, 0.12, 0.12, "#5c6670");
+      glow("lamp", mx, tall + 1.76, mz, 0.18, 0.14, 0.18, "#ff6b5e");
+      // And planters of bamboo either side of the door.
+      for (const side of [-2, 2]) {
+        if (kindAt(dx + side, dz + out) === "wall") continue;
+        plain(dx + side, 0.2, dz + out * 0.85, 0.6, 0.4, 0.5, "#3a3f4a");
+        plain(dx + side, 0.8, dz + out * 0.85, 0.44, 0.9, 0.36, "#4f9f58");
+      }
+    } else {
+      // Window boxes along the front: the accountants water them.
+      for (let tx = building.x0 + 1; tx < building.x1; tx++) {
+        if (tx % 3 !== 1 || Math.abs(tx - dx) < 2) continue;
+        plain(tx, tall * 0.34, dz + out * 0.6, 0.8, 0.16, 0.2, "#6b4a2f");
+        plain(tx, tall * 0.34 + 0.13, dz + out * 0.6, 0.72, 0.12, 0.16, "#4f9f58");
+        plain(tx - 0.2, tall * 0.34 + 0.2, dz + out * 0.62, 0.12, 0.08, 0.12, "#e0757c");
+        plain(tx + 0.18, tall * 0.34 + 0.2, dz + out * 0.62, 0.12, 0.08, 0.12, "#f2e27a");
+      }
+    }
+  }
+
   // The fountain's jet.
-  const jets = map.tiles.flatMap((row, ty) =>
-    row.flatMap((kind, tx) => (kind === "fountain" ? [[tx, ty] as const] : [])),
-  );
-  if (jets.length > 0) {
-    const cx = jets.reduce((s, [x]) => s + x, 0) / jets.length;
-    const cz = jets.reduce((s, [, z]) => s + z, 0) / jets.length;
+  if (fountain !== null) {
+    const [cx, cz] = fountain;
     voxels.push({ x: cx, y: 0.75, z: cz, sx: 0.34, sy: 0.7, sz: 0.34, color: "#aaa595", ao: OPEN });
     voxels.push({ x: cx, y: 1.2, z: cz, sx: 0.2, sy: 0.3, sz: 0.2, color: "#9fd4f2", ao: OPEN });
   }

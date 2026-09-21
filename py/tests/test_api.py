@@ -244,6 +244,14 @@ def test_the_map_is_served_as_data(client: TestClient) -> None:
         assert body["tiles"][y][x] == "door"
         assert body["zones"][y][x] == building["zone"]
     assert body["crowd_spots"]["cafe"]
+    # WEB-0004: where one sits, per zone, so the client can draw people sitting.
+    # Offices and the plaza's benches have some; every one is a chair or a bench.
+    assert set(body["seats"]) == {b["zone"] for b in body["buildings"]} | {"plaza"}
+    for zone in ("software_office", "law_office", "accounting_office", "plaza"):
+        assert body["seats"][zone], zone
+    for tiles in body["seats"].values():
+        for x, y in tiles:
+            assert body["tiles"][y][x] in ("chair", "bench")
 
 
 def test_the_agents_frame_places_all_staff(client: TestClient) -> None:
