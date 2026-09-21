@@ -407,3 +407,74 @@ def test_movement_stays_out_of_the_timeline_unless_asked_for(
 
     everything = client.get("/events?limit=1000&background=true").json()["events"]
     assert any(e["kind"] == "agent.moved" for e in everything)
+
+
+def test_a_parameterised_route_is_one_span_name_not_one_per_event(
+    client: TestClient,
+) -> None:
+    """OBS-0001's cardinality guard.
+
+    `/causal/{seq}` is hit once per event a viewer clicks. If the span carried
+    the path instead of the route, a day of browsing would be a day of unique
+    span names and unique metric series — the single most expensive mistake
+    available here.
+    """
+
+    from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from jeve import obs
+    from jeve.config import Settings
+
+    spans = InMemorySpanExporter()
+    reader = InMemoryMetricReader()
+    obs.shutdown()
+    obs.start(
+        "jeve-test",
+        settings=Settings(axiom_token="test-token"),
+        span_exporter=spans,
+        metric_reader=reader,
+        log_exporter=InMemoryLogRecordExporter(),  # type: ignore[no-untyped-call]
+    )
+    try:
+        seqs = [row["seq"] for row in client.get("/events?limit=3").json()["events"]]
+        assert len(seqs) >= 2, "need two events to prove the names collapse"
+        for seq in seqs:
+            assert client.get(f"/causal/{seq}").status_code == 200
+        client.get("/state")
+        obs.shutdown()
+
+        finished = spans.get_finished_spans()
+        causal = [s for s in finished if "causal" in s.name]
+        assert {s.name for s in causal} == {"GET /causal/{seq}"}
+        assert len(causal) == len(seqs)
+        # The concrete path is still there to read, just not as the name.
+        assert {(s.attributes or {})["http.route"] for s in causal} == {
+            "/causal/{seq}"
+        }
+        assert len({(s.attributes or {})["url.path"] for s in causal}) == len(seqs)
+
+        # Every request holds a pooled connection, and that is a span, so a
+        # slow endpoint can be told apart from a slow database on any of the
+        # thirteen — including `/state`, which reads through `_db()` directly
+        # rather than through the two SQL helpers.
+        state = next(s for s in finished if s.name == "GET /state")
+        sessions = [
+            s
+            for s in finished
+            if s.name == "db.session"
+            and s.parent is not None
+            and s.parent.span_id == state.context.span_id
+        ]
+        assert sessions, "no db.session span under GET /state"
+        assert (sessions[0].attributes or {})["db.system.name"] == "postgresql"
+
+        # And where the SQL is known, the statement is its own child.
+        queries = [s for s in finished if s.name == "db.query"]
+        assert queries, "no db.query span from the /events read"
+        assert (queries[0].attributes or {})["db.operation.name"] == "SELECT"
+    finally:
+        obs.shutdown()

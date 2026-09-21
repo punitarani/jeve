@@ -55,6 +55,17 @@ class Span:
         for name, value in attrs.items():
             self._span.set_attribute(name, value)
 
+    def update_name(self, name: str) -> None:
+        """Rename once the work has told you what it was.
+
+        An HTTP span cannot know its route until Starlette has matched one,
+        and `GET /causal/{seq}` is one span name where `GET /causal/8412` is
+        one per event.
+        """
+
+        if self._span is not None:
+            self._span.update_name(name)
+
     def fail(self, error: BaseException) -> None:
         """Mark the span as the failure it was, without the traceback.
 
