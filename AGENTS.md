@@ -93,6 +93,7 @@ checkpoint for humans; the table wins any argument.
 
 ```
 make check            # lint, types (mypy + tsc), tests, decision records
+make confirm          # every decision record's confirmation command, for real
 make contracts        # generate zod schemas from pydantic models
 make contracts-check  # verify contracts are in sync (drift detection)
 make e2e              # the whole stack, strict replay: free, no key, ~5 min
@@ -308,6 +309,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: deployment, fly, cloudflare, doppler, agent-decided
 
 `fly.toml` is one app `jeve-backend` with process groups `api` (the only ingress, on `JEVE_DATABASE_POOLED_URL` when set, else the direct DSN) and `sim` (`sim-entrypoint.sh`, `on-failure` restarts, no service). The web app is an assets-only Worker serving `out/`. Secrets live in Doppler projects `app`/`infra`/`worker` and land as Fly secrets and GitHub secrets; the sim's Postgres URL must be a *direct* connection because the writer lock is a session-level advisory lock. The frontend is read-only, so the dialogue endpoint's spend path is off in production (`JEVE_DIALOGUE_GENERATE=off`).
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### OPS-0002: Run the suite once per CI run, and confirm records by collection
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `.github/workflows/ci.yml`, `scripts/run-confirmations.py`, `scripts/test_run_confirmations.py`, `scripts/ci-needs-python.sh`, `py/tests/conftest.py`  
+**Tags**: ci, testing, cost, agent-decided
+
+The suite runs once per CI run under `pytest -n auto --dist loadfile`, each xdist worker on a database of its own, and `scripts/run-confirmations.py` then runs each record's `confirmation` once — in `--pytest collect` mode a command that is nothing but `cd py && uv run pytest <paths>` is collected rather than re-executed.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

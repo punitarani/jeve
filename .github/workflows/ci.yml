@@ -1,13 +1,24 @@
 name: ci
 
 on:
+  # One run per change. `push` on every branch plus an unfiltered
+  # `pull_request` ran the whole workflow twice on the same commit (OPS-0002).
+  # A branch with no pull request open is built with `workflow_dispatch`.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded branch runs are worth nothing; a superseded run on `main` is
+  # a `flyctl deploy` or a `wrangler deploy` half-way through. Queue those.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Deploy credentials come from Doppler at deploy time, so nothing here needs
+# to write to the repository.
+permissions:
+  contents: read
 
 env:
   # Nothing in CI may reach a model. The gateway needs a key to construct a
@@ -15,8 +26,42 @@ env:
   CI: "true"
 
 jobs:
+  changes:
+    # The Python suite cannot observe a change to the web app or to prose, so
+    # a pull request made only of those skips five minutes of it (OPS-0002).
+    # Biased towards running: anything unrecognised is a reason to run.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - id: filter
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "python=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # On a pull request the checkout is the merge commit, so its first
+          # parent is the base: the diff is exactly this branch's change set,
+          # with no API call and no extra token scope. A shallow fetch that
+          # did not reach the parent tells us nothing, so it runs everything.
+          if ! git rev-parse --verify --quiet HEAD^1 >/dev/null; then
+            echo "python=true" >> "$GITHUB_OUTPUT"
+            echo "no base commit in this checkout — running everything"
+            exit 0
+          fi
+          git diff --name-only HEAD^1 HEAD > changed.txt
+          echo "changed:"; sed 's/^/  /' changed.txt
+          needed="$(scripts/ci-needs-python.sh < changed.txt)"
+          echo "python=$needed" >> "$GITHUB_OUTPUT"
+          echo "needs the python job: $needed"
+
   decisions:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -28,6 +73,11 @@ jobs:
 
       - name: Generator unit tests
         run: python3 scripts/test_gen_decisions.py
+
+      - name: Confirmation runner unit tests
+        # OPS-0002. Every command these run is a shell builtin, which is why
+        # they belong in the job with no uv, no pnpm and no database.
+        run: python3 scripts/test_run_confirmations.py
 
       - name: Regenerate and fail if the tree is dirty
         run: |
@@ -43,6 +93,9 @@ jobs:
 
   python:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: [changes]
+    if: needs.changes.outputs.python == 'true'
     # Without a database about half the suite skips: everything that runs the
     # world. It passed green for two sessions while testing none of it.
     services:
@@ -60,6 +113,12 @@ jobs:
       JEVE_DATABASE_URL: postgresql://jeve:jeve@127.0.0.1:5432/jeve
     steps:
       - uses: actions/checkout@v5
+      # The confirmations include commands that call `python3` directly, and
+      # the decision-record tooling needs 3.13+ (`Path.full_match`); the
+      # runner's own is older.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -77,22 +136,38 @@ jobs:
       - run: uv sync --frozen --directory py
       - run: npx nx run py:lint
       - run: npx nx run py:typecheck
-      - run: npx nx run py:test
-      - run: npx nx run api:lint
-      - run: npx nx run sim:lint
-      - run: npx nx run api:typecheck
-      - run: npx nx run sim:typecheck
-      - run: npx nx run api:test
-      - run: npx nx run sim:test
+
+      # One run of the suite, in parallel, each worker on a database of its
+      # own (OPS-0002). `loadfile` keeps a module's tests together, which the
+      # module-scoped world fixtures need. The api/sim nx targets are subsets
+      # of this run and of py:lint/py:typecheck, so they are not run again.
+      - name: Run the suite
+        run: uv run --directory py pytest -n auto --dist loadfile --durations=15
 
       - name: The world's tests ran, not skipped
         # A service that failed to start would turn the job green again by
-        # skipping. Fail instead.
+        # skipping. Fail instead. The workers test on `jeve_gwN`, not on
+        # `jeve`, so this asks those for the world they should have built.
         run: |
           uv run --directory py python - <<'PY'
           from jeve import db
+
           with db.connect() as conn:
               print("postgres:", conn.execute("SHOW server_version").fetchone())
+              workers = conn.execute(
+                  "SELECT datname FROM pg_database WHERE datname LIKE 'jeve\\_gw%' "
+                  "ORDER BY datname"
+              ).fetchall()
+          names = [row["datname"] for row in workers]
+          print("worker databases:", names or "none")
+          assert names, "no xdist worker database — the suite did not run in parallel"
+          import os
+
+          os.environ["JEVE_DATABASE_URL"] = db.dsn().rsplit("/", 1)[0] + "/" + names[0]
+          with db.connect() as conn:
+              built = conn.execute("SELECT to_regclass('events') AS t").fetchone()
+          assert built is not None and built["t"], f"{names[0]} holds no world"
+          print(f"{names[0]}: migrated and seeded")
           PY
 
       - name: No second path to a model
@@ -121,81 +196,23 @@ jobs:
             exit 1
           fi
 
-  confirmations:
-    # A `confirmation` that nobody runs is a comment. This is what stops them
-    # becoming aspirational. Its own job because the commands need uv, pnpm and
-    # a database, and the `decisions` job deliberately has none of them.
-    #
-    # These are arbitrary shell commands read out of files in the repo, so they
-    # are only executed for branches pushed here — never for a pull request
-    # from a fork, where the command would be attacker-controlled.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    # Without a database about half the suite skips: everything that runs the
-    # world. It passed green for two sessions while testing none of it.
-    services:
-      postgres:
-        image: postgres:18-alpine
-        env:
-          POSTGRES_USER: jeve
-          POSTGRES_PASSWORD: jeve
-          POSTGRES_DB: jeve
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U jeve -d jeve"
-          --health-interval 5s --health-timeout 5s --health-retries 12
-    env:
-      JEVE_DATABASE_URL: postgresql://jeve:jeve@127.0.0.1:5432/jeve
-    steps:
-      - uses: actions/checkout@v5
-      # Some confirmations call `python3` directly, and the decision-record
-      # tooling needs 3.13+ (`Path.full_match`); the runner's own is older.
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.14"
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: pnpm
-      # OPS-0001's confirmation is `flyctl config validate` — nothing else in
-      # this job provides the binary. The setup-flyctl action died silently in
-      # run 35625550296, so install straight from the official installer.
-      - run: |
-          curl -fsSL https://fly.io/install.sh | sh
-          echo "$HOME/.fly/bin" >> "$GITHUB_PATH"
-      - run: uv sync --frozen --directory py
-      - run: pnpm install --frozen-lockfile
       - name: Run each record's confirmation command, once each
-        run: |
-          set -o pipefail
-          python3 - <<'PY' > /tmp/confirmations.tsv
-          import json
-          seen = {}
-          for line in open("decisions/index.jsonl"):
-              record = json.loads(line)
-              command = record.get("confirmation")
-              if command:
-                  seen.setdefault(command, []).append(record["id"])
-          for command, ids in seen.items():
-              print(",".join(ids) + "\t" + command)
-          PY
-          status=0
-          while IFS=$'\t' read -r ids cmd; do
-            echo "::group::$ids: $cmd"
-            if ! bash -c "$cmd"; then
-              echo "::error::$ids confirmation failed: $cmd"
-              status=1
-            fi
-            echo "::endgroup::"
-          done < /tmp/confirmations.tsv
-          exit $status
+        # A `confirmation` that nobody runs is a comment. This is what stops
+        # them becoming aspirational (CORE-0001). Pytest confirmations are
+        # collected rather than re-executed: the run above is the execution
+        # (OPS-0002). Everything else runs verbatim.
+        #
+        # These are arbitrary shell commands read out of files in the repo, so
+        # they are only executed for branches pushed here — never for a pull
+        # request from a fork, where the command would be attacker-controlled.
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository
+        run: python3 scripts/run-confirmations.py --pytest collect
 
   contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
@@ -214,6 +231,7 @@ jobs:
 
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -222,19 +240,18 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # typecheck/build depend on contracts:generate, which is `uv run` —
-      # the web job needs Python deps for what is otherwise a TypeScript gate.
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - run: uv sync --frozen --directory py
+      # --excludeTaskDependencies: typecheck and build otherwise pull in
+      # contracts:generate, which is `uv run` — a whole Python toolchain for
+      # what is a TypeScript gate. The committed generated file is what these
+      # compile against, and the `contracts` job is what proves it is current.
       # No eslint config exists in the repo — tsc strict is the static gate.
-      - run: npx nx run web:typecheck
-      - run: npx nx run web:build
-      - run: npx nx run web:test
+      - run: npx nx run web:typecheck --excludeTaskDependencies
+      - run: npx nx run web:build --excludeTaskDependencies
+      - run: npx nx run web:test --excludeTaskDependencies
 
   docker:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - name: Build API image
@@ -247,6 +264,7 @@ jobs:
   deploy-web:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [web, contracts]
     steps:
       - uses: actions/checkout@v5
@@ -285,8 +303,11 @@ jobs:
   deploy-backend:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # `api` and `sim` are nx targets inside the python job, not job ids —
-    # depending on them by name made this job never runnable.
+    # depending on them by name made this job never runnable. The python job
+    # now also carries the record confirmations (OPS-0002), so a red
+    # confirmation holds the deploy.
     needs: [python, docker]
     steps:
       - uses: actions/checkout@v5
