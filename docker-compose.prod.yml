@@ -124,7 +124,9 @@ services:
     # reaches it when an operator needs to.
     restart: unless-stopped
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # postgres:18+ stores the cluster at PGDATA=/var/lib/postgresql/18/docker
+      # (pg_upgrade-style layout) and refuses a mount at the legacy /data path.
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U jeve -d jeve"]
       interval: 2s
