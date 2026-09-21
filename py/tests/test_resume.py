@@ -10,7 +10,9 @@ tick commits — no handler runs, nothing is flushed. Then it is simply started
 again, with no resume flag, because there is no resume procedure.
 
 Runs Jev in strict replay, so the comparison covers model-made decisions,
-sampled draws, positions and money, not only the rules path.
+sampled draws, positions and money — and again on rules, which needs no cassette.
+Between recordings the cassette is stale and the Jev arm cannot run; the rules
+arm is what keeps this guarantee tested every hour of a working day.
 """
 
 from __future__ import annotations
@@ -34,16 +36,7 @@ from jeve.sim import CASSETTE
 pytestmark = pytest.mark.timeout(600)
 
 DAYS = "2"
-ARGS = [
-    "--until-day",
-    DAYS,
-    "--day-minutes",
-    "0",
-    "--policy",
-    "jev",
-    "--calls",
-    "replay",
-]
+ARGS = ["--until-day", DAYS, "--day-minutes", "0", "--calls", "replay"]
 
 # Everything that is world state, in a stable order. `seq`, ids and `causes`
 # are included on purpose: they are content, and they are exactly what a
@@ -62,6 +55,7 @@ TABLES = {
     "cafe_sales": "id",
     "persons": "id",
     "modules": "id",
+    "outage_notices": "incident_id, person_id",
 }
 
 
@@ -94,13 +88,13 @@ def world_hash(conn: Connection[DictRow]) -> dict[str, str]:
     return hashes
 
 
-def sim(*extra: str, die_at: int = 0) -> subprocess.CompletedProcess[str]:
+def sim(*extra: str, policy: str, die_at: int = 0) -> subprocess.CompletedProcess[str]:
     env = {k: v for k, v in os.environ.items() if k != "OPENROUTER_API_KEY"}
     env["JEVE_TEST_DIE_AT_EVENT"] = str(die_at)
     # `sys.executable`, not `uv run`: SIGKILL on a wrapper orphans the child it
     # started, which would go on writing while the test restarted a second one.
     return subprocess.run(
-        [sys.executable, "-m", "jeve.sim", *extra, *ARGS],
+        [sys.executable, "-m", "jeve.sim", *extra, "--policy", policy, *ARGS],
         env=env,
         capture_output=True,
         text=True,
@@ -109,10 +103,11 @@ def sim(*extra: str, die_at: int = 0) -> subprocess.CompletedProcess[str]:
     )
 
 
+@pytest.mark.parametrize("policy", ["rules", "jev"])
 def test_a_killed_run_restarted_is_byte_identical_to_one_never_interrupted(
-    conn: Connection[DictRow],
+    conn: Connection[DictRow], policy: str
 ) -> None:
-    clean = sim("--seed-world")
+    clean = sim("--seed-world", policy=policy)
     assert clean.returncode == 0, clean.stderr
     expected = world_hash(conn)
     total = conn.execute("SELECT count(*) AS n FROM events").fetchone()
@@ -120,7 +115,7 @@ def test_a_killed_run_restarted_is_byte_identical_to_one_never_interrupted(
 
     # Three deaths: early in a morning, deep in the first day, and on day two —
     # each somewhere inside a tick, with rows written and not yet committed.
-    first = sim("--seed-world", die_at=40)
+    first = sim("--seed-world", policy=policy, die_at=40)
     assert first.returncode == -signal.SIGKILL, (first.returncode, first.stderr)
 
     survivors = conn.execute(
@@ -133,12 +128,13 @@ def test_a_killed_run_restarted_is_byte_identical_to_one_never_interrupted(
     assert meta is not None and int(survivors["tick"]) <= int(meta["tick_seq"])
 
     for die_at in (275, int(total["n"]) - 150):
-        again = sim(die_at=die_at)
+        again = sim(policy=policy, die_at=die_at)
         assert again.returncode == -signal.SIGKILL, (again.returncode, again.stderr)
 
-    finished = sim()
+    finished = sim(policy=policy)
     assert finished.returncode == 0, finished.stderr
-    assert "0 live" in finished.stdout
+    if policy == "jev":
+        assert "0 live" in finished.stdout
 
     actual = world_hash(conn)
     differing = [table for table in expected if expected[table] != actual[table]]

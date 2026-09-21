@@ -20,19 +20,20 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve import db
-from jeve.core.clock import at
+from jeve.core.clock import DAY, at
+from jeve.core.orgs import ORGS as ORG_SPECS
 from jeve.core.seed import derive_rng
 
 ROOT_SEED = 20260920
 
 MODULES = (("timetrack", "TimeTrack"), ("invoicing", "Invoicing"), ("pos", "POS"))
 
-ORGS = (
-    ("tallybird", "Tallybird Software", "software"),
-    ("halloran", "Halloran & Pike LLP", "law"),
-    ("ledgerline", "Ledgerline Accounting", "accounting"),
-    ("thirdrail", "Third Rail Cafe", "cafe"),
-)
+ORGS = tuple((org.id, org.name, org.kind) for org in ORG_SPECS)
+
+HOUSEHOLD_OPENING_CENTS = 20_000_00
+"""What the town's households have in the bank on day zero: a few days of what
+they are collectively paid. Staff spend from it at the cafe and wages refill it
+(WORLD-0005)."""
 
 # Staff with a full decision surface. Counterparties are generated below.
 STAFF: tuple[tuple[str, str, str], ...] = (
@@ -114,7 +115,8 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             TRUNCATE sim_meta, scheduled, events, orgs, persons, accounts,
                      ledger_txns, ledger_entries, modules, incidents,
                      subscriptions, tickets, invoices, payments, cafe_sales,
-                     decisions, positions RESTART IDENTITY CASCADE
+                     decisions, positions, outage_notices
+                     RESTART IDENTITY CASCADE
             """
         )
         conn.execute(
@@ -139,6 +141,13 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         for org_id, _, _ in ORGS:
             for kind in ("cash", "receivable", "payable", "revenue", "expense"):
                 accounts.append((f"{org_id}.{kind}", org_id, kind.title(), kind))
+        # The people who work in the town, as one purse. No org: they are not a
+        # firm, and the dashboard's per-firm cash must not count them.
+        accounts += [
+            ("households.cash", None, "Households: cash", "cash"),
+            ("households.income", None, "Households: wages received", "revenue"),
+            ("households.spending", None, "Households: spending", "expense"),
+        ]
         db.executemany(
             conn,
             "INSERT INTO accounts (id, org_id, name, kind) VALUES (%s, %s, %s, %s)",
@@ -146,19 +155,17 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         )
 
         # Opening cash, chosen for runway: the cafe is thin, Tallybird is fat.
-        opening = {
-            "tallybird": 48_000_00,
-            "halloran": 96_000_00,
-            "ledgerline": 41_000_00,
-            "thirdrail": 9_400_00,
-        }
+        opening = {org.id: org.opening_cash_cents for org in ORG_SPECS}
         txn = conn.execute(
             "INSERT INTO ledger_txns (sim_time, memo) VALUES (0, 'opening balances') "
             "RETURNING id"
         ).fetchone()
         assert txn is not None
         entries = [(txn["id"], f"{org}.cash", cents) for org, cents in opening.items()]
-        entries.append((txn["id"], "external", -sum(opening.values())))
+        entries.append((txn["id"], "households.cash", HOUSEHOLD_OPENING_CENTS))
+        entries.append(
+            (txn["id"], "external", -sum(opening.values()) - HOUSEHOLD_OPENING_CENTS)
+        )
         db.executemany(
             conn,
             "INSERT INTO ledger_entries (txn_id, account_id, amount_cents) "
@@ -223,8 +230,14 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             ("thirdrail", None, "pos", 120_00),
             ("thirdrail", None, "timetrack", 90_00),
         ]
+        # Outside subscribers, spread over the three products. They all used to
+        # be on Invoicing, while any of the first forty could report an outage
+        # of anything; now a person notices an outage of what they use.
         for index in range(COUNTERPARTIES_PER_ORG):
-            subs.append((None, f"tallybird.subscriber.{index}", "invoicing", 49_00))
+            module = ("invoicing", "timetrack", "invoicing", "pos", "invoicing")[
+                index % 5
+            ]
+            subs.append((None, f"tallybird.subscriber.{index}", module, 49_00))
         db.executemany(
             conn,
             "INSERT INTO subscriptions (org_id, person_id, module_id, monthly_cents) "
@@ -291,6 +304,35 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
                 "subscription",
             ),
         ]
+        # The books open mid-story (WORLD-0005): last month's client work was
+        # billed four weeks ago on thirty-day terms, so it falls due across the
+        # first week. Same draw as the engine's month-end uses, for month -1.
+        # Initial conditions: without them nothing is collectable inside ten days.
+        from jeve.world.engine import CLIENT_ENGAGED_PER_MONTH
+
+        for org in ORG_SPECS:
+            if not org.bills_clients_monthly:
+                continue
+            for index in range(COUNTERPARTIES_PER_ORG):
+                client = f"{org.id}.{org.counterparty_role}.{index}"
+                rng = derive_rng(root_seed, "engagement", org.id, client, -1)
+                if rng.random() >= CLIENT_ENGAGED_PER_MONTH:
+                    continue
+                amount = 80_000 + int(rng.random() * 540_000)
+                spread = derive_rng(root_seed, "aged", org.id, client)
+                issued = at(-27) + int(spread.random() * 5 * DAY)
+                invoices.append(
+                    (
+                        org.id,
+                        None,
+                        client,
+                        issued,
+                        issued + 30 * DAY,
+                        amount,
+                        "services",
+                    )
+                )
+
         db.executemany(
             conn,
             "INSERT INTO invoices "
@@ -339,7 +381,7 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         # The calendar. Month-end on day 3; the outage starts day 3 morning and
         # runs into day 4, so invoicing is blocked exactly when it matters.
         schedule: list[tuple[int, int, str, str | None, str]] = [
-            (at(3, 9, 30), 0, "month.end", None, '{"label": "September"}'),
+            (at(3, 9, 30), 0, "month.end", None, '{"label": "month 1", "month": 0}'),
             (
                 at(3, 8, 45),
                 0,

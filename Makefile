@@ -67,6 +67,10 @@ db-down: ## Stop Postgres, keep the data
 fixture: ## Run the golden fixture. POLICY=jev|rules CALLS=replay|record
 	$(UV) python scripts/run_fixture.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS))
 
+.PHONY: soak
+soak: ## 35 sim-days on rules, on its own database; checks invariants, writes ops/soak.md. POLICY= CALLS= DAYS= COUNTERFACTUAL=1
+	$(UV) python scripts/soak.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS)) $(if $(COUNTERFACTUAL),--counterfactual)
+
 .PHONY: sim
 sim: ## The ever-running world: Jev live, paced, budget-governed, restart-safe
 	$(UV) python -m jeve.sim --calls $(or $(CALLS),record) $(if $(POLICY),--policy $(POLICY)) --verbose

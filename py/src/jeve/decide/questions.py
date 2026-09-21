@@ -24,16 +24,18 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from jeve.core.clock import TICK, WORK_END, WORK_START, SimTime
+from jeve.core.clock import SimTime
 from jeve.decide.policy import DecisionContext
 from jeve.llm.protocol import Choice, Noul, NoulCriteria, Score
 
-type Mode = Literal["J", "P", "H"]
+type Mode = Literal["J", "P"]
 """J: judgement, take the argmax. P: propensity, sample the distribution.
-H: a propensity asked at day scale and thinned to a per-tick hazard — for
-irreversible actions that are re-asked every tick until they happen."""
 
-OFFICE_TICKS_PER_DAY = (WORK_END - WORK_START) // TICK
+There was an H: a day-level propensity thinned to a per-tick hazard, for a
+question re-asked every tick until it happened. Nothing is re-asked every tick
+any more (WORLD-0005): a question about today is asked once today, at an hour
+that belongs to whoever is answering. That also means no constant in here
+depends on how long a tick is."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +154,14 @@ def trait_level(name: str, value: object) -> int:
     return 2
 
 
+def trait_fraction(name: str, value: object) -> float:
+    """Where a trait sits in the range it was seeded from: 0 lowest, 1 highest."""
+
+    low, high = _TRAIT_RANGE[name]
+    number = float(value) if isinstance(value, int | float) else (low + high) / 2
+    return min(1.0, max(0.0, (number - low) / (high - low)))
+
+
 def trait_words(name: str, value: object) -> str:
     return _TRAIT_WORDS[name][trait_level(name, value)]
 
@@ -184,13 +194,27 @@ def queue_words(length: object) -> str:
 
 def lateness_words(days_until_due: object) -> str:
     days = int(_number(days_until_due))
-    if days >= 0:
+    if days >= 2:
+        return "the invoice falls due in two days"
+    if days == 1:
+        return "the invoice falls due tomorrow"
+    if days == 0:
         return "the invoice falls due today"
     if days >= -3:
         return "the invoice is a few days overdue"
     if days >= -10:
         return "the invoice is more than a week overdue"
-    return "the invoice is several weeks overdue and has been chased"
+    if days >= -30:
+        return "the invoice is several weeks overdue"
+    return "the invoice is more than a month overdue"
+
+
+def chased_words(chased: object, in_person: object) -> str:
+    if in_person:
+        return "someone from the firm they owe brought it up with them in person"
+    if chased:
+        return "the firm they owe has rung them about it"
+    return "nobody has chased them about it"
 
 
 def runway_words(days: object) -> str:
@@ -242,20 +266,34 @@ _FILE = Ask(
 
 
 def _prepare_file_ticket(ctx: DecisionContext) -> Prepared:
-    if not ctx.facts.get("module_down") or ctx.facts.get("already_open"):
-        # Nothing is broken, or they already have a ticket open: not a choice.
-        return Prepared(ctx.kind, gated={"file": False})
     return Prepared(
         ctx.kind,
         asks=(_FILE,),
         state={
             "person": "a customer who pays for small-business software",
             "temperament": trait_words("vocality", ctx.traits.get("vocality")),
-            "situation": (
-                "A feature of the software that they use for work has just "
-                "stopped responding. They have not reported it yet."
-            ),
+            "situation": _outage_so_far(ctx.facts.get("hours_down")),
         },
+    )
+
+
+def _outage_so_far(hours: object) -> str:
+    """They are asked when they first notice, and again each day it goes on."""
+
+    h = _number(hours)
+    if h < 4:
+        return (
+            "A feature of the software that they use for work has just "
+            "stopped responding. They have not reported it yet."
+        )
+    if h < 30:
+        return (
+            "A feature of the software that they use for work has been down "
+            "since yesterday. They have not reported it yet."
+        )
+    return (
+        "A feature of the software that they use for work has been down for "
+        "days. They have not reported it yet."
     )
 
 
@@ -349,9 +387,12 @@ def _interpret_answer(
     return Outcome({"answer_now": bool(got["answer_now"].value)}, {})
 
 
+# Asked once per bill per day (WORLD-0005), so the day-level answer is sampled
+# as it stands. It used to be asked every tick and thinned to a per-tick hazard;
+# that made 1,591 `payment.deferred` events out of a die being rolled.
 _PAY = Ask(
     "pay_today",
-    "H",
+    "P",
     Noul(
         instructions="Will this person pay this invoice at some point today?",
         criteria=_yes_no(
@@ -363,10 +404,6 @@ _PAY = Ask(
 
 
 def _prepare_payment(ctx: DecisionContext) -> Prepared:
-    if not ctx.facts.get("can_afford", True):
-        return Prepared(ctx.kind, gated={"pay": False, "reason": "insufficient_cash"})
-    if _number(ctx.facts.get("days_until_due")) > 0:
-        return Prepared(ctx.kind, gated={"pay": False, "reason": "not_due"})
     return Prepared(
         ctx.kind,
         asks=(_PAY,),
@@ -375,23 +412,11 @@ def _prepare_payment(ctx: DecisionContext) -> Prepared:
             "habit": trait_words("promptness", ctx.traits.get("promptness")),
             "invoice": lateness_words(ctx.facts.get("days_until_due")),
             "cash": runway_words(ctx.facts.get("runway_days")),
+            "chased": chased_words(
+                ctx.facts.get("chased"), ctx.facts.get("reminded_in_person")
+            ),
         },
     )
-
-
-def per_tick_hazard(p_day: float) -> float:
-    """Thin a day-level probability to one fifteen-minute tick.
-
-    The question is about *today* because that is a scale Jev can reason at.
-    It is asked every tick, and sampling a day-level p every tick compounds to
-    near-certainty by lunchtime: 1 - (1 - p)^32. Jev cannot do that arithmetic,
-    so code does: the hazard h with 1 - (1 - h)^ticks = p.
-    """
-
-    p = min(max(p_day, 0.0), 1.0)
-    if p >= 1.0:
-        return 1.0
-    return float(1.0 - (1.0 - p) ** (1.0 / OFFICE_TICKS_PER_DAY))
 
 
 def _interpret_payment(
@@ -440,12 +465,9 @@ def _interpret_cafe(
         return Outcome(
             {"buy": False, "reason": "queue" if waiting else "changed_mind"}, {}
         )
-    # How much they spend is a till fact, not a judgement: same draw the rules
-    # twin uses, so the two policies differ only in whether they buy.
-    roll = draw()
-    return Outcome(
-        {"buy": True, "amount_cents": 350 + int(roll * 600)}, {"amount": roll}
-    )
+    # How much they spend is a till fact, not a judgement: the engine rings it
+    # up, keyed by the visit, whichever policy (or gate) said they bought.
+    return Outcome({"buy": True, "reason": "bought"}, {})
 
 
 # -- agent.tick: where next, and whether to stop and talk (WORLD-0003) --------
@@ -729,11 +751,6 @@ _RELEASE = Ask(
 
 
 def _prepare_payroll(ctx: DecisionContext) -> Prepared:
-    if not ctx.facts.get("can_afford", True):
-        # Whether the money exists is a ledger fact, never a judgement.
-        return Prepared(
-            ctx.kind, gated={"release": False, "reason": "insufficient_cash"}
-        )
     multiple = _number(ctx.facts.get("cash_multiple"), 5.0)
     return Prepared(
         ctx.kind,
@@ -845,8 +862,6 @@ def mood_words(average: object) -> str:
 
 
 def _prepare_catering(ctx: DecisionContext) -> Prepared:
-    if not ctx.facts.get("can_afford", True):
-        return Prepared(ctx.kind, gated={"order": "none"})
     org = str(ctx.facts.get("org", ""))
     return Prepared(
         ctx.kind,
@@ -870,6 +885,98 @@ def _interpret_catering(
     return Outcome({"order": order if order in ("small", "large") else "none"}, {})
 
 
+# -- ticket.confirm and chase.invoice: the loops that close (WORLD-0005) -------
+
+_CONFIRM = Ask(
+    "confirm",
+    "P",
+    Noul(
+        instructions=(
+            "Support has told this customer their problem is fixed. Today, do "
+            "they check, and reply to confirm so the ticket can be closed?"
+        ),
+        criteria=_yes_no(
+            "They check it works and reply today; the ticket is closed.",
+            "They do not get round to replying today.",
+        ),
+    ),
+)
+
+
+def answered_words(days: object) -> str:
+    d = int(_number(days))
+    if d <= 0:
+        return "support replied earlier today to say it is fixed"
+    if d == 1:
+        return "support replied yesterday to say it is fixed"
+    return "support replied a couple of days ago to say it is fixed"
+
+
+def _prepare_confirm(ctx: DecisionContext) -> Prepared:
+    return Prepared(
+        ctx.kind,
+        asks=(_CONFIRM,),
+        state={
+            "person": "a customer who pays for small-business software",
+            "temperament": trait_words("diligence", ctx.traits.get("diligence")),
+            "ticket": answered_words(ctx.facts.get("days_since_answer")),
+            "software": "The feature they reported is working again.",
+        },
+    )
+
+
+def _interpret_confirm(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    confirm = bool(got["confirm"].value)
+    return Outcome(
+        {"confirm": confirm, "reason": "confirmed" if confirm else "silent"}, {}
+    )
+
+
+_CHASE = Ask(
+    "chase",
+    "P",
+    Noul(
+        instructions=(
+            "Today, does this person ring the client about the unpaid invoice?"
+        ),
+        criteria=_yes_no(
+            "They ring or write to the client today and ask for payment.",
+            "They leave it another day.",
+        ),
+    ),
+)
+
+
+def _prepare_chase(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_CHASE,),
+        state={
+            "person": (
+                "the person who looks after the money at "
+                + ORG_WORDS.get(org, "a small firm")
+            ),
+            "temperament": trait_words("vocality", ctx.traits.get("vocality")),
+            "invoice": lateness_words(-_number(ctx.facts.get("days_late"), 7.0)),
+            "size": (
+                "it is one of the larger amounts they are owed"
+                if ctx.facts.get("large")
+                else "it is a modest amount"
+            ),
+            "cash": runway_words(ctx.facts.get("runway_days")),
+        },
+    )
+
+
+def _interpret_chase(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"chase": bool(got["chase"].value)}, {})
+
+
 QUESTION_SETS: dict[str, QuestionSet] = {
     s.kind: s
     for s in (
@@ -883,5 +990,7 @@ QUESTION_SETS: dict[str, QuestionSet] = {
         QuestionSet("payroll.release", _prepare_payroll, _interpret_payroll),
         QuestionSet("close.signoff", _prepare_close, _interpret_close),
         QuestionSet("catering.order", _prepare_catering, _interpret_catering),
+        QuestionSet("ticket.confirm", _prepare_confirm, _interpret_confirm),
+        QuestionSet("chase.invoice", _prepare_chase, _interpret_chase),
     )
 }

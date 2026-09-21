@@ -88,8 +88,11 @@ jobs:
         # any language, including the webapp.
         working-directory: .
         run: |
+          # `config.py` names the base URL as a default the gateway reads. It
+          # is configuration, not a caller: nothing there opens a connection.
           if git grep -nE 'openrouter\.ai/api' -- \
-               ':!py/src/jeve/llm/**' ':!decisions/**' ':!docs/**' \
+               ':!py/src/jeve/llm/**' ':!py/src/jeve/config.py' \
+               ':!decisions/**' ':!docs/**' \
                ':!.github/**' ':!ops/**' ':!*.md'; then
             echo "::error::Only jeve.llm may address OpenRouter (LLM-0004)."
             exit 1
@@ -130,6 +133,11 @@ jobs:
       JEVE_DATABASE_URL: postgresql://jeve:jeve@127.0.0.1:5432/jeve
     steps:
       - uses: actions/checkout@v5
+      # Some confirmations call `python3` directly, and the decision-record
+      # tooling needs 3.13+ (`Path.full_match`); the runner's own is older.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true

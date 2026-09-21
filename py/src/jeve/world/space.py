@@ -102,7 +102,10 @@ def _place(
         path = find_path(agent.tile, entry_for(agent.tile))
         target: Tile | None = None
     else:
-        salt = derive_seed(engine.root_seed, "spot", agent.id, report.tick_seq)
+        # CORE-0009: about this person arriving here now, not about the tick count.
+        salt = derive_seed(
+            engine.root_seed, "spot", agent.id, zone.value, report.sim_time
+        )
         target = spot_for(
             zone,
             org_zone=agent.own_zone,
@@ -245,7 +248,6 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
             DecisionContext(
                 person_id=agent.id,
                 role=agent.role,
-                decision_seq=engine.next_seq(agent.id),
                 sim_time=report.sim_time,
                 kind="agent.tick",
                 facts={

@@ -201,7 +201,11 @@ def _health(meta: dict[str, Any]) -> dict[str, object]:
 # Hidden from the timeline unless asked for. They are real events, and the
 # causal view still walks through them; but one line per person per change of
 # room would bury the outage the dashboard exists to show.
-BACKGROUND_EVENTS = ("agent.moved",)
+#
+# Retail joined them when the cafe got its arrival curve: a sale per customer is
+# a couple of hundred lines a day, and the first outage of the week was no longer
+# among the first four hundred events the timeline loaded.
+BACKGROUND_EVENTS = ("agent.moved", "cafe.sale", "cafe.walkout")
 
 
 @app.get("/events")
@@ -211,7 +215,7 @@ def events(
     kind: str | None = None,
     org: str | None = None,
     kinds: str | None = Query(None, description="comma-separated; overrides `kind`"),
-    background: bool = Query(False, description="include movement"),
+    background: bool = Query(False, description="include movement and retail"),
     latest: bool = Query(False, description="the newest `limit` instead of the oldest"),
 ) -> dict[str, object]:
     clauses = ["seq > %s"]

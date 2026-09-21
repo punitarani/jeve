@@ -7,16 +7,14 @@ are checked where a broken set costs a test run rather than a night.
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
-from jeve.decide.policy import DecisionContext
+from jeve.decide import gates
+from jeve.decide.policy import DecisionContext, RulesPolicy
 from jeve.decide.questions import (
-    OFFICE_TICKS_PER_DAY,
     QUESTION_SETS,
     Prepared,
-    per_tick_hazard,
+    lateness_words,
     trait_level,
 )
 from jeve.llm.protocol import Choice, Score
@@ -28,6 +26,8 @@ ASKING: dict[str, dict[str, object]] = {
     "ticket.answer": {"backlog": 12},
     "payment.timing": {"days_until_due": -4, "can_afford": True, "runway_days": 9},
     "cafe.purchase": {"pos_down": True, "queue_length": 3},
+    "ticket.confirm": {"module_down": False, "days_since_answer": 1},
+    "chase.invoice": {"org": "halloran", "days_late": 9, "large": True},
     "credit.decision": {
         "customer": "halloran",
         "module": "invoicing",
@@ -109,7 +109,7 @@ def test_state_is_words_not_numbers(kind: str) -> None:
 @pytest.mark.parametrize("kind", sorted(QUESTION_SETS))
 def test_every_choice_can_decline_and_no_level_is_a_bare_number(kind: str) -> None:
     for ask in _prepare(kind).asks:
-        assert ask.mode in ("J", "P", "H")
+        assert ask.mode in ("J", "P")
         if isinstance(ask.question, Choice):
             # Without an exit, a model that finds no option apt is forced to
             # put its mass somewhere, and that mass is then sampled as if meant.
@@ -131,19 +131,47 @@ def test_the_same_situation_renders_the_same_request(kind: str) -> None:
 
 def test_hard_constraints_are_gates_not_questions() -> None:
     """Whether an org can afford an invoice is a ledger fact. A model asked
-    about it could pay with money that does not exist."""
+    about it could pay with money that does not exist. Gates are written once
+    (`decide/gates.py`) and both policies ask there first."""
 
-    broke = _prepare(
+    def ctx(kind: str, facts: dict[str, object]) -> DecisionContext:
+        return DecisionContext(
+            person_id="p", role="r", sim_time=0, kind=kind, facts=facts
+        )
+
+    broke = ctx(
         "payment.timing", {"days_until_due": -4, "can_afford": False, "runway_days": 1}
     )
-    assert not broke.needs_model
-    assert broke.gated == {"pay": False, "reason": "insufficient_cash"}
+    assert gates.settle(broke) == {"pay": False, "reason": "insufficient_cash"}
+    early = ctx("payment.timing", {"days_until_due": 3, "can_afford": True})
+    assert gates.settle(early) == {"pay": False, "reason": "not_due"}
+    # Two days out is when a payer starts thinking about it: a real question.
+    assert gates.settle(ctx("payment.timing", {"days_until_due": 2})) is None
 
-    early = _prepare("payment.timing", {"days_until_due": 3, "can_afford": True})
-    assert early.gated == {"pay": False, "reason": "not_due"}
+    already = ctx("file.ticket", {"module_down": True, "already_open": True})
+    assert gates.settle(already) == {"file": False}
+    still_down = ctx("ticket.confirm", {"module_down": True})
+    assert gates.settle(still_down) == {"confirm": False, "reason": "still_down"}
+    # Served at once, till working: they bought a coffee. Not worth a question.
+    no_line = ctx("cafe.purchase", {"queue_length": 0, "pos_down": False})
+    assert gates.settle(no_line) == {"buy": True, "reason": "no_line"}
+    assert gates.settle(ctx("cafe.purchase", {"queue_length": 3})) is None
 
-    already = _prepare("file.ticket", {"module_down": True, "already_open": True})
-    assert already.gated == {"file": False}
+
+def test_a_gate_costs_neither_policy_any_luck() -> None:
+    """The rules twin used to draw before checking the catering gate, so the two
+    policies spent different amounts of luck on the same non-decision."""
+
+    ctx = DecisionContext(
+        person_id="p",
+        role="office_manager",
+        sim_time=0,
+        kind="catering.order",
+        facts={"org": "halloran", "can_afford": False},
+    )
+    decision = RulesPolicy(1).decide(ctx)
+    assert decision.chosen == {"order": "none"}
+    assert decision.draws == {}
 
 
 def test_traits_are_bucketed_over_the_range_they_are_seeded_in() -> None:
@@ -155,31 +183,12 @@ def test_traits_are_bucketed_over_the_range_they_are_seeded_in() -> None:
     assert trait_level("vocality", 0.45) == 1
 
 
-@pytest.mark.parametrize("p_day", [0.05, 0.26, 0.5, 0.9])
-def test_a_daily_propensity_asked_every_tick_still_comes_out_daily(
-    p_day: float,
-) -> None:
-    """Sampling a day-level probability every tick compounds: 0.26 a day would
-    become 0.9999 by close of business. The per-tick hazard must compound back
-    to exactly what Jev said."""
+def test_a_bill_gets_more_pressing_in_words() -> None:
+    """A payer is asked from two days out, so the run-up has to be sayable."""
 
-    hazard = per_tick_hazard(p_day)
-    assert 0.0 < hazard < p_day
-    assert 1 - (1 - hazard) ** OFFICE_TICKS_PER_DAY == pytest.approx(p_day)
-
-
-def test_without_thinning_a_reluctant_payer_pays_by_lunchtime() -> None:
-    """The failure the hazard exists to prevent, stated as a number."""
-
-    naive = 1 - (1 - 0.26) ** OFFICE_TICKS_PER_DAY
-    assert naive > 0.9999
-    assert not math.isclose(naive, 0.26, abs_tol=0.5)
-
-
-def test_hazard_handles_certainty_and_impossibility() -> None:
-    assert per_tick_hazard(1.0) == 1.0
-    assert per_tick_hazard(0.0) == 0.0
-    assert per_tick_hazard(1.7) == 1.0
+    said = [lateness_words(d) for d in (2, 1, 0, -2, -8, -20, -45)]
+    assert len(set(said)) == len(said)
+    assert "two days" in said[0] and "tomorrow" in said[1] and "today" in said[2]
 
 
 def test_people_in_the_room_are_described_not_named() -> None:

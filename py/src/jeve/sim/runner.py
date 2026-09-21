@@ -11,6 +11,7 @@ import os
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from psycopg import Connection
@@ -48,10 +49,16 @@ def policy_from_env() -> tuple[PolicyName, CallMode]:
     return policy, calls  # type: ignore[return-value]
 
 
-def build_policy(name: PolicyName, calls: CallMode, *, root_seed: int) -> Policy:
+def build_policy(
+    name: PolicyName,
+    calls: CallMode,
+    *,
+    root_seed: int,
+    cassette: Path = CASSETTE,
+) -> Policy:
     if name == "rules":
         return RulesPolicy(root_seed)
-    recorder = Recorder(mode=calls, cassette=CASSETTE if calls == "record" else None)
+    recorder = Recorder(mode=calls, cassette=cassette if calls == "record" else None)
     return JevPolicy(root_seed, recorder)
 
 

@@ -85,6 +85,8 @@ BACKOFF_CAP_S = 8.0
 
 
 def _approx_tokens(payload: object) -> int:
+    if isinstance(payload, bytes):
+        payload = payload.decode()
     text = payload if isinstance(payload, str) else json.dumps(payload, default=str)
     return max(1, int(len(text) / CHARS_PER_TOKEN))
 
@@ -298,7 +300,7 @@ class Gateway:
     async def _post(
         self,
         path: str,
-        body: dict[str, Any],
+        body: dict[str, Any] | bytes,
         *,
         call_id: str,
         model: str,
@@ -333,7 +335,7 @@ class Gateway:
     async def _attempt(
         self,
         path: str,
-        body: dict[str, Any],
+        body: dict[str, Any] | bytes,
         *,
         call_id: str,
         model: str,
@@ -351,7 +353,16 @@ class Gateway:
         try:
             try:
                 async with self._permits:
-                    response = await self._client.post(path, json=body)
+                    if isinstance(body, bytes):
+                        # Already serialised: these exact bytes are the cache
+                        # key (DECIDE-0004), so they must be what is sent.
+                        response = await self._client.post(
+                            path,
+                            content=body,
+                            headers={"content-type": "application/json"},
+                        )
+                    else:
+                        response = await self._client.post(path, json=body)
             except httpx.HTTPError as error:
                 # Unknown whether it was billed. Keep the reservation as spend.
                 self._ledger.settle(
@@ -420,21 +431,16 @@ class Gateway:
         """
 
         card = self.catalog.get(request.model)
-        body: dict[str, Any] = {
-            "model": request.model,
-            "state": request.state,
-            "questions": {
-                key: question.model_dump(mode="json", exclude_none=True, by_alias=True)
-                for key, question in request.questions.items()
-            },
-        }
         provider = request.provider
         if provider is not None and not card.accepts_parameters:
             # Jev lists no supported parameters; require_parameters would route
             # the request to nothing at all.
-            provider = provider.model_copy(update={"require_parameters": None})
-        if provider is not None:
-            body["provider"] = provider.to_body()
+            request = request.model_copy(
+                update={
+                    "provider": provider.model_copy(update={"require_parameters": None})
+                }
+            )
+        body = request.wire_bytes()
 
         tokens = _approx_tokens(body)
         worst_case = max(

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
 from jeve.core.seed import derive_rng, path_of
+from jeve.decide import gates
 
 type Source = Literal["rules", "jev", "llm"]
 
@@ -28,12 +29,17 @@ class DecisionContext:
 
     person_id: str
     role: str
-    decision_seq: int
     sim_time: int
     kind: str
     """The question set being asked, e.g. `ticket.triage`."""
     facts: dict[str, object] = field(default_factory=dict)
     traits: dict[str, object] = field(default_factory=dict)
+    decision_seq: int = -1
+    """This person's nth decision: the path their luck is drawn from. Numbered
+    by the engine when the decision is made, never by the caller. Callers used
+    to do it, each adding its own offset for repeats within a batch, and a payer
+    with two bills or a person in two conversations in one tick would have
+    collided on `UNIQUE (person_id, decision_seq)`."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +90,10 @@ class RulesPolicy:
         handler = getattr(self, f"_{ctx.kind.replace('.', '_')}", None)
         if handler is None:
             raise KeyError(f"no rule for decision kind {ctx.kind!r}")
+        settled = gates.settle(ctx)
+        if settled is not None:
+            # Not a choice, so no luck is spent on it — in either policy.
+            return Decision(chosen=settled, source=self.source, prng_path=path)
         chosen, draws = handler(ctx, rng)
         return Decision(chosen=chosen, source=self.source, draws=draws, prng_path=path)
 
@@ -123,17 +133,19 @@ class RulesPolicy:
 
         days_until_due = _num(ctx.facts.get("days_until_due"), 0.0)
         runway_days = _num(ctx.facts.get("runway_days"), 30.0)
-        can_afford = bool(ctx.facts.get("can_afford", True))
         promptness = _num(ctx.traits.get("promptness"), 0.5)
 
-        if not can_afford:
-            return {"pay": False, "reason": "insufficient_cash"}, {}
-        # Nobody pays early; past due, pressure rises with lateness and falls
-        # with a short runway.
+        # Asked once a day per bill (WORLD-0005), so this is the chance of
+        # paying *today*. Few pay ahead of the date; past it, pressure rises
+        # with lateness and with being chased, and falls with a short runway.
         if days_until_due > 0:
-            return {"pay": False, "reason": "not_due"}, {}
-        lateness = -days_until_due
-        pressure = promptness + 0.12 * lateness - (0.3 if runway_days < 14 else 0.0)
+            pressure = 0.25 * promptness
+        else:
+            pressure = promptness + 0.12 * -days_until_due
+        if ctx.facts.get("chased") or ctx.facts.get("reminded_in_person"):
+            pressure += 0.2
+        if runway_days < 14:
+            pressure -= 0.3
         draw = _uniform(rng)
         pay = draw < max(0.05, min(0.98, pressure))
         return (
@@ -170,21 +182,38 @@ class RulesPolicy:
                 {"buy": False, "reason": "queue" if queue_length else "changed_mind"},
                 {"buy": draw},
             )
-        amount = 350 + int(_uniform(rng) * 600)
-        return {"buy": True, "amount_cents": amount}, {"buy": draw}
+        return {"buy": True, "reason": "bought"}, {"buy": draw}
 
     def _file_ticket(
         self, ctx: DecisionContext, rng: object
     ) -> tuple[dict[str, object], dict[str, float]]:
         """Whether a customer who has hit a problem actually reports it."""
 
-        module_down = bool(ctx.facts.get("module_down"))
-        already_open = bool(ctx.facts.get("already_open"))
         vocality = _num(ctx.traits.get("vocality"), 0.4)
-        if not module_down or already_open:
-            return {"file": False}, {}
         draw = _uniform(rng)
         return {"file": draw < vocality}, {"file": draw}
+
+    def _ticket_confirm(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """Told it is fixed, do they say so today and let the ticket close?"""
+
+        diligence = _num(ctx.traits.get("diligence"), 0.5)
+        draw = _uniform(rng)
+        confirm = draw < 0.35 + 0.5 * diligence
+        return {"confirm": confirm, "reason": "confirmed" if confirm else "silent"}, {
+            "confirm": draw
+        }
+
+    def _chase_invoice(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """Pick up the phone about a bill that is a week late, or let it ride."""
+
+        vocality = _num(ctx.traits.get("vocality"), 0.4)
+        weeks = _num(ctx.facts.get("days_late"), 7.0) / 7.0
+        draw = _uniform(rng)
+        return {"chase": draw < min(0.95, vocality + 0.15 * weeks)}, {"chase": draw}
 
     def _agent_tick(
         self, ctx: DecisionContext, rng: object
@@ -254,8 +283,6 @@ class RulesPolicy:
     ) -> tuple[dict[str, object], dict[str, float]]:
         """Release the wages unless the hours behind them cannot be seen."""
 
-        if not ctx.facts.get("can_afford", True):
-            return {"release": False, "reason": "insufficient_cash"}, {}
         ready = bool(ctx.facts.get("timesheets_available", True))
         return {"release": ready, "reason": "released" if ready else "timesheets"}, {}
 
@@ -274,8 +301,6 @@ class RulesPolicy:
         """Lunch in, sometimes; more often when the week has been hard."""
 
         roll = _uniform(rng)
-        if not ctx.facts.get("can_afford", True):
-            return {"order": "none"}, {"order": roll}
         stressed = _num(ctx.facts.get("team_mood"), 2.0) < 1.5
         small, large = (0.45, 0.2) if stressed else (0.3, 0.1)
         order = "large" if roll < large else "small" if roll < large + small else "none"

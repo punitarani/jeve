@@ -9,6 +9,8 @@ which commit.
 | File | Written by | Meaning |
 |---|---|---|
 | `economics.md` | `LIVE=1 make e2e`, and nothing else | Measured cost per sim-day, per person, per org, per event; decisions by model. A replay writes `economics.replay.md` beside it and says so if the two have drifted. |
+| `soak.md` | `make soak` | 35 sim-days on rules: the invariants a world must keep (WORLD-0005), the counterfactual, and what happened. Free. |
+| `soak.live.md` | `make soak POLICY=jev CALLS=record DAYS=10 COUNTERFACTUAL=1` | The same, decided by Jev, with what it cost. Run at gates. |
 | `persona-probe.md` | `make persona-probe` | Does sampling Jev's distributions preserve persona? With a control. |
 | `providers.md` | `make providers` | One real call per model: reachable, not merely resolvable. |
 

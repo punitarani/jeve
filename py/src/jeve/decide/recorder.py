@@ -1,4 +1,4 @@
-"""Record and replay of model calls, keyed by content hash (DECIDE-0003).
+"""Record and replay of model calls, keyed by what was sent (DECIDE-0004).
 
 `model_calls` is a cache, not world state: it survives a reseed, and a row is
 the raw response exactly as it arrived. Three consequences follow.
@@ -20,6 +20,7 @@ whole simulation without a key.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -30,7 +31,6 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve import db
-from jeve.core.hashing import content_hash
 from jeve.errors import JeveError
 
 type Mode = Literal["record", "replay"]
@@ -58,10 +58,22 @@ class RecorderStats:
     by_kind: dict[str, int] = field(default_factory=dict)
 
 
-def request_hash(model: str, state: object, questions: object) -> str:
-    """The cache key: what is asked, of which model. Nothing about who asks."""
+_KEY_DOMAIN = b"jeve.call.v2"
 
-    return content_hash({"model": model, "state": state, "questions": questions})
+
+def call_key(version: str, wire: bytes) -> str:
+    """The cache key: the bytes that are sent, and the model build that answers.
+
+    Nothing about who asks. The bytes, not a canonical form of them: option
+    order is part of the question (Jev is asked in one order, and sampling walks
+    the declared one), and a key-sorted hash served 1,787 hits for 1,741 requests
+    that had changed. The build, not the slug: `typesafe/jev-1.13` is whatever
+    TypeSafe points it at this week.
+    """
+
+    digest = hashlib.blake2b(_KEY_DOMAIN, digest_size=32)
+    digest.update(version.encode() + b"\0" + wire)
+    return digest.hexdigest()
 
 
 class Recorder:
@@ -112,6 +124,7 @@ class Recorder:
         model: str,
         provider: str | None,
         request: dict[str, Any],
+        wire: str,
         response: dict[str, Any],
         input_tokens: int,
         output_tokens: int,
@@ -127,6 +140,7 @@ class Recorder:
             "model": model,
             "provider": provider,
             "request": request,
+            "wire": wire,
             "response": response,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -153,15 +167,16 @@ def insert_call(conn: Connection[DictRow], row: dict[str, Any]) -> bool:
     """Keep one model response. First writer wins. True if this row was new."""
 
     cursor = conn.execute(
-        "INSERT INTO model_calls (hash, kind, model, provider, request, response, "
-        "input_tokens, output_tokens, cost_usd, cost_estimated, latency_s) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (hash) DO NOTHING",
+        "INSERT INTO model_calls (hash, kind, model, provider, request, wire, "
+        "response, input_tokens, output_tokens, cost_usd, cost_estimated, latency_s) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (hash) DO NOTHING",
         (
             row["hash"],
             row.get("kind", ""),
             row["model"],
             row.get("provider"),
             json.dumps(row.get("request")),
+            row.get("wire"),
             json.dumps(row["response"]),
             int(row.get("input_tokens", 0)),
             int(row.get("output_tokens", 0)),

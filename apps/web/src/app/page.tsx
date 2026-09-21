@@ -1,13 +1,15 @@
 import { Dashboard } from "@/components/Dashboard";
 import { WorldHero } from "@/components/WorldHero";
-import { fetchEvents, fetchState } from "@/lib/api";
+import { fetchLatestEvents, fetchState } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
 export default async function Page() {
   try {
     const state = await fetchState();
-    const page = await fetchEvents(0, 400);
+    // Now, not day zero: a world that has run for a month opened on its first
+    // morning, and the outage everyone came to see was off the end of the page.
+    const page = await fetchLatestEvents(600);
     return (
       <>
         <WorldHero />

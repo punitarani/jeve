@@ -7,7 +7,7 @@ the property replay rests on.
 
 from __future__ import annotations
 
-from jeve.decide.questions import Ask, Draw, Resolved, per_tick_hazard
+from jeve.decide.questions import Ask, Draw, Resolved
 from jeve.errors import ResponseShapeError
 from jeve.llm.protocol import Answer, ChoiceAnswer, NoulAnswer, ScoreAnswer
 
@@ -58,8 +58,7 @@ def resolve(ask: Ask, answer: Answer, draw: Draw) -> Resolved:
         if ask.mode == "J":
             return Resolved(p >= 0.5, distribution, None)
         roll = draw()
-        threshold = per_tick_hazard(p) if ask.mode == "H" else p
-        return Resolved(roll < threshold, distribution, roll)
+        return Resolved(roll < p, distribution, roll)
 
     if isinstance(answer, ChoiceAnswer):
         distribution = _ordered(ask, answer.distribution())

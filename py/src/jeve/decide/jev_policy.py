@@ -1,4 +1,4 @@
-"""Jev behind the `Policy` seam (WORLD-0001, DECIDE-0003).
+"""Jev behind the `Policy` seam (WORLD-0001, DECIDE-0004).
 
 The engine is synchronous and owns a database transaction; the gateway is
 asynchronous and owns a socket. They meet here, and the rule that keeps the
@@ -18,18 +18,26 @@ context from stored rows. Identical situations in one batch share one call.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from collections.abc import Coroutine, Sequence
 from typing import Any
 
 from jeve.config import Settings, load_settings
 from jeve.core.seed import derive_rng, path_of
+from jeve.decide import gates
 from jeve.decide.policy import Decision, DecisionContext, Source
 from jeve.decide.questions import QUESTION_SETS, Prepared, Resolved
-from jeve.decide.recorder import Recorder, ReplayMissError, StoredCall, request_hash
+from jeve.decide.recorder import Recorder, ReplayMissError, StoredCall, call_key
 from jeve.decide.sampling import resolve
-from jeve.errors import JeveError
-from jeve.llm import DECISION_PREFERENCE, DecisionRequest, Gateway, RawDecision
+from jeve.errors import JeveError, ModelVersionDriftError, TransportError
+from jeve.llm import (
+    DECISION_PIN,
+    DECISION_PREFERENCE,
+    DecisionRequest,
+    Gateway,
+    RawDecision,
+)
 from jeve.llm.gateway import parse_decision
 from jeve.llm.protocol import Usage
 
@@ -97,11 +105,13 @@ class JevPolicy:
         recorder: Recorder,
         *,
         model: str = DECISION_PREFERENCE[0],
+        pin: str = DECISION_PIN,
         settings: Settings | None = None,
     ) -> None:
         self._root = root_seed
         self._recorder = recorder
         self._model = model
+        self._pin = pin
         self._settings = settings
         self._bridge: _Bridge | None = None
 
@@ -142,7 +152,8 @@ class JevPolicy:
                 hashes.append(None)
                 continue
             request = self._request(item)
-            digest = request_hash(self._model, request.state, _questions_body(request))
+            # Looked up under the build we are pinned to (DECIDE-0004).
+            digest = call_key(self._pin, request.wire_bytes())
             hashes.append(digest)
             requests.setdefault(digest, (item, request))
 
@@ -161,10 +172,13 @@ class JevPolicy:
         ]
 
     def _prepare(self, ctx: DecisionContext) -> Prepared:
-        try:
-            return QUESTION_SETS[ctx.kind].prepare(ctx)
-        except KeyError:
-            raise KeyError(f"no question set for decision kind {ctx.kind!r}") from None
+        if ctx.kind not in QUESTION_SETS:
+            raise KeyError(f"no question set for decision kind {ctx.kind!r}")
+        settled = gates.settle(ctx)
+        if settled is not None:
+            # The world has already decided (WORLD-0005): no model is asked.
+            return Prepared(ctx.kind, gated=settled)
+        return QUESTION_SETS[ctx.kind].prepare(ctx)
 
     def _request(self, item: Prepared) -> DecisionRequest:
         assert item.state is not None
@@ -190,23 +204,28 @@ class JevPolicy:
 
         results = self._live().fetch([requests[digest][1] for digest in missing])
         failure: BaseException | None = None
+        drifted: set[str] = set()
         for digest, result in zip(missing, results, strict=True):
             item, request = requests[digest]
             if isinstance(result, BaseException):
                 failure = failure or result
                 continue
+            wire = request.wire_bytes()
+            served = str(result.payload.get("model") or self._pin)
+            if served != self._pin:
+                drifted.add(served)
             # Stored before anything interprets it: if parsing fails below, the
-            # retry reads this row instead of paying for the call again.
+            # retry reads this row instead of paying for the call again. And
+            # stored under the build that *served* it, so an answer from another
+            # build is kept (it was paid for) but can never be read back as the
+            # pinned build's.
             self._recorder.store(
-                digest,
+                call_key(served, wire),
                 kind=item.kind,
-                model=str(result.payload.get("model") or self._model),
+                model=served,
                 provider=_provider(result.payload),
-                request={
-                    "model": self._model,
-                    "state": request.state,
-                    "questions": _questions_body(request),
-                },
+                request=json.loads(wire),
+                wire=wire.decode(),
                 response=result.payload,
                 input_tokens=result.usage.input_tokens,
                 output_tokens=result.usage.output_tokens,
@@ -214,11 +233,24 @@ class JevPolicy:
                 cost_estimated=result.usage.cost_is_estimated,
                 latency_s=result.latency_s,
             )
+        if drifted:
+            # Not a miss to be quietly re-recorded: with first-writer-wins
+            # storage that would pay for every call on every run and never hit,
+            # and it would change the world's behaviour without anyone deciding
+            # to. Halt, and let a person move the pin.
+            raise ModelVersionDriftError(
+                f"pinned to {self._pin} but {sorted(drifted)} answered. The "
+                "responses are kept under the build that served them. To adopt "
+                "the new build, move DECISION_PIN in jeve/llm/catalog.py, then "
+                "`LIVE=1 make e2e` and commit the cassette."
+            )
         if failure is not None:
             # Everything that did come back is already safe in the cache.
             if isinstance(failure, JeveError):
                 raise failure
-            raise JeveError(f"decision call failed: {failure!r}") from failure
+            # Anything else that escaped the gateway is still the road to the
+            # model, and the daemon waits for that (SIM-0002) rather than dying.
+            raise TransportError(f"decision call failed: {failure!r}") from failure
         return self._recorder.lookup(missing)
 
     def _decide_one(
@@ -256,13 +288,6 @@ class JevPolicy:
             prng_path=path,
             model_call=call.hash,
         )
-
-
-def _questions_body(request: DecisionRequest) -> dict[str, object]:
-    return {
-        key: question.model_dump(mode="json", exclude_none=True, by_alias=True)
-        for key, question in request.questions.items()
-    }
 
 
 def _provider(payload: dict[str, Any]) -> str | None:
