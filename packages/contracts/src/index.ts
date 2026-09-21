@@ -84,6 +84,7 @@ export const EventPage = z.object({
   events: z.array(SimEvent),
   seq: z.number().int(),
 });
+export type EventPage = z.infer<typeof EventPage>;
 
 export const CausalChain = z.object({
   root: z.number().int(),
@@ -125,13 +126,15 @@ export const PersonDecisions = z.object({
   person: Person,
   decisions: z.array(Decision),
 });
+export type PersonDecisions = z.infer<typeof PersonDecisions>;
 
-const PerSimDay = z.object({
+export const PerSimDay = z.object({
   usd: z.number(),
   usd_per_100_persons: z.number(),
   usd_per_10_orgs: z.number(),
   usd_per_1000_events: z.number(),
 });
+export type PerSimDay = z.infer<typeof PerSimDay>;
 
 export const Economics = z.object({
   spend_usd: z.number(),
