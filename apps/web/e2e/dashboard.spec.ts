@@ -177,3 +177,20 @@ test("a filtered-out kind still shows inside a cascade", async ({ page }) => {
     page.locator('.ev[data-kind="encounter"][data-related="no"]'),
   ).toHaveCount(0);
 });
+
+test("rows carry a readable line, not just the kind name", async ({ page }) => {
+  // Everything on, so the encounter rows are on screen too. Scoped by testid:
+  // Playwright matches an accessible name as a substring, and "tallybird"
+  // contains "all", so a name query here would hit every org's row.
+  await page.getByTestId("filter-all").click();
+
+  // Where it happened and what it was about, not just the word "encounter".
+  await expect(page.locator('.ev[data-kind="encounter"]').first()).toContainText(
+    /encounter · \w/,
+  );
+
+  // And the kind that opens the primary flow names the module that went down.
+  await expect(
+    page.locator('.ev[data-kind="incident.started"]').first(),
+  ).toContainText(/incident\.started · \w/);
+});

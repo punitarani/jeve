@@ -211,10 +211,14 @@ export function Dashboard({
 									{kind} <span className="muted">{n}</span>
 								</button>
 							))}
-							{/* Not "clear": the cascade's clear button is found by name. */}
+							{/* Not "clear": the cascade's clear button is found by name.
+							    These two carry testids because Playwright matches an
+							    accessible name as a substring, and "tallybird" contains
+							    "all" — every org row answers to that query too. */}
 							<button
 								type="button"
 								className="link"
+								data-testid="filter-all"
 								onClick={() => setHidden(new Set())}
 							>
 								all
@@ -222,6 +226,7 @@ export function Dashboard({
 							<button
 								type="button"
 								className="link"
+								data-testid="filter-none"
 								onClick={() => setHidden(new Set(kinds.map(([kind]) => kind)))}
 							>
 								none
