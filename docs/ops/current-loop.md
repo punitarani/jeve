@@ -51,14 +51,18 @@ loop prefers replay; live calls only for `make smoke` (<$0.01).
 
 ## Queue (impact order)
 
-1. `make smoke` — prove the real OpenRouter path post-rewrite (402 handling,
-   rate-limit headers, ledger settlement). <$0.01.
-2. Screenshot pass on the static build — visual regression check.
-3. `HANDOFF.md` — required artifact.
-4. Soak with `--counterfactual` live output check (already covered by
-   test\_soak; confirm report text).
-5. Deployment prerequisites documentation sweep (done; verify env table
-   matches code once more).
+1. \~~`make smoke`~~ — done: 2 live calls through the gateway, $0.000056.
+2. \~~Screenshot pass~~ — done: `tools/shots.sh` fixed for the static export,
+   36 captures committed (`c1550dd`).
+3. \~~`HANDOFF.md`~~ — written and committed (`494b500`).
+4. \~~Soak report~~ — verified: `ops/soak.md` shows 7/7 invariants with
+   evidence, cash diverges across firms, wages return as cafe demand.
+5. \~~Env sweep~~ — done: code↔doc parity; `JEVE_TEST_DIE_AT_EVENT` added.
+6. \~~Restart recovery~~ — verified live: kill -9 → resume, contiguous seqs.
+7. \~~Compose prod topology~~ — verified live; checkpoint-crash bug fixed.
+8. Remaining is deployment itself, which needs the real secrets
+   (`FLY_API_TOKEN`, `CLOUDFLARE_API_TOKEN`, `OPENROUTER_API_KEY` on Fly) —
+   blocked by choice, checklist in `docs/deployment.md` + `HANDOFF.md`.
 
 ## Validation so far
 
@@ -75,3 +79,13 @@ loop prefers replay; live calls only for `make smoke` (<$0.01).
   stopped to bound spend.
 * Screenshot harness: 36 captures on the static export, ~61fps, day/night
   lighting, selection panels with live Jev distributions (`c1550dd`).
+* `fly config validate` clean; `wrangler deploy --dry-run` clean after
+  moving `routes` to top level (it was being parsed as `assets.routes` and
+  ignored — the custom domain would not have been attached).
+* Postgres bounce under the running API: `/health` 200 → 503 while down →
+  200 on return; `psycopg_pool` reconnects transparently, `/state` serves
+  immediately.
+* Env-var doc audited against code — full parity; `JEVE_TEST_DIE_AT_EVENT`
+  documented. e2e install made noninteractive (`CI=true`).
+* Web: static inline styles moved to `globals.css`; only data-driven values
+  (org colors, probability bars) stay inline.
