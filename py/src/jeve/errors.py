@@ -25,5 +25,13 @@ class TransportError(JeveError):
     """The request did not complete. May or may not have been billed."""
 
 
+class ModelVersionDriftError(JeveError):
+    """A different build of the model answered than the one the repo is pinned to.
+
+    Not weather (SIM-0002): waiting will not fix it, and carrying on would mix
+    two models' answers in one world. Somebody moves the pin, on purpose.
+    """
+
+
 class ResponseShapeError(JeveError):
     """The response completed but did not carry what the caller needs."""

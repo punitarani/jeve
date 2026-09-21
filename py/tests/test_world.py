@@ -231,9 +231,15 @@ def test_a_permanent_outage_makes_tickets_pile_up(conn: Connection[DictRow]) -> 
 
     seed(conn, root_seed=ROOT_SEED)
     with conn.transaction():
-        conn.execute("UPDATE modules SET status = 'down'")
-        # Remove the scheduled recovery so the outage really is permanent.
-        conn.execute("DELETE FROM scheduled WHERE kind = 'incident.end'")
+        # Through the front door, so that the people who use each product find
+        # out in their own time (CORE-0009) — and with no end in sight.
+        conn.execute("DELETE FROM scheduled WHERE kind LIKE 'incident.%'")
+        for module in ("timetrack", "invoicing", "pos"):
+            conn.execute(
+                "INSERT INTO scheduled (due_sim_time, kind, subject_id, payload) "
+                "VALUES (%s, 'incident.start', %s, %s)",
+                (at(0, 7), module, '{"severity": 2, "expected_minutes": 10000000}'),
+            )
     engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED)
 
     backlog: list[int] = []
@@ -258,7 +264,8 @@ def test_with_no_customers_the_cafe_earns_nothing(
         conn.execute(
             "DELETE FROM persons WHERE org_id = 'thirdrail' AND kind = 'counterparty'"
         )
-    engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED)
+    # And nobody walks over from the offices either: they are customers too.
+    engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED, spatial=False)
     for _ in range(40):
         engine.tick()
 
@@ -365,7 +372,7 @@ def test_sunday_is_skipped_but_saturday_is_not(conn: Connection[DictRow]) -> Non
     conn.commit()
     assert skip_to_next_open(conn) == at(5, 7)  # Friday night -> Saturday, cafe
 
-    conn.execute("UPDATE sim_meta SET sim_time = %s", (at(5, 16),))
+    conn.execute("UPDATE sim_meta SET sim_time = %s", (at(5, 18),))
     conn.commit()
     moved = skip_to_next_open(conn)
     assert SimTime(moved).weekday == 0
@@ -450,10 +457,11 @@ def test_dead_time_ends_when_anything_opens_not_only_the_offices() -> None:
 
     from jeve.core.clock import next_open
 
-    assert next_open(at(0, 17)) == at(1, 7)  # Monday evening -> Tuesday, cafe
+    assert next_open(at(0, 17)) == at(0, 17)  # the cafe stays open till six
+    assert next_open(at(0, 18)) == at(1, 7)  # Monday evening -> Tuesday, cafe
     assert next_open(at(1, 8, 30)) == at(1, 8, 30)  # already open
-    assert next_open(at(4, 17)) == at(5, 7)  # Friday evening -> Saturday, cafe
-    assert next_open(at(5, 16)) == at(7, 7)  # Saturday close -> Monday, cafe
+    assert next_open(at(4, 18)) == at(5, 7)  # Friday evening -> Saturday, cafe
+    assert next_open(at(5, 18)) == at(7, 7)  # Saturday close -> Monday, cafe
     assert next_open(at(6, 12)) == at(7, 7)  # Sunday: everything is shut
 
 

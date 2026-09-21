@@ -114,7 +114,18 @@ def test_a_path_walks_one_tile_at_a_time_and_never_through_a_wall() -> None:
 
 
 def test_there_is_no_path_into_a_desk() -> None:
-    assert find_path((19, 0), (4, 4)) == []
+    # Looked up, not written down: the layouts decide where the desks are
+    # (WEB-0004), and they are allowed to move them.
+    world = town()
+    desks = [
+        (x, y)
+        for y, row in enumerate(world.tiles)
+        for x, kind in enumerate(row)
+        if kind == "desk"
+    ]
+    assert desks
+    for desk in desks:
+        assert find_path((19, 0), desk) == []
 
 
 # -- people in it ----------------------------------------------------------
@@ -214,28 +225,40 @@ def test_switching_encounters_off_changes_when_invoices_go_out(
     walking the same routes; the only difference is whether meeting someone can
     change anything. If billing came out the same, space would be decorative."""
 
+    def outage_minutes() -> int:
+        row = conn.execute(
+            "SELECT (payload->>'minutes')::int AS minutes FROM events "
+            "WHERE kind = 'incident.ended' AND payload->>'module_id' = 'invoicing' "
+            # The month-end outage, not some ninety-minute blip earlier in the week.
+            "ORDER BY (payload->>'minutes')::int DESC LIMIT 1"
+        ).fetchone()
+        assert row is not None
+        return int(row["minutes"])
+
+    def blocked() -> int:
+        row = conn.execute(
+            "SELECT count(*) AS n FROM events WHERE kind = 'invoice.blocked'"
+        ).fetchone()
+        assert row is not None
+        return int(row["n"])
+
     run(conn, days=5, encounters=True)
     with_space = first_services_invoice(conn)
-    blocked_with = conn.execute(
-        "SELECT count(*) AS n FROM events WHERE kind = 'invoice.blocked'"
-    ).fetchone()
+    minutes_with, blocked_with = outage_minutes(), blocked()
     hash_with = event_log_hash(conn)
 
     run(conn, days=5, encounters=False)
     without_space = first_services_invoice(conn)
-    blocked_without = conn.execute(
-        "SELECT count(*) AS n FROM events WHERE kind = 'invoice.blocked'"
-    ).fetchone()
 
     assert hash_with != event_log_hash(conn)
     assert with_space < without_space, (
         f"invoices went out at {SimTime(with_space)} with encounters and "
         f"{SimTime(without_space)} without"
     )
-    assert blocked_with is not None and blocked_without is not None
-    assert int(blocked_with["n"]) < int(blocked_without["n"])
+    assert minutes_with < outage_minutes()
     # The outage still bit. Escalation shortens it; it does not unhappen it.
-    assert int(blocked_with["n"]) > 0
+    # (A blocked run says so once per firm, not once per tick it stays blocked.)
+    assert blocked_with == blocked() == 2
 
 
 def test_a_conversation_in_the_cafe_reaches_an_invoice(

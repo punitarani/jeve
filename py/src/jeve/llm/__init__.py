@@ -2,6 +2,7 @@
 
 from jeve.llm.budget import BudgetGuard, BudgetState
 from jeve.llm.catalog import (
+    DECISION_PIN,
     DECISION_PREFERENCE,
     GENERATIVE_PREFERENCE,
     ModelCard,
@@ -30,6 +31,7 @@ from jeve.llm.protocol import (
 )
 
 __all__ = [
+    "DECISION_PIN",
     "DECISION_PREFERENCE",
     "GENERATIVE_PREFERENCE",
     "Answer",

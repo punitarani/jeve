@@ -133,12 +133,20 @@ def test_every_org_reports_cash(client: TestClient) -> None:
 
 
 def test_events_paginate_by_seq(client: TestClient) -> None:
-    first = client.get("/events", params={"limit": 10}).json()
+    # Everything, movement and retail included: that is the stream whose `seq`
+    # is dense. The default listing leaves the background out, so it has gaps.
+    everything = {"limit": 10, "background": True}
+    first = client.get("/events", params=everything).json()
     assert len(first["events"]) == 10
-    second = client.get("/events", params={"limit": 10, "after": first["seq"]}).json()
+    second = client.get("/events", params={**everything, "after": first["seq"]}).json()
     assert all(e["seq"] > first["seq"] for e in second["events"])
     # No gap and no duplicate: the contract the SSE stream relies on.
     assert second["events"][0]["seq"] == first["events"][-1]["seq"] + 1
+
+    foreground = client.get("/events", params={"limit": 50}).json()["events"]
+    assert not {e["kind"] for e in foreground} & {"agent.moved", "cafe.sale"}
+    seqs = [e["seq"] for e in foreground]
+    assert seqs == sorted(seqs)
 
 
 def test_events_filter_by_kind(client: TestClient) -> None:
@@ -278,6 +286,14 @@ def test_the_map_is_served_as_data(client: TestClient) -> None:
         assert body["tiles"][y][x] == "door"
         assert body["zones"][y][x] == building["zone"]
     assert body["crowd_spots"]["cafe"]
+    # WEB-0004: where one sits, per zone, so the client can draw people sitting.
+    # Offices and the plaza's benches have some; every one is a chair or a bench.
+    assert set(body["seats"]) == {b["zone"] for b in body["buildings"]} | {"plaza"}
+    for zone in ("software_office", "law_office", "accounting_office", "plaza"):
+        assert body["seats"][zone], zone
+    for tiles in body["seats"].values():
+        for x, y in tiles:
+            assert body["tiles"][y][x] in ("chair", "bench")
 
 
 def test_the_agents_frame_places_all_staff(client: TestClient) -> None:

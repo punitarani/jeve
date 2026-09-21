@@ -35,7 +35,12 @@ from jeve import db
 from jeve.core.clock import DAY, TICK, SimTime
 from jeve.decide.jev_policy import JevPolicy
 from jeve.decide.recorder import ReplayMissError, finalize_cassette, load_cassette
-from jeve.errors import BudgetExceededError, ResponseShapeError, TransportError
+from jeve.errors import (
+    BudgetExceededError,
+    ModelVersionDriftError,
+    ResponseShapeError,
+    TransportError,
+)
 from jeve.sim.runner import CASSETTE, Totals, build_policy, policy_from_env
 from jeve.world.engine import Engine, skip_to_next_open
 from jeve.world.seed_world import ROOT_SEED, seed
@@ -178,11 +183,13 @@ def run(args: argparse.Namespace) -> int:
             )
         if args.policy == "jev":
             # In both modes: a recording run must not pay again for what it has.
-            loaded = load_cassette(conn, CASSETTE)
+            loaded = load_cassette(conn, args.cassette)
             conn.commit()
-            print(f"cassette: {loaded} call(s) preloaded from {CASSETTE.name}")
+            print(f"cassette: {loaded} call(s) preloaded from {args.cassette.name}")
 
-        policy = build_policy(args.policy, args.calls, root_seed=args.seed)
+        policy = build_policy(
+            args.policy, args.calls, root_seed=args.seed, cassette=args.cassette
+        )
         engine = Engine(conn, policy, root_seed=args.seed)
         totals = Totals()
         code = 0
@@ -266,6 +273,12 @@ def _loop(
             _status(conn, "halted", _describe(error))
             print(f"HALTED: {error}", file=sys.stderr)
             return 5
+        except ModelVersionDriftError as error:
+            # DECIDE-0004: not weather. Waiting cannot fix it and carrying on
+            # would mix two models' answers in one world.
+            _status(conn, "halted", _describe(error))
+            print(f"HALTED: {error}", file=sys.stderr)
+            return 7
         except MODEL_WEATHER as error:
             # SIM-0002 / CORE-0004: a dead model is a paused world, not a dead
             # one and not a world that guessed. The tick rolled back whole, and
@@ -322,7 +335,7 @@ def _report(
         stats = policy.recorder.stats
         policy.close()
         if args.calls == "record":
-            finalize_cassette(CASSETTE)
+            finalize_cassette(args.cassette)
         if args.stats is not None:
             args.stats.write_text(
                 json.dumps(
@@ -395,6 +408,14 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="give up (exit 6) after this many seconds waiting on the model; "
         "the default is to wait for ever, which is what a daemon should do",
+    )
+    parser.add_argument(
+        "--cassette",
+        type=Path,
+        default=CASSETTE,
+        help="recorded calls to preload and, when recording, to append to. The "
+        "default is the golden cassette `make e2e` replays; a soak keeps its own, "
+        "so that a long live run never rewrites the file a replay depends on",
     )
     parser.add_argument("--stats", type=Path, help="write call statistics here")
     parser.add_argument("--verbose", action="store_true")

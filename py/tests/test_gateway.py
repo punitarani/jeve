@@ -325,6 +325,24 @@ async def test_a_server_error_keeps_the_reservation_as_spend(
     assert spend.reserved_usd == 0.0
 
 
+async def test_the_gateway_sends_exactly_the_bytes_that_are_keyed(
+    tmp_path: Path,
+) -> None:
+    """DECIDE-0004: one builder. What the cache hashes is what goes on the wire."""
+
+    recorder = Recorder()
+    gateway = await _gateway(tmp_path, recorder)
+    # As the policy builds it: no routing preferences, which Jev does not accept
+    # and which the gateway would otherwise have to adjust before sending.
+    request = _decision_request().model_copy(update={"provider": None})
+
+    await gateway.decide(request)
+    await gateway.aclose()
+
+    assert recorder.requests[-1].content == request.wire_bytes()
+    assert recorder.requests[-1].headers["content-type"] == "application/json"
+
+
 async def test_a_bug_shaped_5xx_is_not_retried(tmp_path: Path) -> None:
     """501 is a request the server will never serve. Retrying it hides that."""
 

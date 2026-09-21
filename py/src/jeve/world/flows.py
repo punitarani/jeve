@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from jeve.core.clock import DAY, TICK, SimTime, next_office_open
 from jeve.decide.policy import DecisionContext
+from jeve.world import scheduler
 
 if TYPE_CHECKING:
     from jeve.world.engine import Engine, TickReport
@@ -83,7 +84,7 @@ def credits(
     ).fetchall()
 
     contexts: list[DecisionContext] = []
-    for index, firm in enumerate(firms):
+    for firm in firms:
         blocked = engine.conn.execute(
             "SELECT count(*) AS n FROM events WHERE kind = 'invoice.blocked' "
             "AND org_id = %s AND sim_time BETWEEN %s AND %s",
@@ -93,8 +94,6 @@ def credits(
             DecisionContext(
                 person_id=str(manager["id"]),
                 role="account_manager",
-                # One manager, several firms, one tick: each is its own decision.
-                decision_seq=engine.next_seq(str(manager["id"])) + index,
                 sim_time=report.sim_time,
                 kind="credit.decision",
                 facts={
@@ -170,6 +169,7 @@ def credits(
 # -- flow 8: payroll ---------------------------------------------------------
 
 
+@scheduler.job("payroll.run", office_hours_only=True)
 def payroll(
     engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
 ) -> None:
@@ -183,12 +183,9 @@ def payroll(
     if clerk is None or total <= 0:
         return
 
-    cash_row = engine.conn.execute(
-        "SELECT COALESCE(sum(amount_cents),0) AS cents FROM ledger_entries "
-        "WHERE account_id = %s",
-        (f"{org_id}.cash",),
-    ).fetchone()
-    cash = int(cash_row["cents"]) if cash_row else 0
+    cash = engine.cash_of(f"{org_id}.cash")
+    if cash < 2 * total:
+        _warn_of_insolvency(engine, report, org_id, cash=cash, weekly_wages=total)
 
     # Timesheets come out of TimeTrack, for the firms that use it.
     uses_timetrack = engine.conn.execute(
@@ -208,7 +205,6 @@ def payroll(
         DecisionContext(
             person_id=str(clerk["id"]),
             role="payroll",
-            decision_seq=engine.next_seq(str(clerk["id"])),
             sim_time=report.sim_time,
             kind="payroll.release",
             facts={
@@ -280,13 +276,72 @@ def payroll(
             "decided_by": made.source,
         },
     )
+    # Four legs: the firm's cost, and the households' income. Wages used to
+    # leave the firm and arrive nowhere, so nothing anyone earned was ever
+    # spent, and a late payday could not reach the cafe's till.
     engine.post(
         report.sim_time,
         f"{org_id} weekly payroll",
-        [(f"{org_id}.cash", -total), (f"{org_id}.expense", total)],
+        [
+            (f"{org_id}.cash", -total),
+            (f"{org_id}.expense", total),
+            ("households.cash", total),
+            ("households.income", -total),
+        ],
         seq,
     )
     engine.schedule(due + 7 * DAY, "payroll.run", org_id, {"due": due + 7 * DAY})
+
+
+def _warn_of_insolvency(
+    engine: Engine, report: TickReport, org_id: str, *, cash: int, weekly_wages: int
+) -> None:
+    """Less than two paydays in the bank: say so, and say why.
+
+    The soak does not require a firm to survive — that would be tuning. It
+    requires that a firm going under was seen going under, with the numbers
+    that explain it, so that a decline is a finding and not a mystery.
+    """
+
+    owed = engine.conn.execute(
+        "SELECT COALESCE(sum(amount_cents),0) AS cents, count(*) AS n FROM invoices "
+        "WHERE from_org_id = %s AND paid_sim IS NULL AND written_off_sim IS NULL "
+        "AND due_sim < %s",
+        (org_id, report.sim_time),
+    ).fetchone()
+    overdue = int(owed["cents"]) if owed else 0
+    month = engine.conn.execute(
+        "SELECT "
+        " COALESCE(sum(amount_cents) FILTER (WHERE amount_cents > 0), 0) AS money_in, "
+        " COALESCE(-sum(amount_cents) FILTER (WHERE amount_cents < 0), 0) AS money_out "
+        "FROM ledger_entries e JOIN ledger_txns t ON t.id = e.txn_id "
+        "WHERE e.account_id = %s AND t.sim_time > %s",
+        (f"{org_id}.cash", report.sim_time - 28 * DAY),
+    ).fetchone()
+    money_in = int(month["money_in"]) if month else 0
+    money_out = int(month["money_out"]) if month else 0
+    shortfall = max(0, 2 * weekly_wages - cash)
+    if overdue >= shortfall and overdue > 0:
+        cause = "uncollected_receivables"
+    elif money_out > money_in:
+        cause = "spending_exceeds_income"
+    else:
+        cause = "thin_reserves"
+    engine.emit(
+        report,
+        "insolvency.warning",
+        org_id=org_id,
+        payload={
+            "org_id": org_id,
+            "cash_cents": cash,
+            "weekly_wages_cents": weekly_wages,
+            "overdue_receivables_cents": overdue,
+            "overdue_invoices": int(owed["n"]) if owed else 0,
+            "cash_in_28d_cents": money_in,
+            "cash_out_28d_cents": money_out,
+            "cause": cause,
+        },
+    )
 
 
 # -- flow 9: the monthly close -----------------------------------------------
@@ -299,6 +354,7 @@ CLOSE_FEE_CENTS: dict[str, int] = {
 CLOSE_ATTEMPTS = 5
 
 
+@scheduler.job("close.run", office_hours_only=True)
 def close_books(
     engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
 ) -> None:
@@ -343,7 +399,6 @@ def close_books(
         DecisionContext(
             person_id=str(accountant["id"]),
             role=role,
-            decision_seq=engine.next_seq(str(accountant["id"])),
             sim_time=report.sim_time,
             kind="close.signoff",
             facts={
@@ -415,17 +470,18 @@ def close_books(
         },
     )
     # The accountant's fee goes out when the work is done, and not before.
-    fee = CLOSE_FEE_CENTS.get(org_id, 600_00)
-    _invoice(
-        engine,
+    engine.bill(
         report,
         from_org="ledgerline",
         to_org=org_id,
-        amount=fee,
+        amount=CLOSE_FEE_CENTS.get(org_id, 600_00),
         terms_days=14,
-        cause=closed,
-        memo=f"ledgerline bills {org_id} for the monthly close",
+        kind="services",
+        causes=[closed],
     )
+    # Next month's close, a month after this one was *due*: a late close does
+    # not push every close after it.
+    engine.schedule(due + 28 * DAY, "close.run", org_id, {"due": due + 28 * DAY})
 
 
 # -- flow 10: catering -------------------------------------------------------
@@ -434,6 +490,7 @@ CATERING_CENTS: dict[str, int] = {"small": 180_00, "large": 420_00}
 CATERING_BUYERS = ("office_manager", "client_admin", "founder")
 
 
+@scheduler.job("catering.consider", office_hours_only=True)
 def consider_catering(
     engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
 ) -> None:
@@ -446,12 +503,7 @@ def consider_catering(
     ).fetchone()
     if buyer is None:
         return
-    cash_row = engine.conn.execute(
-        "SELECT COALESCE(sum(amount_cents),0) AS cents FROM ledger_entries "
-        "WHERE account_id = %s",
-        (f"{org_id}.cash",),
-    ).fetchone()
-    cash = int(cash_row["cents"]) if cash_row else 0
+    cash = engine.cash_of(f"{org_id}.cash")
     mood = engine.conn.execute(
         "SELECT avg(s.mood) AS mood FROM positions s JOIN persons p "
         "ON p.id = s.person_id WHERE p.org_id = %s",
@@ -462,7 +514,6 @@ def consider_catering(
         DecisionContext(
             person_id=str(buyer["id"]),
             role=str(buyer["role"]),
-            decision_seq=engine.next_seq(str(buyer["id"])),
             sim_time=report.sim_time,
             kind="catering.order",
             facts={
@@ -502,6 +553,7 @@ def consider_catering(
     )
 
 
+@scheduler.job("catering.deliver")
 def deliver_catering(
     engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
 ) -> None:
@@ -537,53 +589,12 @@ def deliver_catering(
             "carried_by": carrier,
         },
     )
-    _invoice(
-        engine,
+    engine.bill(
         report,
         from_org="thirdrail",
         to_org=org_id,
         amount=amount,
         terms_days=7,
-        cause=delivered,
-        memo=f"thirdrail caters lunch for {org_id}",
-    )
-
-
-def _invoice(
-    engine: Engine,
-    report: TickReport,
-    *,
-    from_org: str,
-    to_org: str,
-    amount: int,
-    terms_days: int,
-    cause: int,
-    memo: str,
-) -> None:
-    """One firm bills another. Picked up by the ordinary payments flow."""
-
-    row = engine.conn.execute(
-        "INSERT INTO invoices (from_org_id, to_org_id, issued_sim, due_sim, "
-        "amount_cents, kind) VALUES (%s,%s,%s,%s,%s,'services') RETURNING id",
-        (from_org, to_org, report.sim_time, report.sim_time + terms_days * DAY, amount),
-    ).fetchone()
-    assert row is not None
-    seq = engine.emit(
-        report,
-        "invoice.issued",
-        org_id=from_org,
-        causes=[cause],
-        payload={
-            "invoice_id": int(row["id"]),
-            "from_org_id": from_org,
-            "to": to_org,
-            "amount_cents": amount,
-            "invoice_kind": "services",
-        },
-    )
-    engine.post(
-        report.sim_time,
-        memo,
-        [(f"{from_org}.receivable", amount), (f"{from_org}.revenue", -amount)],
-        seq,
+        kind="services",
+        causes=[delivered],
     )

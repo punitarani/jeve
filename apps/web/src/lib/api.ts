@@ -33,6 +33,10 @@ async function get<T>(path: string, schema: ZodType<T>): Promise<T> {
 export const fetchState = () => get("/state", WorldState);
 export const fetchEvents = (after: number, limit = 300) =>
   get(`/events?after=${after}&limit=${limit}`, EventPage);
+
+/** The newest `limit` events, oldest first: where a page should open. */
+export const fetchLatestEvents = (limit = 300) =>
+  get(`/events?latest=true&limit=${limit}`, EventPage);
 export const fetchCausal = (seq: number, direction: "up" | "down" = "down") =>
   get(`/causal/${seq}?direction=${direction}`, CausalChain);
 export const fetchPersons = (org?: string) =>

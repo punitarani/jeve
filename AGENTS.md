@@ -15,18 +15,19 @@ simulation ever reads generated text.
 | Path | What |
 |---|---|
 | `py/src/jeve/` | The simulation. `core → llm → decide → world → sim`, with `gen` and `api` on the outside. `tests/test_layering.py` enforces it |
-| `py/src/jeve/decide/` | The `Policy` seam: `JevPolicy`, its rules twin, question sets, J/P/H sampling, the call cache |
-| `py/src/jeve/world/` | Engine, the ten flows, the town map, encounters |
-| `py/src/jeve/sim/` | `python -m jeve.sim`: the one run loop, for fixture and daemon alike |
+| `py/src/jeve/decide/` | The `Policy` seam: `JevPolicy`, its rules twin, question sets, gates (hard constraints, written once), J/P sampling, the call cache |
+| `py/src/jeve/world/` | Engine, the flows, the scheduler registry, the town map, encounters |
+| `py/src/jeve/sim/` | `python -m jeve.sim`: the one run loop, for fixture, daemon and soak alike |
 | `py/src/jeve/gen/` | Prose rendered from typed state. **Nothing that computes the world may import it** |
-| `py/fixtures/cassettes/` | Recorded Jev responses, keyed by content hash. What makes `make e2e` free |
+| `py/fixtures/cassettes/` | Recorded Jev responses, keyed by the bytes sent and the model build that answered (DECIDE-0004). What makes `make e2e` free |
 | `packages/world/` | The voxel town: a GL-free scene model with three.js as a view over it |
 | `packages/contracts/` | zod schemas for everything the API serves |
 | `apps/web/` | The hero on `/`, the explorer at `/world`, and the causal timeline |
 | `decisions/` | Decision records and their generated index |
 | `docs/research/` | Ground truth on Jev, prior-art mapping, validation survey |
 | `docs/design/` | Long-form analysis behind the decision records |
-| `ops/` | Runtime state (spend ledger) and tracked measurements (`economics.md`, `persona-probe.md`, `providers.md`) |
+| `ops/` | Runtime state (spend ledger) and tracked measurements (`economics.md`, `soak.md`, `persona-probe.md`, `providers.md`) |
+| `tools/` | The screenshot harness: the same shots every time, for before and after |
 
 ## Decisions
 
@@ -77,16 +78,22 @@ second path to a model, and do not reset the ledger.
 ```
 make check            # lint, types (mypy + tsc), tests, decision records
 make e2e              # the whole stack, strict replay: free, no key, ~5 min
+make soak             # 35 sim-days on rules, on its own database: invariants, ~1 min
 LIVE=1 make e2e       # hit-or-call; the only thing that rewrites ops/economics.md
 make smoke            # one real call, under a cent
 make sim              # the ever-running world. Spends money, slowly
 ```
 
-Three things that will otherwise cost you an evening:
+Four things that will otherwise cost you an evening:
 
-- **Wording is a cache key.** A question set's text is hashed into the key of
-  every call that used it. Edit a sentence and those calls are re-recorded, and
-  the run changes. Re-record with `LIVE=1 make e2e` and commit the cassette.
+- **Wording is a cache key — and so is order, and so is the model build.** The
+  key is the exact bytes sent plus the dated build that answered. Edit a
+  sentence, reorder a question's options, or move `DECISION_PIN`, and those calls
+  are re-recorded and the run changes. Re-record with `LIVE=1 make e2e` and
+  commit the cassette. A build other than the pin answering is a halt, on purpose.
+- **Nothing in the world may be keyed by the tick.** Randomness is about an
+  entity and its own calendar (CORE-0009); rates are per hour. A test walks the
+  source for `tick_seq` in a seed path.
 - **A tick must own its transaction.** In psycopg 3, `conn.transaction()` inside
   an already-open transaction is a savepoint. `Engine.tick()` commits first for
   that reason (WORLD-0002); do not "simplify" it.

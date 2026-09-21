@@ -263,6 +263,7 @@ def test_the_first_recording_of_a_call_wins(conn: Connection[DictRow]) -> None:
         "model": "m",
         "provider": None,
         "request": {},
+        "wire": "{}",
         "input_tokens": 1,
         "output_tokens": 0,
         "cost_usd": 0.5,
@@ -298,6 +299,9 @@ def test_a_cassette_finalises_to_the_same_bytes_in_any_order(tmp_path: Path) -> 
 
 
 def test_the_committed_cassette_is_already_final() -> None:
+    if not CASSETTE.exists():
+        # Between a change to the cache key and the recording that follows it.
+        pytest.skip(f"no cassette at {CASSETTE}; record one with LIVE=1 make e2e")
     before = CASSETTE.read_bytes()
     copy = CASSETTE.with_suffix(".check")
     try:

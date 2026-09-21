@@ -20,7 +20,8 @@ TICK = 15 * MINUTE
 WORK_START = 9 * HOUR
 WORK_END = 17 * HOUR
 CAFE_OPEN = 7 * HOUR
-CAFE_CLOSE = 16 * HOUR
+CAFE_CLOSE = 18 * HOUR
+"""An hour after the offices: people stop in on the way home."""
 
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 

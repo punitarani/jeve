@@ -1,13 +1,13 @@
 ---
 id: DECIDE-0003
 title: Question sets in words, J/P/H resolution, and a content-hash call cache
-status: accepted
+status: superseded
 date: 2026-09-20
 deciders: ["claude"]
 scope: ["py/src/jeve/decide/questions.py", "py/src/jeve/decide/sampling.py", "py/src/jeve/decide/recorder.py", "py/src/jeve/decide/jev_policy.py", "py/fixtures/cassettes/**"]
 tags: ["jev", "sampling", "replay", "economics", "agent-decided"]
 supersedes: []
-superseded-by: null
+superseded-by: "DECIDE-0004"
 relates-to: ["DECIDE-0001", "DECIDE-0002", "CORE-0005", "CORE-0007", "WORLD-0001", "LLM-0004"]
 confirmation: "cd py && uv run pytest tests/test_questions.py tests/test_sampling.py tests/test_jev_policy.py"
 ---

@@ -33,6 +33,15 @@ GENERATIVE_PREFERENCE: tuple[str, ...] = (
 )
 DECISION_PREFERENCE: tuple[str, ...] = ("typesafe/jev-1.13",)
 
+DECISION_PIN = "typesafe/jev-1.13-20260917"
+"""The dated build the cassette was recorded against (DECIDE-0004).
+
+The slug above is undated and the response names the build that answered. A
+different build is a different model: its answers are cached under its own
+name, and the run halts rather than quietly mixing two models in one world.
+Moving this is a decision about the experiment; follow it with
+`LIVE=1 make e2e` and commit the cassette."""
+
 
 @dataclass(frozen=True, slots=True)
 class ModelCard:

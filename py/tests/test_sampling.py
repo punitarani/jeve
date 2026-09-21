@@ -12,7 +12,7 @@ import itertools
 
 import pytest
 
-from jeve.decide.questions import Ask, per_tick_hazard
+from jeve.decide.questions import Ask
 from jeve.decide.sampling import resolve
 from jeve.errors import ResponseShapeError
 from jeve.llm.protocol import (
@@ -107,16 +107,6 @@ def test_no_mass_on_any_declared_option_is_an_error_not_a_guess() -> None:
 def test_a_choice_without_probabilities_cannot_be_sampled() -> None:
     with pytest.raises(ResponseShapeError, match="no probabilities"):
         resolve(_choice("P"), ChoiceAnswer(choice="billing"), lambda: 0.5)
-
-
-def test_a_hazard_question_is_thinned_before_it_is_sampled() -> None:
-    answer = NoulAnswer(noul=0.5)
-    hazard = per_tick_hazard(0.5)
-    below = resolve(_noul("H"), answer, lambda: hazard * 0.99)
-    above = resolve(_noul("H"), answer, lambda: hazard * 1.01)
-    assert (below.value, above.value) == (True, False)
-    # What is stored is what Jev said, not the thinned figure.
-    assert below.distribution == {"yes": 0.5, "no": 0.5}
 
 
 def test_a_score_judgement_is_its_most_likely_level() -> None:

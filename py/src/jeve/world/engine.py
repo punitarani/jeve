@@ -12,26 +12,74 @@ what is possible and what it costs. Money is never moved by a model.
 from __future__ import annotations
 
 import json
+import math
 import os
 import signal
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve import db
-from jeve.core.clock import DAY, TICK, SimTime, next_open
+from jeve.core.clock import (
+    DAY,
+    HOUR,
+    MINUTE,
+    TICK,
+    WORK_END,
+    WORK_START,
+    SimTime,
+    next_open,
+)
+from jeve.core.orgs import BY_ID, ORGS
 from jeve.core.seed import derive_rng
+from jeve.decide.gates import ASK_FROM_DAYS_BEFORE_DUE
 from jeve.decide.policy import Decision, DecisionContext, Policy
-from jeve.world import flows, space
+from jeve.decide.questions import trait_fraction
+from jeve.world import flows, scheduler, space
 
-# Tallybird's hazard: chance per business-hours tick that a module falls over.
+# Every rate in here is per *hour*, and turned into a chance for one tick where
+# it is used: nothing in the world may depend on how long a tick is.
+
+# Tallybird's hazard: chance per business hour that a module falls over.
 # Elevated because the fixture starts with debt high and a risky deploy queued.
-BASE_HAZARD = 0.004
+HAZARD_PER_HOUR = 0.016
 DEBT_MULTIPLIER = 2.5
 
-CAFE_ARRIVALS_PER_TICK = 6
+# How quickly subscribers notice an outage: the old 12%-per-quarter-hour, as a
+# rate. Drawn once per person per incident (CORE-0009), not once per tick for
+# whoever happened to be among the first forty rows.
+NOTICE_RATE_PER_HOUR = -math.log(1 - 0.12) * 4
+
+# Walk-ins per hour, by the hour. The same 192 across office hours as the flat
+# six-a-tick it replaces, shaped like a cafe: a rush before work, a bigger one
+# at lunch.
+CAFE_ARRIVALS_PER_HOUR: dict[int, int] = {
+    7: 10, 8: 30, 9: 25, 10: 19, 11: 22, 12: 41,
+    13: 31, 14: 19, 15: 19, 16: 16, 17: 10,
+}  # fmt: skip
+
+CLIENT_ENGAGED_PER_MONTH = 0.12
+"""A firm bills about twelve of its hundred clients in a month. It was always the
+same twelve (`ORDER BY id LIMIT 12`), which is most of why 251 of 400
+counterparties never did anything at all. Now it is whoever had work done that
+month, keyed by (firm, client, month)."""
+
+TICKET_TIMEOUT = 2 * DAY
+REOPEN_WINDOW = 3 * DAY
+CHASE_AFTER = 7 * DAY
+WRITE_OFF_AFTER = 60 * DAY
+AUTOPAY_ABOVE = 0.2
+"""Clients in the four prompter fifths pay by standing instruction on the day a
+bill falls due: a gate, not a question. The slowest fifth decide, daily."""
+
+
+def per_tick(rate_per_hour: float) -> float:
+    """The chance of at least one event in one tick, for an hourly rate."""
+
+    return 1.0 - math.exp(-rate_per_hour * TICK / HOUR)
+
 
 _DIE_AT_EVENT = int(os.environ.get("JEVE_TEST_DIE_AT_EVENT") or 0)
 
@@ -145,13 +193,14 @@ class Engine:
     def _decide(self, report: TickReport, ctx: DecisionContext) -> Made:
         """Run a policy and record the decision."""
 
-        return self._record(report, ctx, self._policy.decide(ctx))
+        return self._decide_many(report, [ctx])[0]
 
     def _decide_many(
         self, report: TickReport, contexts: list[DecisionContext]
     ) -> list[Made]:
         """Decide independent contexts together, record them in order."""
 
+        contexts = self._numbered(contexts)
         decisions = self._policy.decide_many(contexts)
         return [
             self._record(report, ctx, decision)
@@ -187,18 +236,72 @@ class Engine:
         report.decisions += 1
         return Made(int(row["id"]), decision.chosen, decision.source)
 
-    def _next_seq(self, person_id: str) -> int:
-        row = self._conn.execute(
-            "SELECT decision_seq FROM persons WHERE id = %s", (person_id,)
-        ).fetchone()
-        assert row is not None
-        return int(row["decision_seq"])
+    def _numbered(self, contexts: list[DecisionContext]) -> list[DecisionContext]:
+        """Give each context its place in its person's sequence of decisions.
 
-    # What `jeve.world.space` needs of the engine, by its public name.
+        The engine's job, not the caller's: someone with two bills to think
+        about, or in two conversations, in one tick decides twice, and the
+        second decision is their next one. Callers used to add their own
+        offsets and any two that met would have collided.
+        """
+
+        people = sorted({ctx.person_id for ctx in contexts})
+        rows = self._conn.execute(
+            "SELECT id, decision_seq FROM persons WHERE id = ANY(%s)", (people,)
+        ).fetchall()
+        following = {str(row["id"]): int(row["decision_seq"]) for row in rows}
+        numbered: list[DecisionContext] = []
+        for ctx in contexts:
+            numbered.append(replace(ctx, decision_seq=following[ctx.person_id]))
+            following[ctx.person_id] += 1
+        return numbered
+
+    # -- the person's own calendar (CORE-0009) -------------------------------
+
+    def slot(self, person_id: str, day: int, purpose: str) -> int:
+        """The time of day this person gets round to `purpose` on `day`.
+
+        Everyone does their bills, reads their inbox, makes their calls at a
+        time of their own, and a different one each day. It replaces "a random
+        quarter of whoever is first in the table, this tick".
+        """
+
+        rng = derive_rng(self._root, "slot", purpose, person_id, day)
+        span = WORK_END - WORK_START - HOUR
+        return WORK_START + int(rng.random() * span) // (5 * MINUTE) * (5 * MINUTE)
+
+    def gets_to_it(
+        self, person_id: str, now: SimTime, purpose: str, asked_day: object
+    ) -> bool:
+        """Has their moment for `purpose` come today, and not been used yet?"""
+
+        if asked_day is not None and int(str(asked_day)) >= now.day:
+            return False
+        return now.time_of_day >= self.slot(person_id, now.day, purpose)
+
+    def cash_of(self, account: str) -> int:
+        row = self._conn.execute(
+            "SELECT COALESCE(sum(amount_cents),0) AS cents FROM ledger_entries "
+            "WHERE account_id = %s",
+            (account,),
+        ).fetchone()
+        return int(row["cents"]) if row else 0
+
+    def payer_of(self, org_id: str) -> DictRow | None:
+        """Who pays this firm's bills and chases what it is owed."""
+
+        roles = list(BY_ID[org_id].payer_roles)
+        return self._conn.execute(
+            "SELECT id, org_id, role, traits FROM persons WHERE org_id = %s "
+            "AND kind = 'staff' AND role = ANY(%s) "
+            "ORDER BY array_position(%s::text[], role), id LIMIT 1",
+            (org_id, roles, roles),
+        ).fetchone()
+
+    # What the rest of `jeve.world` needs of the engine, by its public name.
     emit = _emit
     decide = _decide
     decide_many = _decide_many
-    next_seq = _next_seq
 
     def _post(
         self, sim_time: int, memo: str, legs: list[tuple[str, int]], event_seq: int
@@ -275,8 +378,10 @@ class Engine:
         if now.in_office_hours:
             self._support(report, now)
             self._customers(report, now)
+            self._followups(report, now)
             self._payments(report, now)
             self._client_payments(report, now)
+            self._chase(report, now)
         if now.cafe_open:
             self._cafe(report, now)
 
@@ -298,38 +403,32 @@ class Engine:
     # -- scheduled work ----------------------------------------------------
 
     def _run_due(self, report: TickReport) -> None:
-        rows = self._conn.execute(
-            "DELETE FROM scheduled WHERE due_sim_time <= %s "
-            "RETURNING kind, subject_id, payload",
+        due = self._conn.execute(
+            "SELECT id, kind, subject_id, payload FROM scheduled "
+            "WHERE due_sim_time <= %s ORDER BY due_sim_time, ord, kind, subject_id, id",
             (report.sim_time,),
         ).fetchall()
-        # Deterministic order regardless of how the database returned them.
-        for row in sorted(rows, key=lambda r: (str(r["kind"]), str(r["subject_id"]))):
-            kind = str(row["kind"])
-            payload = row["payload"] or {}
-            if kind == "incident.start":
-                self._start_incident(report, str(row["subject_id"]), payload)
-            elif kind == "incident.end":
-                self._end_incident(report, str(row["subject_id"]), payload)
-            elif kind == "month.end":
-                self._month_end(report, payload)
-            elif kind == "invoice.run":
-                self._issue_invoices(
-                    report,
-                    str(row["subject_id"]),
-                    cause=int(payload.get("cause", 0)),
-                    was_blocked=bool(payload.get("blocked")),
-                )
-            elif kind == "subscription.run":
-                self._subscriptions(report)
-            elif kind == "payroll.run":
-                flows.payroll(self, report, str(row["subject_id"]), payload)
-            elif kind == "close.run":
-                flows.close_books(self, report, str(row["subject_id"]), payload)
-            elif kind == "catering.consider":
-                flows.consider_catering(self, report, str(row["subject_id"]), payload)
-            elif kind == "catering.deliver":
-                flows.deliver_catering(self, report, str(row["subject_id"]), payload)
+        offices_open = SimTime(report.sim_time).in_office_hours
+        # Office work that comes due while only the cafe is open, or on a
+        # Saturday, waits for the office — in place, keeping its original due
+        # time, so that on Monday morning it still runs before whatever was
+        # due on Monday morning. Month-end invoices used to be able to go out
+        # at seven because an outage ended then; and an accountant's nine
+        # o'clock close must see the invoices that were waiting since Friday.
+        ready = [
+            row
+            for row in due
+            if offices_open or not scheduler.get(str(row["kind"])).office_hours_only
+        ]
+        # Taken off the queue before any of it runs: a handler that reschedules
+        # itself for this same tick must not be run twice.
+        self._conn.execute(
+            "DELETE FROM scheduled WHERE id = ANY(%s)", ([int(r["id"]) for r in ready],)
+        )
+        for row in ready:
+            scheduler.get(str(row["kind"])).run(
+                self, report, str(row["subject_id"] or ""), dict(row["payload"] or {})
+            )
 
     def _schedule(
         self, due: int, kind: str, subject: str | None, payload: dict[str, Any]
@@ -344,11 +443,16 @@ class Engine:
     # -- flow 1: incidents -------------------------------------------------
 
     def _maybe_incident(self, report: TickReport, now: SimTime) -> None:
-        rng = derive_rng(self._root, "hazard", report.tick_seq)
-        for module_id, _ in (("timetrack", 0), ("invoicing", 0), ("pos", 0)):
+        chance = per_tick(HAZARD_PER_HOUR * (1 + self._debt * (DEBT_MULTIPLIER - 1)))
+        for module_id in ("timetrack", "invoicing", "pos"):
             if self._module_down(module_id):
                 continue
-            if rng.random() < BASE_HAZARD * (1 + self._debt * (DEBT_MULTIPLIER - 1)):
+            # CORE-0009: about this module at this moment of this day, not about
+            # how many ticks the run has taken to get here.
+            rng = derive_rng(
+                self._root, "hazard", module_id, now.day, now.time_of_day // MINUTE
+            )
+            if rng.random() < chance:
                 self._start_incident(
                     report, module_id, {"severity": 1, "expected_minutes": 90}
                 )
@@ -384,6 +488,34 @@ class Engine:
             "incident.end",
             module_id,
             {"incident_id": int(row["id"]), "cause": seq},
+        )
+        self._will_notice(int(row["id"]), module_id, report.sim_time)
+
+    def _will_notice(self, incident_id: int, module_id: str, started: int) -> None:
+        """Everyone who uses the module finds out it is down — each in their own
+        time, drawn once per (person, incident) (CORE-0009)."""
+
+        users = self._conn.execute(
+            "SELECT person_id AS id FROM subscriptions "
+            "WHERE module_id = %s AND active AND person_id IS NOT NULL "
+            "UNION "
+            # A firm that subscribes is represented by whoever pays its bills.
+            "SELECT p.id FROM subscriptions s JOIN persons p ON p.org_id = s.org_id "
+            "WHERE s.module_id = %s AND s.active AND p.kind = 'staff' "
+            "AND p.role = ANY(%s) ORDER BY id",
+            (module_id, module_id, [r for o in ORGS for r in o.payer_roles[:1]]),
+        ).fetchall()
+        rows = []
+        for user in users:
+            person_id = str(user["id"])
+            rng = derive_rng(self._root, "notice", person_id, incident_id)
+            delay = -math.log(1.0 - rng.random()) / NOTICE_RATE_PER_HOUR * HOUR
+            rows.append((incident_id, person_id, started + int(delay)))
+        db.executemany(
+            self._conn,
+            "INSERT INTO outage_notices (incident_id, person_id, notice_sim) "
+            "VALUES (%s,%s,%s)",
+            rows,
         )
 
     def _end_incident(
@@ -431,81 +563,113 @@ class Engine:
     # -- flow 2: customers file tickets, support triages and answers -------
 
     def _customers(self, report: TickReport, now: SimTime) -> None:
-        """Counterparties who depend on a downed module may file a ticket."""
+        """People who have noticed an outage decide whether to report it.
 
-        down = [
-            str(row["id"])
-            for row in self._conn.execute(
-                "SELECT id FROM modules WHERE status = 'down'"
-            ).fetchall()
-        ]
-        if not down:
-            return
-        cause = self._conn.execute(
-            "SELECT seq FROM events WHERE kind = 'incident.started' "
-            "ORDER BY seq DESC LIMIT 1"
-        ).fetchone()
-        causes = [int(cause["seq"])] if cause else []
+        Asked when they notice, and again each day it goes on, at a time of
+        their own. Not every tick: someone who shrugged at ten is not asked
+        again at quarter past.
+        """
 
-        rng = derive_rng(self._root, "customers", report.tick_seq)
-        candidates = self._conn.execute(
-            "SELECT p.id, p.traits FROM persons p "
-            "WHERE p.kind = 'counterparty' AND p.org_id = 'tallybird' "
-            "ORDER BY p.id LIMIT 40"
+        waiting = self._conn.execute(
+            "SELECT n.incident_id, n.person_id, n.asked_day, i.module_id, "
+            "  i.started_sim, i.cause_event_seq, p.traits "
+            "FROM outage_notices n JOIN incidents i ON i.id = n.incident_id "
+            "JOIN persons p ON p.id = n.person_id "
+            "WHERE i.ended_sim IS NULL AND n.ticket_id IS NULL "
+            "  AND n.notice_sim <= %s ORDER BY n.incident_id, n.person_id",
+            (report.sim_time,),
         ).fetchall()
-        # A slice of the subscriber base notices per tick, not all of them.
-        for row in candidates:
-            if rng.random() > 0.12:
+        asked: list[DictRow] = []
+        contexts: list[DecisionContext] = []
+        for row in waiting:
+            person_id = str(row["person_id"])
+            if row["asked_day"] is not None and not self.gets_to_it(
+                person_id, now, "report", row["asked_day"]
+            ):
                 continue
-            person_id = str(row["id"])
             open_already = self._conn.execute(
                 "SELECT 1 FROM tickets WHERE reporter_id = %s AND status <> 'closed' "
                 "LIMIT 1",
                 (person_id,),
             ).fetchone()
-            made = self._decide(
-                report,
+            asked.append(row)
+            contexts.append(
                 DecisionContext(
                     person_id=person_id,
                     role="subscriber",
-                    decision_seq=self._next_seq(person_id),
                     sim_time=report.sim_time,
                     kind="file.ticket",
                     facts={
                         "module_down": True,
                         "already_open": open_already is not None,
+                        "hours_down": (report.sim_time - int(row["started_sim"]))
+                        // HOUR,
                     },
                     traits=dict(row["traits"] or {}),
-                ),
+                )
             )
-            if not made.chosen.get("file"):
-                continue
-            module_id = down[0]
+        if not asked:
+            return
+        self._conn.execute(
+            "UPDATE outage_notices SET asked_day = %s WHERE (incident_id, person_id) "
+            "IN (SELECT * FROM unnest(%s::bigint[], %s::text[]))",
+            (
+                now.day,
+                [int(r["incident_id"]) for r in asked],
+                [str(r["person_id"]) for r in asked],
+            ),
+        )
+        for row, made in zip(asked, self._decide_many(report, contexts), strict=True):
+            if made.chosen.get("file"):
+                self._file(report, row, made)
+
+    def _file(self, report: TickReport, row: DictRow, made: Made) -> None:
+        person_id = str(row["person_id"])
+        module_id = str(row["module_id"])
+        incident_id = int(row["incident_id"])
+        causes = _seq_of(row["cause_event_seq"])
+        # The same person hitting the same module again within days of being
+        # told it was fixed is the same complaint, reopened.
+        recent = self._conn.execute(
+            "UPDATE tickets SET status = 'triaged', closed_sim = NULL, "
+            "  reopened = reopened + 1, incident_id = %s, answered_sim = NULL "
+            "WHERE id = (SELECT id FROM tickets WHERE reporter_id = %s "
+            "  AND module_id = %s AND status = 'closed' AND closed_sim >= %s "
+            "  ORDER BY closed_sim DESC, id DESC LIMIT 1) RETURNING id",
+            (incident_id, person_id, module_id, report.sim_time - REOPEN_WINDOW),
+        ).fetchone()
+        subject = f"{module_id} is not responding"
+        if recent is not None:
+            ticket_id = int(recent["id"])
+            kind = "ticket.reopened"
+        else:
             ticket = self._conn.execute(
-                "INSERT INTO tickets (opened_sim, reporter_id, module_id, subject) "
-                "VALUES (%s,%s,%s,%s) RETURNING id",
-                (
-                    report.sim_time,
-                    person_id,
-                    module_id,
-                    f"{module_id} is not responding",
-                ),
+                "INSERT INTO tickets (opened_sim, reporter_id, module_id, "
+                "incident_id, subject) VALUES (%s,%s,%s,%s,%s) RETURNING id",
+                (report.sim_time, person_id, module_id, incident_id, subject),
             ).fetchone()
             assert ticket is not None
-            self._emit(
-                report,
-                "ticket.opened",
-                actor_id=person_id,
-                org_id="tallybird",
-                causes=causes,
-                decision_id=made.id,
-                payload={
-                    "ticket_id": int(ticket["id"]),
-                    "reporter_id": person_id,
-                    "module_id": module_id,
-                    "subject": f"{module_id} is not responding",
-                },
-            )
+            ticket_id = int(ticket["id"])
+            kind = "ticket.opened"
+        self._conn.execute(
+            "UPDATE outage_notices SET ticket_id = %s "
+            "WHERE incident_id = %s AND person_id = %s",
+            (ticket_id, incident_id, person_id),
+        )
+        self._emit(
+            report,
+            kind,
+            actor_id=person_id,
+            org_id="tallybird",
+            causes=causes,
+            decision_id=made.id,
+            payload={
+                "ticket_id": ticket_id,
+                "reporter_id": person_id,
+                "module_id": module_id,
+                "subject": subject,
+            },
+        )
 
     def _support(self, report: TickReport, now: SimTime) -> None:
         staff = self._conn.execute(
@@ -540,7 +704,6 @@ class Engine:
                     DecisionContext(
                         person_id=person_id,
                         role="support",
-                        decision_seq=self._next_seq(person_id),
                         sim_time=report.sim_time,
                         kind="ticket.triage",
                         facts={
@@ -598,7 +761,6 @@ class Engine:
                 DecisionContext(
                     person_id=person_id,
                     role="support",
-                    decision_seq=self._next_seq(person_id),
                     sim_time=report.sim_time,
                     kind="ticket.answer",
                     facts={"backlog": backlog},
@@ -607,10 +769,7 @@ class Engine:
             )
             if not made.chosen.get("answer_now"):
                 continue
-            self._conn.execute(
-                "UPDATE tickets SET status = 'answered' WHERE id = %s", (triaged["id"],)
-            )
-            self._emit(
+            answered = self._emit(
                 report,
                 "ticket.answered",
                 actor_id=person_id,
@@ -622,28 +781,116 @@ class Engine:
                     "decided_by": made.source,
                 },
             )
+            self._conn.execute(
+                "UPDATE tickets SET status = 'answered', answered_sim = %s, "
+                "answered_seq = %s, asked_day = NULL WHERE id = %s",
+                (report.sim_time, answered, triaged["id"]),
+            )
+
+    def _followups(self, report: TickReport, now: SimTime) -> None:
+        """An answered ticket ends: confirmed by its reporter, or timed out.
+
+        Without this an answered ticket stayed open for ever, its reporter
+        counted as "already has one open" for ever, and support received three
+        tickets in the last twenty-six days of a thirty-day run.
+        """
+
+        answered = self._conn.execute(
+            "SELECT t.id, t.reporter_id, t.module_id, t.answered_sim, t.answered_seq, "
+            "  t.asked_day, p.traits, m.status AS module_status "
+            "FROM tickets t JOIN persons p ON p.id = t.reporter_id "
+            "LEFT JOIN modules m ON m.id = t.module_id "
+            "WHERE t.status = 'answered' ORDER BY t.id"
+        ).fetchall()
+        asked: list[DictRow] = []
+        contexts: list[DecisionContext] = []
+        for row in answered:
+            since = report.sim_time - int(row["answered_sim"] or report.sim_time)
+            if since >= TICKET_TIMEOUT:
+                self._close(report, row, reason="timeout")
+                continue
+            reporter = str(row["reporter_id"])
+            if not self.gets_to_it(reporter, now, "inbox", row["asked_day"]):
+                continue
+            asked.append(row)
+            contexts.append(
+                DecisionContext(
+                    person_id=reporter,
+                    role="subscriber",
+                    sim_time=report.sim_time,
+                    kind="ticket.confirm",
+                    facts={
+                        "module_down": row["module_status"] == "down",
+                        "days_since_answer": since // DAY,
+                    },
+                    traits=dict(row["traits"] or {}),
+                )
+            )
+        if not asked:
+            return
+        self._conn.execute(
+            "UPDATE tickets SET asked_day = %s WHERE id = ANY(%s)",
+            (now.day, [int(r["id"]) for r in asked]),
+        )
+        for row, made in zip(asked, self._decide_many(report, contexts), strict=True):
+            if made.chosen.get("confirm"):
+                self._close(report, row, reason="confirmed", made=made)
+
+    def _close(
+        self, report: TickReport, row: DictRow, *, reason: str, made: Made | None = None
+    ) -> None:
+        self._conn.execute(
+            "UPDATE tickets SET status = 'closed', closed_sim = %s WHERE id = %s",
+            (report.sim_time, row["id"]),
+        )
+        self._emit(
+            report,
+            "ticket.closed",
+            actor_id=str(row["reporter_id"]) if made else None,
+            org_id="tallybird",
+            causes=_seq_of(row["answered_seq"]),
+            decision_id=made.id if made else None,
+            payload={
+                "ticket_id": int(row["id"]),
+                "reason": reason,
+                "decided_by": made.source if made else "rules",
+            },
+        )
 
     # -- flow 3: month-end invoicing, blocked while Invoicing is down ------
 
     def _month_end(self, report: TickReport, payload: dict[str, Any]) -> None:
+        month = int(payload.get("month", 0))
         seq = self._emit(
-            report, "month.end", payload={"label": str(payload.get("label", ""))}
+            report,
+            "month.end",
+            payload={"label": str(payload.get("label", "")), "month": month},
         )
         # Run in this same tick; a blocked run reschedules itself.
-        for org_id in ("halloran", "ledgerline"):
-            self._issue_invoices(report, org_id, cause=seq)
+        for org in ORGS:
+            if org.bills_clients_monthly:
+                self._issue_invoices(report, org.id, cause=seq, month=month)
+        # And the month after. It fired once, and the world ran down (audit B1).
+        self._schedule(
+            report.sim_time + 28 * DAY,
+            "month.end",
+            None,
+            {"label": f"month {month + 2}", "month": month + 1},
+        )
 
     def _issue_invoices(
-        self, report: TickReport, org_id: str, *, cause: int, was_blocked: bool = False
+        self,
+        report: TickReport,
+        org_id: str,
+        *,
+        cause: int,
+        month: int,
+        was_blocked: bool = False,
     ) -> None:
         """The cascade's first link: no Invoicing module, no invoices."""
 
         if self._module_down("invoicing"):
-            pending = self._conn.execute(
-                "SELECT count(*) AS n FROM persons WHERE org_id = %s "
-                "AND kind = 'counterparty'",
-                (org_id,),
-            ).fetchone()
+            pending = len(self.engaged_clients(org_id, month))
             # Two causes, and both are true: month-end is why a run was
             # attempted, the outage is why it failed. Citing only the calendar
             # would leave the outage with no billing consequences downstream,
@@ -656,39 +903,30 @@ class Engine:
             causes = [cause] if cause else []
             if outage is not None:
                 causes += _seq_of(outage["cause_event_seq"])
-            self._emit(
-                report,
-                "invoice.blocked",
-                org_id=org_id,
-                causes=causes,
-                payload={
-                    "from_org_id": org_id,
-                    "module_id": "invoicing",
-                    "pending": int(pending["n"]) if pending else 0,
-                    "reason": "invoicing module is down",
-                },
-            )
-            # Try again next tick; the block is recorded each time it bites.
+            if not was_blocked:
+                # Said once. It was said every tick the outage lasted, which
+                # buried the one fact under a hundred copies of it.
+                self._emit(
+                    report,
+                    "invoice.blocked",
+                    org_id=org_id,
+                    causes=causes,
+                    payload={
+                        "from_org_id": org_id,
+                        "module_id": "invoicing",
+                        "pending": pending,
+                        "reason": "invoicing module is down",
+                    },
+                )
+            # Try again next tick.
             self._schedule(
                 report.sim_time + TICK,
                 "invoice.run",
                 org_id,
-                {"cause": cause, "blocked": True},
-            )
-            self._conn.execute(
-                "UPDATE invoices SET blocked_ticks = blocked_ticks + 1 "
-                "WHERE from_org_id = %s AND paid_sim IS NULL",
-                (org_id,),
+                {"cause": cause, "blocked": True, "month": month},
             )
             return
 
-        clients = self._conn.execute(
-            "SELECT id, traits FROM persons "
-            "WHERE org_id = %s AND kind = 'counterparty' "
-            "ORDER BY id LIMIT 12",
-            (org_id,),
-        ).fetchall()
-        rng = derive_rng(self._root, "invoice", org_id, report.tick_seq)
         # A run that had been blocked goes out *because the outage ended*, and
         # when it ended is itself caused. Citing only month-end here would cut
         # the chain exactly where an outage turns into late money.
@@ -699,40 +937,92 @@ class Engine:
                 "AND payload->>'module_id' = 'invoicing' ORDER BY seq DESC LIMIT 1"
             ).fetchone()
             causes += _seq_of(ended["seq"]) if ended else []
-        for client in clients:
-            amount = 80_000 + int(rng.random() * 540_000)
-            invoice = self._conn.execute(
-                "INSERT INTO invoices (from_org_id, to_person_id, issued_sim, "
-                "due_sim, amount_cents, kind) VALUES (%s,%s,%s,%s,%s,'services') "
-                "RETURNING id",
-                (
-                    org_id,
-                    client["id"],
-                    report.sim_time,
-                    report.sim_time + 30 * DAY,
-                    amount,
-                ),
-            ).fetchone()
-            assert invoice is not None
-            seq = self._emit(
+        for client_id, amount in self.engaged_clients(org_id, month):
+            self.bill(
                 report,
-                "invoice.issued",
-                org_id=org_id,
+                from_org=org_id,
+                to_person=client_id,
+                amount=amount,
+                terms_days=30,
+                kind="services",
                 causes=causes,
-                payload={
-                    "invoice_id": int(invoice["id"]),
-                    "from_org_id": org_id,
-                    "to": str(client["id"]),
-                    "amount_cents": amount,
-                    "invoice_kind": "services",
-                },
             )
-            self._post(
+
+    def engaged_clients(self, org_id: str, month: int) -> list[tuple[str, int]]:
+        """Who had work done this month, and what it came to.
+
+        CORE-0009: keyed by (firm, client, month) and by nothing else, so the
+        same invoice is for the same amount whether it goes out on the 3rd or,
+        because of an outage, on the 4th. The amount used to come from the tick
+        it was issued in; a counterfactual that delayed billing re-rolled every
+        bill, and "the outage made the money late" could not be told apart from
+        "the outage changed the money".
+        """
+
+        clients = self._conn.execute(
+            "SELECT id FROM persons WHERE org_id = %s AND kind = 'counterparty' "
+            "ORDER BY id",
+            (org_id,),
+        ).fetchall()
+        billed: list[tuple[str, int]] = []
+        for client in clients:
+            client_id = str(client["id"])
+            rng = derive_rng(self._root, "engagement", org_id, client_id, month)
+            if rng.random() < CLIENT_ENGAGED_PER_MONTH:
+                billed.append((client_id, 80_000 + int(rng.random() * 540_000)))
+        return billed
+
+    def bill(
+        self,
+        report: TickReport,
+        *,
+        from_org: str,
+        amount: int,
+        terms_days: int,
+        kind: str,
+        causes: list[int],
+        to_person: str | None = None,
+        to_org: str | None = None,
+    ) -> int:
+        """Issue one invoice: the row, the event, the receivable. Returns its id."""
+
+        invoice = self._conn.execute(
+            "INSERT INTO invoices (from_org_id, to_org_id, to_person_id, issued_sim, "
+            "due_sim, amount_cents, kind) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (
+                from_org,
+                to_org,
+                to_person,
                 report.sim_time,
-                f"{org_id} invoices {client['id']}",
-                [(f"{org_id}.receivable", amount), (f"{org_id}.revenue", -amount)],
-                seq,
-            )
+                report.sim_time + terms_days * DAY,
+                amount,
+                kind,
+            ),
+        ).fetchone()
+        assert invoice is not None
+        seq = self._emit(
+            report,
+            "invoice.issued",
+            org_id=from_org,
+            causes=causes,
+            payload={
+                "invoice_id": int(invoice["id"]),
+                "from_org_id": from_org,
+                "to": to_person or to_org,
+                "amount_cents": amount,
+                "invoice_kind": kind,
+            },
+        )
+        self._conn.execute(
+            "UPDATE invoices SET issued_seq = %s WHERE id = %s", (seq, invoice["id"])
+        )
+        self._post(
+            report.sim_time,
+            f"{from_org} invoices {to_person or to_org}",
+            [(f"{from_org}.receivable", amount), (f"{from_org}.revenue", -amount)],
+            seq,
+        )
+        return int(invoice["id"])
 
     # -- flow 4: subscription invoices (automatic) -------------------------
 
@@ -742,6 +1032,7 @@ class Engine:
             "WHERE active ORDER BY id"
         ).fetchall()
         total = 0
+        issued: list[int] = []
         for row in rows:
             amount = int(row["monthly_cents"])
             invoice = self._conn.execute(
@@ -757,6 +1048,7 @@ class Engine:
                 ),
             ).fetchone()
             assert invoice is not None
+            issued.append(int(invoice["id"]))
             total += amount
         if total:
             seq = self._emit(
@@ -771,6 +1063,9 @@ class Engine:
                     "invoice_kind": "subscription",
                 },
             )
+            self._conn.execute(
+                "UPDATE invoices SET issued_seq = %s WHERE id = ANY(%s)", (seq, issued)
+            )
             self._post(
                 report.sim_time,
                 "tallybird monthly subscriptions",
@@ -782,220 +1077,332 @@ class Engine:
 
     # -- flow 5: payments --------------------------------------------------
 
-    def _payments(self, report: TickReport, now: SimTime) -> None:
-        """Each org's bill-payer decides whether to settle what is due."""
+    def _open_bills(self, where: str, params: tuple[Any, ...]) -> list[DictRow]:
+        """Unpaid bills whose payer has started thinking about them."""
 
-        payers = self._conn.execute(
-            "SELECT id, org_id, traits FROM persons "
-            "WHERE role IN ('office_manager','client_admin','owner','founder') "
-            "ORDER BY id"
+        return self._conn.execute(
+            "SELECT i.id, i.amount_cents, i.due_sim, i.from_org_id, i.to_org_id, "
+            "  i.to_person_id, i.issued_seq, i.asked_day, i.deferrals, i.chased_sim "
+            "FROM invoices i WHERE i.paid_sim IS NULL AND i.written_off_sim IS NULL "
+            f"  AND i.due_sim <= %s AND {where} ORDER BY i.due_sim, i.id",
+            (params[0] + ASK_FROM_DAYS_BEFORE_DUE * DAY, *params[1:]),
         ).fetchall()
-        for payer in payers:
-            org_id = str(payer["org_id"])
-            due = self._conn.execute(
-                "SELECT i.id, i.amount_cents, i.due_sim, i.from_org_id, "
-                "  (SELECT seq FROM events e WHERE e.kind = 'invoice.issued' "
-                "     AND (e.payload->>'invoice_id')::bigint = i.id "
-                "   ORDER BY e.seq LIMIT 1) AS issued_seq "
-                "FROM invoices i WHERE i.to_org_id = %s AND i.paid_sim IS NULL "
-                "  AND i.due_sim <= %s ORDER BY i.due_sim, i.id LIMIT 1",
-                (org_id, report.sim_time + DAY),
-            ).fetchone()
-            if due is None:
+
+    def _payments(self, report: TickReport, now: SimTime) -> None:
+        """Each firm's bill-payer sits down to the bills once a day.
+
+        Every bill that is nearly due or overdue gets one answer a day: pay it
+        today, or not. It used to be the single most overdue bill, asked every
+        tick and thinned to a per-tick hazard; a run logged 1,591
+        `payment.deferred` events, each one a die being rolled.
+        """
+
+        for org in ORGS:
+            payer = self.payer_of(org.id)
+            if payer is None:
                 continue
-
-            cash_row = self._conn.execute(
-                "SELECT COALESCE(sum(amount_cents),0) AS cents FROM ledger_entries "
-                "WHERE account_id = %s",
-                (f"{org_id}.cash",),
-            ).fetchone()
-            cash = int(cash_row["cents"]) if cash_row else 0
-            amount = int(due["amount_cents"])
-            days_until_due = (int(due["due_sim"]) - report.sim_time) // DAY
             person_id = str(payer["id"])
-
-            made = self._decide(
-                report,
+            if now.time_of_day < self.slot(person_id, now.day, "bills"):
+                continue
+            bills = [
+                bill
+                for bill in self._open_bills(
+                    "i.to_org_id = %s", (report.sim_time, org.id)
+                )
+                if bill["asked_day"] is None or int(bill["asked_day"]) < now.day
+            ]
+            if not bills:
+                continue
+            cash = self.cash_of(f"{org.id}.cash")
+            contexts = [
                 DecisionContext(
                     person_id=person_id,
-                    role=str(payer["id"]).split(".")[1],
-                    decision_seq=self._next_seq(person_id),
+                    role=str(payer["role"]),
                     sim_time=report.sim_time,
                     kind="payment.timing",
                     facts={
-                        "days_until_due": days_until_due,
-                        "can_afford": cash >= amount,
-                        "runway_days": cash / max(1, amount) * 7,
+                        "days_until_due": (int(bill["due_sim"]) - report.sim_time)
+                        // DAY,
+                        "can_afford": cash >= int(bill["amount_cents"]),
+                        "runway_days": cash / max(1, int(bill["amount_cents"])) * 7,
+                        "chased": bill["chased_sim"] is not None,
                     },
                     traits=dict(payer["traits"] or {}),
-                ),
-            )
-            causes = [int(due["issued_seq"])] if due["issued_seq"] else []
-            days_late = max(0, -days_until_due)
-            if not made.chosen.get("pay"):
-                self._emit(
-                    report,
-                    "payment.deferred",
-                    actor_id=person_id,
-                    org_id=org_id,
-                    causes=causes,
-                    decision_id=made.id,
-                    payload={
-                        "invoice_id": int(due["id"]),
-                        "days_late": days_late,
-                        "reason": str(made.chosen.get("reason", "")),
-                        "decided_by": made.source,
-                    },
                 )
-                continue
-
-            payee = str(due["from_org_id"])
-            seq = self._emit(
-                report,
-                "payment.made",
-                actor_id=person_id,
-                org_id=org_id,
-                causes=causes,
-                decision_id=made.id,
-                payload={
-                    "invoice_id": int(due["id"]),
-                    "amount_cents": amount,
-                    "days_late": days_late,
-                    "decided_by": made.source,
-                },
-            )
-            txn = self._post(
-                report.sim_time,
-                f"{org_id} pays {payee} invoice {due['id']}",
-                [
-                    (f"{org_id}.cash", -amount),
-                    (f"{payee}.cash", amount),
-                    (f"{payee}.receivable", -amount),
-                    (f"{org_id}.expense", amount),
-                ],
-                seq,
-            )
-            self._conn.execute(
-                "UPDATE invoices SET paid_sim = %s WHERE id = %s",
-                (report.sim_time, due["id"]),
-            )
-            self._conn.execute(
-                "INSERT INTO payments (invoice_id, paid_sim, amount_cents, txn_id, "
-                "days_late) VALUES (%s,%s,%s,%s,%s)",
-                (due["id"], report.sim_time, amount, txn, days_late),
-            )
+                for bill in bills
+            ]
+            self._settle(report, now, bills, contexts, payer_account=f"{org.id}.cash")
 
     def _client_payments(self, report: TickReport, now: SimTime) -> None:
         """Outside clients settling what the firms invoiced them.
 
-        Without this the receivable side only ever grows: the firms issue at
-        month-end and nothing comes back, so the credit chain in the scenario
-        has no first link.
+        Every client with a bill, not the eight oldest bills a quarter of the
+        time. Most pay by standing instruction on the day (a gate); the slowest
+        fifth are asked, daily, at an hour of their own.
         """
 
-        rng = derive_rng(self._root, "clientpay", report.tick_seq)
-        due = self._conn.execute(
-            "SELECT i.id, i.amount_cents, i.due_sim, i.from_org_id, i.to_person_id, "
-            "  (SELECT seq FROM events e WHERE e.kind = 'invoice.issued' "
-            "     AND (e.payload->>'invoice_id')::bigint = i.id "
-            "   ORDER BY e.seq LIMIT 1) AS issued_seq "
-            "FROM invoices i WHERE i.to_person_id IS NOT NULL "
-            "  AND i.paid_sim IS NULL AND i.due_sim <= %s "
-            "ORDER BY i.due_sim, i.id LIMIT 8",
-            (report.sim_time,),
-        ).fetchall()
-
-        for invoice in due:
-            person_id = str(invoice["to_person_id"])
-            # A slice acts per tick; the rest are still thinking about it.
-            if rng.random() > 0.25:
+        bills: list[DictRow] = []
+        contexts: list[DecisionContext] = []
+        for bill in self._open_bills("i.to_person_id IS NOT NULL", (report.sim_time,)):
+            person_id = str(bill["to_person_id"])
+            if not self.gets_to_it(person_id, now, "bills", bill["asked_day"]):
                 continue
-            traits = self._conn.execute(
+            person = self._conn.execute(
                 "SELECT traits FROM persons WHERE id = %s", (person_id,)
             ).fetchone()
-            days_until_due = (int(invoice["due_sim"]) - report.sim_time) // DAY
-            made = self._decide(
-                report,
+            traits = dict((person or {}).get("traits") or {})
+            days_until_due = (int(bill["due_sim"]) - report.sim_time) // DAY
+            autopay = trait_fraction("promptness", traits.get("promptness")) >= (
+                AUTOPAY_ABOVE
+            )
+            if autopay and days_until_due > 0:
+                continue  # the instruction fires on the day, not before
+            bills.append(bill)
+            contexts.append(
                 DecisionContext(
                     person_id=person_id,
                     role="client",
-                    decision_seq=self._next_seq(person_id),
                     sim_time=report.sim_time,
                     kind="payment.timing",
                     facts={
                         "days_until_due": days_until_due,
                         "can_afford": True,
                         "runway_days": 60,
+                        "chased": bill["chased_sim"] is not None,
+                        "autopay": autopay,
                     },
-                    traits=dict((traits or {}).get("traits") or {}),
-                ),
-            )
-            causes = _seq_of(invoice["issued_seq"])
-            days_late = max(0, -days_until_due)
-            payee = str(invoice["from_org_id"])
-            amount = int(invoice["amount_cents"])
-            if not made.chosen.get("pay"):
-                self._emit(
-                    report,
-                    "payment.deferred",
-                    actor_id=person_id,
-                    org_id=payee,
-                    causes=causes,
-                    decision_id=made.id,
-                    payload={
-                        "invoice_id": int(invoice["id"]),
-                        "days_late": days_late,
-                        "reason": str(made.chosen.get("reason", "")),
-                        "decided_by": made.source,
-                    },
+                    traits=traits,
                 )
+            )
+        if bills:
+            self._settle(report, now, bills, contexts, payer_account=None)
+
+    def _settle(
+        self,
+        report: TickReport,
+        now: SimTime,
+        bills: list[DictRow],
+        contexts: list[DecisionContext],
+        *,
+        payer_account: str | None,
+    ) -> None:
+        """Ask about each bill, then move the money for the ones being paid.
+
+        Money is never moved by a model: a "pay" that the account cannot cover
+        by the time its turn comes is deferred by the referee.
+        """
+
+        self._conn.execute(
+            "UPDATE invoices SET asked_day = %s WHERE id = ANY(%s)",
+            (now.day, [int(bill["id"]) for bill in bills]),
+        )
+        cash = self.cash_of(payer_account) if payer_account else None
+        for bill, ctx, made in zip(
+            bills, contexts, self._decide_many(report, contexts), strict=True
+        ):
+            amount = int(bill["amount_cents"])
+            pays = bool(made.chosen.get("pay"))
+            reason = str(made.chosen.get("reason", ""))
+            if pays and cash is not None and cash < amount:
+                pays, reason = False, "insufficient_cash"
+            causes = _seq_of(bill["issued_seq"])
+            days_late = max(0, (report.sim_time - int(bill["due_sim"])) // DAY)
+            payee = str(bill["from_org_id"])
+            payer_org = str(bill["to_org_id"]) if bill["to_org_id"] else payee
+            if not pays:
+                overdue = report.sim_time >= int(bill["due_sim"])
+                if overdue and int(bill["deferrals"]) == 0:
+                    # Said once, the first day a bill is left unpaid past its
+                    # date. The days after are the same fact.
+                    self._emit(
+                        report,
+                        "payment.deferred",
+                        actor_id=ctx.person_id,
+                        org_id=payer_org,
+                        causes=causes,
+                        decision_id=made.id,
+                        payload={
+                            "invoice_id": int(bill["id"]),
+                            "days_late": days_late,
+                            "reason": reason,
+                            "decided_by": made.source,
+                        },
+                    )
+                if overdue:
+                    self._conn.execute(
+                        "UPDATE invoices SET deferrals = deferrals + 1 WHERE id = %s",
+                        (bill["id"],),
+                    )
                 continue
+
             seq = self._emit(
                 report,
                 "payment.made",
-                actor_id=person_id,
-                org_id=payee,
+                actor_id=ctx.person_id,
+                org_id=payer_org,
                 causes=causes,
                 decision_id=made.id,
                 payload={
-                    "invoice_id": int(invoice["id"]),
+                    "invoice_id": int(bill["id"]),
                     "amount_cents": amount,
                     "days_late": days_late,
+                    "reason": reason,
                     "decided_by": made.source,
                 },
             )
+            legs = [(f"{payee}.cash", amount), (f"{payee}.receivable", -amount)]
+            if payer_account is not None:
+                legs += [(payer_account, -amount), (f"{payer_org}.expense", amount)]
+                assert cash is not None
+                cash -= amount
             txn = self._post(
-                report.sim_time,
-                f"{person_id} pays {payee} invoice {invoice['id']}",
-                [
-                    (f"{payee}.cash", amount),
-                    (f"{payee}.receivable", -amount),
-                ],
-                seq,
-            )
+                report.sim_time, f"{ctx.person_id} pays {payee} invoice {bill['id']}",
+                legs, seq,
+            )  # fmt: skip
             self._conn.execute(
                 "UPDATE invoices SET paid_sim = %s WHERE id = %s",
-                (report.sim_time, invoice["id"]),
+                (report.sim_time, bill["id"]),
             )
             self._conn.execute(
                 "INSERT INTO payments (invoice_id, paid_sim, amount_cents, txn_id, "
                 "days_late) VALUES (%s,%s,%s,%s,%s)",
-                (invoice["id"], report.sim_time, amount, txn, days_late),
+                (bill["id"], report.sim_time, amount, txn, days_late),
             )
+
+    def _chase(self, report: TickReport, now: SimTime) -> None:
+        """A bill a week late gets chased — if whoever is owed is the type.
+
+        And one sixty days late is written off, by rule: a receivable nobody
+        will ever collect is not an asset, and a soak should not end with a
+        balance sheet full of them.
+        """
+
+        late = self._conn.execute(
+            "SELECT i.id, i.amount_cents, i.due_sim, i.from_org_id, i.to_org_id, "
+            "  i.to_person_id, i.issued_seq, i.chase_asked_day "
+            "FROM invoices i WHERE i.paid_sim IS NULL AND i.written_off_sim IS NULL "
+            "  AND i.due_sim <= %s AND (i.chased_sim IS NULL OR i.due_sim <= %s) "
+            "ORDER BY i.from_org_id, i.due_sim, i.id",
+            (report.sim_time - CHASE_AFTER, report.sim_time - WRITE_OFF_AFTER),
+        ).fetchall()
+        asked: list[DictRow] = []
+        contexts: list[DecisionContext] = []
+        chasers: dict[str, DictRow | None] = {}
+        for bill in late:
+            issuer = str(bill["from_org_id"])
+            if int(bill["due_sim"]) <= report.sim_time - WRITE_OFF_AFTER:
+                self._write_off(report, bill)
+                continue
+            if issuer not in chasers:
+                chasers[issuer] = self.payer_of(issuer)
+            chaser = chasers[issuer]
+            if chaser is None or not self.gets_to_it(
+                str(chaser["id"]), now, "chasing", bill["chase_asked_day"]
+            ):
+                continue
+            cash = self.cash_of(f"{issuer}.cash")
+            asked.append(bill)
+            contexts.append(
+                DecisionContext(
+                    person_id=str(chaser["id"]),
+                    role=str(chaser["role"]),
+                    sim_time=report.sim_time,
+                    kind="chase.invoice",
+                    facts={
+                        "org": issuer,
+                        "days_late": (report.sim_time - int(bill["due_sim"])) // DAY,
+                        "large": int(bill["amount_cents"]) >= 200_000,
+                        "runway_days": cash / max(1, int(bill["amount_cents"])) * 7,
+                    },
+                    traits=dict(chaser["traits"] or {}),
+                )
+            )
+        if not asked:
+            return
+        self._conn.execute(
+            "UPDATE invoices SET chase_asked_day = %s WHERE id = ANY(%s)",
+            (now.day, [int(bill["id"]) for bill in asked]),
+        )
+        for bill, ctx, made in zip(
+            asked, contexts, self._decide_many(report, contexts), strict=True
+        ):
+            if not made.chosen.get("chase"):
+                continue
+            self._emit(
+                report,
+                "invoice.chased",
+                actor_id=ctx.person_id,
+                org_id=str(bill["from_org_id"]),
+                causes=_seq_of(bill["issued_seq"]),
+                decision_id=made.id,
+                payload={
+                    "invoice_id": int(bill["id"]),
+                    "to": str(bill["to_person_id"] or bill["to_org_id"]),
+                    "days_late": ctx.facts["days_late"],
+                    "decided_by": made.source,
+                },
+            )
+            self._conn.execute(
+                "UPDATE invoices SET chased_sim = %s WHERE id = %s",
+                (report.sim_time, bill["id"]),
+            )
+
+    def _write_off(self, report: TickReport, bill: DictRow) -> None:
+        issuer = str(bill["from_org_id"])
+        amount = int(bill["amount_cents"])
+        seq = self._emit(
+            report,
+            "invoice.written_off",
+            org_id=issuer,
+            causes=_seq_of(bill["issued_seq"]),
+            payload={
+                "invoice_id": int(bill["id"]),
+                "amount_cents": amount,
+                "days_late": (report.sim_time - int(bill["due_sim"])) // DAY,
+            },
+        )
+        self._post(
+            report.sim_time,
+            f"{issuer} writes off invoice {bill['id']}",
+            [(f"{issuer}.receivable", -amount), (f"{issuer}.expense", amount)],
+            seq,
+        )
+        self._conn.execute(
+            "UPDATE invoices SET written_off_sim = %s WHERE id = %s",
+            (report.sim_time, bill["id"]),
+        )
 
     # -- flow 6: the cafe --------------------------------------------------
 
     def _cafe(self, report: TickReport, now: SimTime) -> None:
         pos_down = self._module_down("pos")
-        rng = derive_rng(self._root, "cafe", report.tick_seq)
-        arrivals = CAFE_ARRIVALS_PER_TICK if now.in_office_hours else 2
+        minute = now.time_of_day // MINUTE
+        rng = derive_rng(self._root, "cafe", now.day, minute)
+        hourly = CAFE_ARRIVALS_PER_HOUR.get(now.time_of_day // HOUR, 0)
+        if now.weekday == 5:
+            hourly = hourly // 2  # Saturdays are quiet: the offices are shut
+        expected = hourly * TICK / HOUR
+        arrivals = int(expected) + (1 if rng.random() < expected % 1 else 0)
 
         customers = self._conn.execute(
             "SELECT id, traits FROM persons WHERE org_id = 'thirdrail' "
             "AND kind = 'counterparty' ORDER BY id"
         ).fetchall()
-        if not customers:
-            return
+        walk_ins = (
+            [customers[int(rng.random() * len(customers))] for _ in range(arrivals)]
+            if customers
+            else []
+        )
+        # People from the offices who walked in this tick queue with everyone
+        # else. Their coffee is paid for out of their wages (households), which
+        # is how a payroll held by an outage reaches the cafe's till.
+        staff = self._conn.execute(
+            "SELECT p.id, p.traits FROM positions pos JOIN persons p "
+            "ON p.id = pos.person_id WHERE pos.zone = 'cafe' AND pos.moved_tick = %s "
+            "AND p.org_id <> 'thirdrail' ORDER BY p.id",
+            (report.tick_seq,),
+        ).fetchall()
+        household_cash = self.cash_of("households.cash") if staff else 0
 
         servers = 1.0 if pos_down else 2.0
         # Who walks in, and what they find, is settled before anyone decides:
@@ -1003,30 +1410,40 @@ class Engine:
         # those people went on to choose. That independence is what lets the
         # whole tick's customers be asked at once.
         contexts: list[DecisionContext] = []
-        seen: dict[str, int] = {}
-        for arrival in range(arrivals):
-            queue_length = max(0, int(arrival - servers))
-            row = customers[int(rng.random() * len(customers))]
+        baskets: list[int] = []
+        employed: list[bool] = []
+        for arrival, row in enumerate([*walk_ins, *staff]):
             person_id = str(row["id"])
-            # Arrivals are drawn with replacement, so one person can walk in
-            # twice in a tick. Each visit is its own decision, with its own
-            # place in that person's sequence and so its own draw.
-            repeat = seen.get(person_id, 0)
-            seen[person_id] = repeat + 1
+            is_staff = arrival >= len(walk_ins)
+            basket_rng = derive_rng(
+                self._root, "basket", person_id, now.day, minute, arrival
+            )
+            basket = 350 + int(basket_rng.random() * 600)
+            baskets.append(basket)
+            employed.append(is_staff)
             contexts.append(
                 DecisionContext(
                     person_id=person_id,
                     role="customer",
-                    decision_seq=self._next_seq(person_id) + repeat,
                     sim_time=report.sim_time,
                     kind="cafe.purchase",
-                    facts={"pos_down": pos_down, "queue_length": queue_length},
+                    facts={
+                        "pos_down": pos_down,
+                        "queue_length": max(0, int(arrival - servers)),
+                        "can_afford": (not is_staff) or household_cash >= basket,
+                    },
                     traits=dict(row["traits"] or {}),
                 )
             )
+        if not contexts:
+            return
 
-        for ctx, made in zip(
-            contexts, self._decide_many(report, contexts), strict=True
+        for ctx, amount, is_staff, made in zip(
+            contexts,
+            baskets,
+            employed,
+            self._decide_many(report, contexts),
+            strict=True,
         ):
             person_id = ctx.person_id
             if not made.chosen.get("buy"):
@@ -1043,7 +1460,8 @@ class Engine:
                     },
                 )
                 continue
-            amount = int(made.chosen["amount_cents"])
+            if is_staff and household_cash < amount:
+                continue  # the referee: someone ahead of them spent the last of it
             seq = self._emit(
                 report,
                 "cafe.sale",
@@ -1057,17 +1475,61 @@ class Engine:
                     "decided_by": made.source,
                 },
             )
-            txn = self._post(
-                report.sim_time,
-                "cafe sale",
-                [("thirdrail.cash", amount), ("thirdrail.revenue", -amount)],
-                seq,
-            )
+            legs = [("thirdrail.cash", amount), ("thirdrail.revenue", -amount)]
+            if is_staff:
+                legs += [("households.cash", -amount), ("households.spending", amount)]
+                household_cash -= amount
+            txn = self._post(report.sim_time, "cafe sale", legs, seq)
             self._conn.execute(
                 "INSERT INTO cafe_sales (sim_time, person_id, amount_cents, txn_id, "
                 "pos_down) VALUES (%s,%s,%s,%s,%s)",
                 (report.sim_time, person_id, amount, txn, pos_down),
             )
+
+
+# -- scheduled work the engine itself does (WORLD-0005) ------------------------
+# The flows register theirs where they are defined, in `jeve.world.flows`.
+
+
+@scheduler.job("incident.start")
+def _job_incident_start(
+    engine: Engine, report: TickReport, subject: str, payload: dict[str, Any]
+) -> None:
+    engine._start_incident(report, subject, payload)
+
+
+@scheduler.job("incident.end")
+def _job_incident_end(
+    engine: Engine, report: TickReport, subject: str, payload: dict[str, Any]
+) -> None:
+    engine._end_incident(report, subject, payload)
+
+
+@scheduler.job("month.end", office_hours_only=True)
+def _job_month_end(
+    engine: Engine, report: TickReport, subject: str, payload: dict[str, Any]
+) -> None:
+    engine._month_end(report, payload)
+
+
+@scheduler.job("invoice.run", office_hours_only=True)
+def _job_invoice_run(
+    engine: Engine, report: TickReport, subject: str, payload: dict[str, Any]
+) -> None:
+    engine._issue_invoices(
+        report,
+        subject,
+        cause=int(payload.get("cause", 0)),
+        month=int(payload.get("month", 0)),
+        was_blocked=bool(payload.get("blocked")),
+    )
+
+
+@scheduler.job("subscription.run")
+def _job_subscription_run(
+    engine: Engine, report: TickReport, subject: str, payload: dict[str, Any]
+) -> None:
+    engine._subscriptions(report)
 
 
 def skip_to_next_open(conn: Connection[DictRow]) -> int:

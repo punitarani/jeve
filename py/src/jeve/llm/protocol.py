@@ -10,6 +10,7 @@ The decision shapes follow OpenRouter's published schema for
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -158,6 +159,28 @@ class DecisionRequest(_Frozen):
     state: str | dict[str, object] | list[object]
     questions: dict[str, Question] = Field(min_length=1)
     provider: ProviderPrefs | None = None
+
+    def wire_bytes(self) -> bytes:
+        """The request exactly as it goes over the wire (DECIDE-0004).
+
+        The one place a decision body is built. The gateway posts these bytes
+        and the call cache hashes these bytes, so what is keyed is what was
+        asked — including the order of the questions and of each question's
+        options, which a canonical (key-sorted) hash could not see. Order is
+        insertion order all the way down: never sort here.
+        """
+
+        body: dict[str, object] = {
+            "model": self.model,
+            "state": self.state,
+            "questions": {
+                key: question.model_dump(mode="json", exclude_none=True, by_alias=True)
+                for key, question in self.questions.items()
+            },
+        }
+        if self.provider is not None:
+            body["provider"] = self.provider.to_body()
+        return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
 
 
 class DecisionResponse(_Frozen):
