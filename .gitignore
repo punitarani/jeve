@@ -15,6 +15,7 @@
 !/ops/economics.md
 !/ops/providers.md
 !/ops/persona-probe.md
+!/ops/soak.md
 # A nested ops/ means something resolved it against the wrong cwd. Ignored so
 # it can never be committed; `ops/` at the root is the only real one. (A bare
 # `ops/` here would also re-ignore the root one — later patterns win.)
@@ -35,6 +36,7 @@ dist/
 node_modules/
 .next/
 .next-e2e/
+.next-shots-*/
 next-env.d.ts
 out/
 .turbo/
@@ -55,3 +57,6 @@ node_modules/
 .nx/
 test-results/
 playwright-report/
+
+# Worktrees a parallel agent works in.
+.claude/worktrees/
