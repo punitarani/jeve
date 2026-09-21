@@ -23,7 +23,7 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
 
-from jeve import db
+from jeve import db, tracing
 from jeve.config import load_settings
 from jeve.core.clock import SimTime
 
@@ -48,6 +48,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     finally:
         _pool = None
         await asyncio.to_thread(pool.close)
+        tracing.flush()
 
 
 app = FastAPI(
@@ -848,66 +849,80 @@ async def encounter_dialogue(
         body["reason"] = "no API key here, so only the typed record is shown"
         return body
 
-    failures: list[str] = []
-    try:
-        gateway = await _open_gateway()
-        models = gateway.generative_models
-    except JeveError as error:
-        body["reason"] = f"the model gateway would not start: {error}"
-        return body
-
-    for model in models:
-        request = ChatRequest(
-            model=model,
-            messages=dialogue.messages_for(encounter),
-            max_tokens=dialogue.MAX_TOKENS,
-            seed=seq,
-            response_schema=dialogue.SCHEMA,
-        )
+    # The root of this trace, opened only once prose is actually going to be
+    # asked for: a cached hit or a read-only deployment returns above, and
+    # neither is worth a span. The per-model `chat.completion` spans nest
+    # under it on their own — same task, same loop, so the ambient parent is
+    # already right (LLM-0008).
+    with tracing.span(
+        "dialogue", type="task", input={"seq": seq, "typed": encounter.typed()}
+    ) as span:
+        failures: list[str] = []
         try:
-            # `explore`: prose is never gate work, so it is the first thing the
-            # budget ladder refuses.
-            reply = await gateway.complete(request, purpose="explore")
+            gateway = await _open_gateway()
+            models = gateway.generative_models
         except JeveError as error:
-            failures.append(f"{model}: {type(error).__name__}")
-            continue
-        lines = dialogue.parse_lines(reply.text)
-        if not lines:
-            failures.append(f"{model}: unusable reply")
-            continue
+            body["reason"] = f"the model gateway would not start: {error}"
+            span.log(metadata={"outcome": "gateway-unavailable"})
+            return body
 
-        def keep(model: str = model, reply: Any = reply) -> None:
-            with _db() as conn:
-                insert_call(
-                    conn,
-                    {
-                        "hash": dialogue.request_key(model, encounter),
-                        "kind": dialogue.KIND,
-                        "model": model,
-                        "provider": reply.provider,
-                        "request": {"typed": encounter.typed()},
-                        "response": {"text": reply.text},
-                        "input_tokens": reply.usage.input_tokens,
-                        "output_tokens": reply.usage.output_tokens,
-                        "cost_usd": reply.usage.cost_usd,
-                        "cost_estimated": reply.usage.cost_is_estimated,
-                        "latency_s": reply.latency_s,
-                    },
-                )
+        for model in models:
+            request = ChatRequest(
+                model=model,
+                messages=dialogue.messages_for(encounter),
+                max_tokens=dialogue.MAX_TOKENS,
+                seed=seq,
+                response_schema=dialogue.SCHEMA,
+            )
+            try:
+                # `explore`: prose is never gate work, so it is the first thing the
+                # budget ladder refuses.
+                reply = await gateway.complete(request, purpose="explore")
+            except JeveError as error:
+                failures.append(f"{model}: {type(error).__name__}")
+                continue
+            lines = dialogue.parse_lines(reply.text)
+            if not lines:
+                failures.append(f"{model}: unusable reply")
+                continue
 
-        await asyncio.to_thread(keep)
-        body["prose"] = {
-            "lines": lines,
-            "model": model,
-            "cost_usd": reply.usage.cost_usd,
-            "cached": False,
-            # Models earlier in the preference order that did not deliver.
-            "skipped": failures,
-        }
+            def keep(model: str = model, reply: Any = reply) -> None:
+                with _db() as conn:
+                    insert_call(
+                        conn,
+                        {
+                            "hash": dialogue.request_key(model, encounter),
+                            "kind": dialogue.KIND,
+                            "model": model,
+                            "provider": reply.provider,
+                            "request": {"typed": encounter.typed()},
+                            "response": {"text": reply.text},
+                            "input_tokens": reply.usage.input_tokens,
+                            "output_tokens": reply.usage.output_tokens,
+                            "cost_usd": reply.usage.cost_usd,
+                            "cost_estimated": reply.usage.cost_is_estimated,
+                            "latency_s": reply.latency_s,
+                        },
+                    )
+
+            await asyncio.to_thread(keep)
+            span.log(
+                output=lines,
+                metadata={"model": model, "outcome": "ok", "skipped": failures},
+            )
+            body["prose"] = {
+                "lines": lines,
+                "model": model,
+                "cost_usd": reply.usage.cost_usd,
+                "cached": False,
+                # Models earlier in the preference order that did not deliver.
+                "skipped": failures,
+            }
+            return body
+
+        body["reason"] = "no model produced usable dialogue: " + "; ".join(failures)
+        span.log(metadata={"outcome": "no-usable-reply", "skipped": failures})
         return body
-
-    body["reason"] = "no model produced usable dialogue: " + "; ".join(failures)
-    return body
 
 
 # -- /stream: one poll for every viewer ------------------------------------

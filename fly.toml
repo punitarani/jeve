@@ -40,6 +40,10 @@ primary_region = "iad"  # Washington D.C. — closest to us-east-1
   JEVE_HALT_CEILING_USD = "10000"
   JEVE_HARD_CEILING_USD = "10000"
   JEVE_CASSETTE = "off"
+  # LLM-0008: which Braintrust project spans land in. BRAINTRUST_API_KEY is a
+  # Fly secret from Doppler `worker` — with no key, tracing is simply off and
+  # the daemon behaves exactly as it did before.
+  BRAINTRUST_PROJECT = "jeve"
   # ops/ is a humans-only checkpoint dir; in the image the cwd is /app, which
   # the runtime user can't write. /tmp is tmpfs and writable — the Postgres
   # ledger remains authoritative regardless (LLM-0007).

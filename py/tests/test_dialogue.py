@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from dataclasses import replace
+from pathlib import Path
 
+import httpx
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
@@ -22,10 +24,14 @@ from jeve.core.clock import at
 from jeve.decide.policy import RulesPolicy
 from jeve.decide.recorder import insert_call
 from jeve.gen import dialogue
-from jeve.llm import GENERATIVE_PREFERENCE
+from jeve.llm import GENERATIVE_PREFERENCE, Gateway
 from jeve.sim import advance
 from jeve.world.engine import Engine
 from jeve.world.seed_world import ROOT_SEED, seed
+from tests.conftest import RecordingSink
+from tests.test_gateway import CHAT_BODY
+from tests.test_gateway import Recorder as WireRecorder
+from tests.test_gateway import _settings as wire_settings
 
 pytestmark = pytest.mark.timeout(300)
 
@@ -161,3 +167,94 @@ def test_the_prompt_carries_only_typed_facts() -> None:
 )
 def test_bad_prose_is_dropped_not_raised(reply: str) -> None:
     assert dialogue.parse_lines(reply) == []
+
+
+# -- spans (LLM-0008) ------------------------------------------------------
+
+
+def test_rendering_prose_is_one_trace_over_the_fallback_ladder(
+    client: TestClient,
+    encounter_seq: int,
+    spans: RecordingSink,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """LLM-0005/0006: which models were tried, and which one answered.
+
+    The first model returns prose nobody can read, so the endpoint falls
+    through to the second. Both attempts are on the trace — a ladder you
+    cannot see is a ladder you cannot tune.
+    """
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    usable = json.dumps(
+        {
+            "lines": [
+                {"speaker": "A", "text": "Morning."},
+                {"speaker": "B", "text": "Hi."},
+            ]
+        }
+    )
+    replies = iter(
+        [
+            httpx.Response(200, json={**CHAT_BODY, "choices": []}),
+            httpx.Response(
+                200,
+                json={
+                    **CHAT_BODY,
+                    "choices": [
+                        {"message": {"content": usable}, "finish_reason": "stop"}
+                    ],
+                },
+            ),
+        ]
+    )
+    wire = WireRecorder(chat=replies)
+    gateway = Gateway(
+        settings=wire_settings(tmp_path),
+        transport=wire.transport(),
+        backoff_base_s=0.0,
+    )
+
+    async def opened() -> Gateway:
+        await gateway.start()
+        return gateway
+
+    monkeypatch.setattr(api, "_open_gateway", opened)
+    try:
+        body = client.get(f"/encounters/{encounter_seq}/dialogue").json()
+    finally:
+        # `model_calls` is a cache that outlives the test run, and a cached
+        # render would make every later dialogue test read prose instead of
+        # asking for it.
+        with db.connect(autocommit=True) as conn:
+            encounter = dialogue.load_encounter(conn, encounter_seq)
+            assert encounter is not None
+            conn.execute(
+                "DELETE FROM model_calls WHERE hash = ANY(%s)",
+                (
+                    [
+                        dialogue.request_key(model, encounter)
+                        for model in GENERATIVE_PREFERENCE
+                    ],
+                ),
+            )
+
+    assert body["prose"]["lines"][0] == {"speaker": "A", "text": "Morning."}
+    root = spans.only("dialogue")
+    assert root.type == "task"
+    assert root.fields["input"]["seq"] == encounter_seq
+    assert root.fields["metadata"]["outcome"] == "ok"
+    # The order the gateway resolved, not the preference constant: a slug that
+    # does not resolve drops out of the ladder (LLM-0005).
+    ladder = gateway.generative_models
+    assert root.fields["metadata"]["model"] == ladder[1]
+
+    calls = [child for child in root.children if child.name == "chat.completion"]
+    assert [call.fields["metadata"]["model"] for call in calls] == list(ladder[:2])
+    # Prose is never gate work, so it is the first thing the ladder refuses.
+    assert calls[0].fields["metadata"]["purpose"] == "explore"
+    # Paid for and unreadable: the cost is on the span even though the reply
+    # never became prose.
+    assert calls[0].fields["metrics"]["estimated_cost"] > 0.0
+    assert "ResponseShapeError" in (calls[0].error or "")

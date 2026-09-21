@@ -22,6 +22,7 @@ from typing import Any, Self
 
 import httpx
 
+from jeve import tracing
 from jeve.config import Settings, load_settings
 from jeve.errors import (
     BudgetExceededError,
@@ -89,6 +90,34 @@ BACKOFF_CAP_S = 8.0
 # Past this, the call surfaces as weather and the daemon's minutes-scale
 # retry takes over (SIM-0002) — matching its cap means neither loop lies.
 RETRY_AFTER_CAP_S = 120.0
+
+
+def _metrics(usage: Usage, latency_s: float) -> dict[str, float]:
+    """What a span charts. `estimated_cost` is OpenRouter's own number.
+
+    Braintrust prices a span from its model registry when that field is absent,
+    and the registry has never heard of `typesafe/jev-1.13`. An explicitly
+    logged cost wins, so the trace and the ledger never disagree.
+    """
+
+    return {
+        "prompt_tokens": usage.input_tokens,
+        "completion_tokens": usage.output_tokens,
+        "tokens": usage.input_tokens + usage.output_tokens,
+        "estimated_cost": usage.cost_usd,
+        "latency_s": latency_s,
+    }
+
+
+def _served(payload: dict[str, Any], usage: Usage) -> dict[str, Any]:
+    """Who actually answered, and whether the price is theirs or ours."""
+
+    return {
+        "served_model": payload.get("model"),
+        "provider": payload.get("provider"),
+        "request_id": payload.get("id"),
+        "cost_is_estimated": usage.cost_is_estimated,
+    }
 
 
 def _approx_tokens(payload: object) -> int:
@@ -189,6 +218,9 @@ class Gateway:
     async def aclose(self) -> None:
         await self._client.aclose()
         self._ledger.close()
+        # The last spans of a script or an API shutdown, before the process
+        # has any reason to still be alive.
+        tracing.flush()
 
     @property
     def guard(self) -> BudgetGuard:
@@ -418,85 +450,112 @@ class Gateway:
 
         started = time.perf_counter()
         try:
-            try:
-                async with self._permits:
-                    if isinstance(body, bytes):
-                        # Already serialised: these exact bytes are the cache
-                        # key (DECIDE-0004), so they must be what is sent.
-                        response = await self._client.post(
-                            path,
-                            content=body,
-                            headers={"content-type": "application/json"},
-                        )
-                    else:
-                        response = await self._client.post(path, json=body)
-            except httpx.HTTPError as error:
-                # Unknown whether it was billed. Keep the reservation as spend.
-                self._ledger.settle(
-                    call_id,
-                    worst_case_usd,
-                    estimated=True,
-                    model=model,
-                    outcome=f"transport-error: {type(error).__name__}",
-                )
-                self._run_spent_usd += worst_case_usd
-                raise _Retryable(
-                    TransportError(f"{path} failed: {error}"), None
-                ) from error
-
-            latency = time.perf_counter() - started
-
-            self._note_rate_limit(response.headers)
-
-            if response.status_code != 200:
-                status = response.status_code
-                if status in UNBILLED_STATUSES:
-                    self._ledger.release(call_id, reason=f"http-{status}-unbilled")
-                else:
+            # One span per HTTP try, under the call's own span. Folding the
+            # retries into the parent would hide the 52x weather LLM-0006
+            # exists because of; a separate `llm` span each would count the
+            # cost four times.
+            with tracing.span(
+                "openrouter.attempt",
+                type="function",
+                metadata={"call_id": call_id, "model": model, "path": path},
+            ) as attempt:
+                try:
+                    async with self._permits:
+                        if isinstance(body, bytes):
+                            # Already serialised: these exact bytes are the
+                            # cache key (DECIDE-0004), so they must be what is
+                            # sent.
+                            response = await self._client.post(
+                                path,
+                                content=body,
+                                headers={"content-type": "application/json"},
+                            )
+                        else:
+                            response = await self._client.post(path, json=body)
+                except httpx.HTTPError as error:
+                    # Unknown whether it was billed. Keep the reservation as
+                    # spend.
+                    outcome = f"transport-error: {type(error).__name__}"
                     self._ledger.settle(
                         call_id,
                         worst_case_usd,
                         estimated=True,
                         model=model,
-                        outcome=f"http-{status}",
-                        latency_s=latency,
+                        outcome=outcome,
                     )
                     self._run_spent_usd += worst_case_usd
-                if status == 402:
-                    # LLM-0007: the account cap is spent. Retrying inside the
-                    # gateway is pointless — the daemon waits out the window.
-                    raise ProviderBudgetError(
-                        f"{path} returned 402: {response.text[:400]}"
-                    )
-                failure = TransportError(
-                    f"{path} returned {status}: {response.text[:400]}"
-                )
-                if status in RETRYABLE_STATUSES:
-                    raise _Retryable(failure, response.headers.get("retry-after"))
-                raise failure
+                    attempt.log(metadata={"outcome": outcome})
+                    raise _Retryable(
+                        TransportError(f"{path} failed: {error}"), None
+                    ) from error
 
-            payload: dict[str, Any] = response.json()
-            usage = self._usage_from(model, payload.get("usage") or {})
-            self._ledger.settle(
-                call_id,
-                usage.cost_usd,
-                estimated=usage.cost_is_estimated,
-                model=payload.get("model") or model,
-                outcome="ok",
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                latency_s=latency,
-                provider=payload.get("provider"),
-            )
-            self._run_spent_usd += usage.cost_usd
-            payload["__usage"] = usage
-            payload["__latency"] = latency
-            return payload, latency
+                latency = time.perf_counter() - started
+
+                self._note_rate_limit(response.headers)
+
+                if response.status_code != 200:
+                    status = response.status_code
+                    attempt.log(
+                        metadata={"http_status": status, "outcome": f"http-{status}"},
+                        metrics={"latency_s": latency},
+                    )
+                    if status in UNBILLED_STATUSES:
+                        self._ledger.release(call_id, reason=f"http-{status}-unbilled")
+                    else:
+                        self._ledger.settle(
+                            call_id,
+                            worst_case_usd,
+                            estimated=True,
+                            model=model,
+                            outcome=f"http-{status}",
+                            latency_s=latency,
+                        )
+                        self._run_spent_usd += worst_case_usd
+                    if status == 402:
+                        # LLM-0007: the account cap is spent. Retrying inside
+                        # the gateway is pointless — the daemon waits out the
+                        # window.
+                        raise ProviderBudgetError(
+                            f"{path} returned 402: {response.text[:400]}"
+                        )
+                    failure = TransportError(
+                        f"{path} returned {status}: {response.text[:400]}"
+                    )
+                    if status in RETRYABLE_STATUSES:
+                        raise _Retryable(failure, response.headers.get("retry-after"))
+                    raise failure
+
+                payload: dict[str, Any] = response.json()
+                usage = self._usage_from(model, payload.get("usage") or {})
+                self._ledger.settle(
+                    call_id,
+                    usage.cost_usd,
+                    estimated=usage.cost_is_estimated,
+                    model=payload.get("model") or model,
+                    outcome="ok",
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    latency_s=latency,
+                    provider=payload.get("provider"),
+                )
+                self._run_spent_usd += usage.cost_usd
+                attempt.log(
+                    metadata={"http_status": 200, "outcome": "ok"}
+                    | _served(payload, usage),
+                    metrics=_metrics(usage, latency),
+                )
+                payload["__usage"] = usage
+                payload["__latency"] = latency
+                return payload, latency
         finally:
             self._run_reserved_usd -= worst_case_usd
 
     async def decide_raw(
-        self, request: DecisionRequest, *, purpose: Purpose = "gate"
+        self,
+        request: DecisionRequest,
+        *,
+        purpose: Purpose = "gate",
+        parent: str | None = None,
     ) -> RawDecision:
         """Issue a decision request and return the response *unparsed*.
 
@@ -523,24 +582,48 @@ class Gateway:
             tokens * card.prompt_usd_per_token * 1.5,
         )
         call_id = self._next_call_id("decide")
-        payload, latency = await self._post(
-            self._decisions_url,
-            body,
-            call_id=call_id,
-            model=request.model,
-            worst_case_usd=worst_case,
-            purpose=purpose,
-        )
-        usage: Usage = payload.pop("__usage")
-        payload.pop("__latency", None)
-        return RawDecision(payload=payload, usage=usage, latency_s=latency)
+        with tracing.span(
+            "jev.decide",
+            type="llm",
+            parent=parent,
+            # Parsed from the bytes that go on the wire, never rebuilt from the
+            # request: what is logged has to be what was asked (DECIDE-0004).
+            input=json.loads(body),
+            metadata={
+                "endpoint": "decisions",
+                "model": request.model,
+                "purpose": purpose,
+                "call_id": call_id,
+                "questions": list(request.questions),
+            },
+        ) as span:
+            payload, latency = await self._post(
+                self._decisions_url,
+                body,
+                call_id=call_id,
+                model=request.model,
+                worst_case_usd=worst_case,
+                purpose=purpose,
+            )
+            usage: Usage = payload.pop("__usage")
+            payload.pop("__latency", None)
+            span.log(
+                output=payload.get("answers"),
+                metrics=_metrics(usage, latency),
+                metadata=_served(payload, usage),
+            )
+            return RawDecision(payload=payload, usage=usage, latency_s=latency)
 
     async def decide(
-        self, request: DecisionRequest, *, purpose: Purpose = "gate"
+        self,
+        request: DecisionRequest,
+        *,
+        purpose: Purpose = "gate",
+        parent: str | None = None,
     ) -> DecisionResponse:
         """Ask Jev a set of typed questions about one state."""
 
-        raw = await self.decide_raw(request, purpose=purpose)
+        raw = await self.decide_raw(request, purpose=purpose, parent=parent)
         return parse_decision(
             raw.payload,
             expected=set(request.questions),
@@ -550,7 +633,11 @@ class Gateway:
         )
 
     async def complete(
-        self, request: ChatRequest, *, purpose: Purpose = "gate"
+        self,
+        request: ChatRequest,
+        *,
+        purpose: Purpose = "gate",
+        parent: str | None = None,
     ) -> ChatResponse:
         """Generate prose. The exception, not the default path."""
 
@@ -586,35 +673,55 @@ class Gateway:
             + request.max_tokens * card.completion_usd_per_token,
         )
         call_id = self._next_call_id("chat")
-        payload, latency = await self._post(
-            CHAT_PATH,
-            body,
-            call_id=call_id,
-            model=request.model,
-            worst_case_usd=worst_case,
-            purpose=purpose,
-        )
-
-        choices = payload.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise ResponseShapeError(f"no choices in response: {str(payload)[:300]}")
-        message = choices[0].get("message") or {}
-        text = message.get("content")
-        if not text:
-            raise ResponseShapeError(
-                f"empty completion (finish_reason="
-                f"{choices[0].get('finish_reason', 'unknown')})"
+        with tracing.span(
+            "chat.completion",
+            type="llm",
+            parent=parent,
+            input=body["messages"],
+            metadata={
+                "endpoint": "chat",
+                "model": request.model,
+                "purpose": purpose,
+                "call_id": call_id,
+                "max_tokens": request.max_tokens,
+            },
+        ) as span:
+            payload, latency = await self._post(
+                CHAT_PATH,
+                body,
+                call_id=call_id,
+                model=request.model,
+                worst_case_usd=worst_case,
+                purpose=purpose,
             )
 
-        usage: Usage = payload["__usage"]
-        return ChatResponse(
-            model=str(payload.get("model") or request.model),
-            text=str(text),
-            usage=usage,
-            provider=payload.get("provider"),
-            request_id=payload.get("id"),
-            latency_s=latency,
-        )
+            usage: Usage = payload["__usage"]
+            # Logged before the shape is checked: a reply we paid for and could
+            # not read is exactly the one worth looking at afterwards.
+            span.log(metrics=_metrics(usage, latency), metadata=_served(payload, usage))
+
+            choices = payload.get("choices")
+            if not isinstance(choices, list) or not choices:
+                raise ResponseShapeError(
+                    f"no choices in response: {str(payload)[:300]}"
+                )
+            message = choices[0].get("message") or {}
+            text = message.get("content")
+            if not text:
+                raise ResponseShapeError(
+                    f"empty completion (finish_reason="
+                    f"{choices[0].get('finish_reason', 'unknown')})"
+                )
+
+            span.log(output=text)
+            return ChatResponse(
+                model=str(payload.get("model") or request.model),
+                text=str(text),
+                usage=usage,
+                provider=payload.get("provider"),
+                request_id=payload.get("id"),
+                latency_s=latency,
+            )
 
 
 @dataclass(frozen=True, slots=True)

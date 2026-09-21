@@ -2,7 +2,8 @@
 
 Only variables the code actually reads are listed here — if a name is not in
 this table, setting it does nothing. Sources: `py/src/jeve/config.py`,
-`py/src/jeve/db.py`, `py/src/jeve/sim/daemon.py`, `py/src/jeve/sim/runner.py`.
+`py/src/jeve/db.py`, `py/src/jeve/sim/daemon.py`, `py/src/jeve/sim/runner.py`,
+`py/src/jeve/tracing.py`.
 
 ## Database
 
@@ -45,6 +46,19 @@ puts the daemon into `waiting_on_budget`, not a crash (SIM-0003).
 | `JEVE_CORS_ORIGINS` | unset → localhost any port | Comma-separated origins; production is `https://jeve.punitarani.com`. |
 | `JEVE_DIALOGUE_GENERATE` | `on` | `off`/`0`/`false`: `/encounters/{seq}/dialogue` serves the typed record and cached prose only — no spend. |
 | `JEVE_OPS_DIR` | repo `ops/` | Where the `spend.json` checkpoint and `discrepancies.jsonl` land. |
+
+## Observability (`jeve.tracing`, LLM-0008)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `BRAINTRUST_API_KEY` | unset | The switch. Absent, `jeve.tracing` never imports the SDK and opens no socket — CI and a clean clone trace nothing. |
+| `BRAINTRUST_PROJECT` | `jeve` | The Braintrust project spans land in. |
+| `JEVE_TRACING` | `on` | `off`/`0`/`false`: never trace, even with a key set — killing telemetry without rotating a secret. |
+| `BRAINTRUST_API_URL` | unset | Self-hosted Braintrust only. Read by the SDK itself, not by `Settings`. |
+
+Spans carry OpenRouter's reported cost as `metrics.estimated_cost`, so a trace
+and the `spend_entries` ledger price a call the same way. A tracing failure is
+never fatal: it prints one line and latches off for the process.
 
 ## Test hooks
 
