@@ -44,6 +44,10 @@ primary_region = "iad"  # Washington D.C. — closest to us-east-1
   # the runtime user can't write. /tmp is tmpfs and writable — the Postgres
   # ledger remains authoritative regardless (LLM-0007).
   JEVE_OPS_DIR = "/tmp/ops"
+  # stdout is block-buffered under init; without this `fly logs` shows the
+  # daemon's tick output only on exit, which is ops blindness for a
+  # forever-running process.
+  PYTHONUNBUFFERED = "1"
 
 [processes]
   api = "uvicorn jeve.api.app:app --host 0.0.0.0 --port 8000"
