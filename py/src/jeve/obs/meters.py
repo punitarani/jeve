@@ -94,6 +94,11 @@ EVENTS = _counter("jeve.sim.events", "{event}", "Events written, by kind.")
 WAIT_DURATION = _histogram(
     "jeve.sim.wait.duration", "s", "Time spent waiting on a model or a budget."
 )
+# A counter rather than a gauge of the current status: what an operator asks at
+# 3am is "when did it start waiting", and only a transition can answer that.
+STATUS = _counter(
+    "jeve.sim.status.transitions", "{transition}", "sim_meta.status changes."
+)
 
 # --- the model path ---------------------------------------------------------
 
@@ -143,6 +148,7 @@ ALL: tuple[_Instrument, ...] = (
     DECISIONS,
     EVENTS,
     WAIT_DURATION,
+    STATUS,
     LLM_DURATION,
     LLM_TOKENS,
     LLM_COST,

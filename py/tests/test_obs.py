@@ -25,6 +25,7 @@ import pytest
 from jeve import obs
 from jeve.config import Settings
 from jeve.obs import meters, wiring
+from tests.conftest import counter_points
 
 
 @pytest.fixture(autouse=True)
@@ -138,6 +139,13 @@ def test_a_bad_configuration_turns_telemetry_off_rather_than_down(
 
 
 def _started() -> Any:
+    """A live stack with every signal sinking into memory.
+
+    All three, always: a signal left uninjected builds a real OTLP exporter,
+    and the test then tries to reach Axiom on shutdown.
+    """
+
+    from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
     from opentelemetry.sdk.metrics.export import InMemoryMetricReader
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
         InMemorySpanExporter,
@@ -150,6 +158,7 @@ def _started() -> Any:
         settings=_on(),
         span_exporter=spans,
         metric_reader=reader,
+        log_exporter=InMemoryLogRecordExporter(),  # type: ignore[no-untyped-call]
     )
     return spans, reader
 
@@ -212,7 +221,7 @@ def test_the_metric_inventory_is_stable() -> None:
     data = reader.get_metrics_data()
     seen = {
         (metric.name, metric.unit)
-        for resource in (data.resource_metrics if data else ())
+        for resource in getattr(data, "resource_metrics", ())
         for scope in resource.scope_metrics
         for metric in scope.metrics
     }
@@ -231,9 +240,19 @@ def test_log_lines_keep_their_stream_and_their_bytes(
     """
 
     from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
 
     records = InMemoryLogRecordExporter()  # type: ignore[no-untyped-call]
-    obs.start("jeve-test", settings=_on(), log_exporter=records)
+    obs.start(
+        "jeve-test",
+        settings=_on(),
+        span_exporter=InMemorySpanExporter(),
+        metric_reader=InMemoryMetricReader(),
+        log_exporter=records,
+    )
 
     log = obs.logger("jeve.sim")
     log.info("the model is back after 3 failed attempt(s)", {"jeve.failures": 3})
@@ -269,7 +288,16 @@ def test_a_dead_exporter_never_takes_the_process_down() -> None:
         def shutdown(self) -> None:
             raise RuntimeError("still unreachable")
 
-    obs.start("jeve-test", settings=_on(), span_exporter=Broken())
+    from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    obs.start(
+        "jeve-test",
+        settings=_on(),
+        span_exporter=Broken(),
+        metric_reader=InMemoryMetricReader(),
+        log_exporter=InMemoryLogRecordExporter(),  # type: ignore[no-untyped-call]
+    )
     with obs.span("sim.tick"):
         pass
     obs.shutdown()  # must return, not raise
@@ -283,17 +311,9 @@ def test_a_gauge_reads_its_value_at_collection_time() -> None:
     _, reader = _started()
 
     age[0] = 41.0
-    data = reader.get_metrics_data()
-    points = [
-        point.value
-        for resource in (data.resource_metrics if data else ())
-        for scope in resource.scope_metrics
-        for metric in scope.metrics
-        if metric.name == "jeve.test.age"
-        for point in metric.data.data_points
-    ]
+    points = counter_points(reader.get_metrics_data(), "jeve.test.age")
     obs.shutdown()
-    assert points == [41.0]
+    assert points == {(): 41.0}
 
 
 def test_a_gauge_that_raises_leaves_a_gap_not_a_crash() -> None:
@@ -307,13 +327,9 @@ def test_a_gauge_that_raises_leaves_a_gap_not_a_crash() -> None:
     _, reader = _started()
 
     data = reader.get_metrics_data()
-    reported = {
-        metric.name: [point.value for point in metric.data.data_points]
-        for resource in (data.resource_metrics if data else ())
-        for scope in resource.scope_metrics
-        for metric in scope.metrics
-    }
+    working = counter_points(data, "jeve.test.fine")
+    raising = counter_points(data, "jeve.test.broken")
     obs.shutdown()
 
-    assert reported.get("jeve.test.fine") == [7.0]
-    assert reported.get("jeve.test.broken", []) == []
+    assert working == {(): 7.0}
+    assert raising == {}

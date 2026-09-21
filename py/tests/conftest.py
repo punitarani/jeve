@@ -38,3 +38,27 @@ def spend_table(db_conn: Connection[DictRow]) -> Connection[DictRow]:
     db_conn.execute("DELETE FROM spend_entries")
     db_conn.commit()
     return db_conn
+
+
+def counter_points(data: object, name: str) -> dict[tuple[str, ...], float]:
+    """Sum-metric points from an `InMemoryMetricReader`, keyed by attributes.
+
+    The OTLP data model nests four levels deep and the point type is a union,
+    so reading one number out of it is six lines of narrowing. Written once
+    here rather than at each assertion (OBS-0001).
+    """
+
+    found: dict[tuple[str, ...], float] = {}
+    for resource in getattr(data, "resource_metrics", ()):
+        for scope in resource.scope_metrics:
+            for metric in scope.metrics:
+                if metric.name != name:
+                    continue
+                for point in getattr(metric.data, "data_points", ()):
+                    value = getattr(point, "value", None)
+                    if value is None:
+                        continue
+                    attributes = point.attributes or {}
+                    key = tuple(f"{k}={attributes[k]}" for k in sorted(attributes))
+                    found[key] = float(value)
+    return found
