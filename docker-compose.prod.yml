@@ -46,6 +46,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # /health only probes connectivity, so without this the API reports
+      # healthy while every real endpoint 500s on a missing schema.
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s

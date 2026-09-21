@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -245,6 +246,19 @@ class SpendLedger:
     def _write_checkpoint(self, spend: Spend) -> None:
         if self._checkpoint is None:
             return
+        try:
+            self._write_checkpoint_unsafe(spend)
+        except OSError as error:
+            # The checkpoint is a human-readable mirror; the table is
+            # authoritative. A read-only container fs (the sim image runs as
+            # uid 1001 with /app owned by root) must not kill accounting —
+            # this took the daemon down on boot under compose. Warn once and
+            # stop trying: permissions do not heal mid-process.
+            print(f"spend checkpoint disabled: {error}", file=sys.stderr)
+            self._checkpoint = None
+
+    def _write_checkpoint_unsafe(self, spend: Spend) -> None:
+        assert self._checkpoint is not None
         self._checkpoint.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "effective_usd": round(spend.effective_usd, 6),

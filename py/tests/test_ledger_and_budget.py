@@ -115,6 +115,23 @@ def test_checkpoint_tracks_the_ledger(
     assert payload["estimated_calls"] == 1
 
 
+def test_an_unwritable_checkpoint_is_not_fatal(
+    spend_table: Connection[DictRow], tmp_path: Path
+) -> None:
+    """The checkpoint mirrors the table; the table is truth. An unwritable
+    fs — the sim image runs as uid 1001 under a root-owned /app — killed the
+    daemon on boot once; a mirror must never break accounting."""
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    ledger = SpendLedger(checkpoint=blocker / "spend.json")
+
+    ledger.reserve("a", 1.0, purpose="gate", model="m")
+    ledger.settle("a", 0.5, estimated=False, model="m", outcome="ok")
+
+    assert ledger.read().settled_usd == pytest.approx(0.5)
+
+
 def test_explore_is_refused_at_twelve_dollars(
     spend_table: Connection[DictRow], tmp_path: Path
 ) -> None:
