@@ -72,8 +72,8 @@ on the engine thread and passed down explicitly.
 
 - Good: a call's prompt, typed answers, provider, tokens and real dollar cost
   are one click apart, and a batch shows its own cache hit rate.
-- Good: off is the default — no key, no import, no socket. A clean clone and CI
-  are unchanged, and `JEVE_TRACING=off` kills telemetry without rotating a key.
+- Good: off is the default — no key, no import, no socket. The key is the only
+  switch, so nothing can disagree with it about whether tracing is on.
 - Bad: `braintrust` pulls ten transitive dependencies into a project whose
   runtime list was five and whose standard is stdlib-first. `tqdm` in a daemon
   is silly. That is the price of not owning a wire protocol.

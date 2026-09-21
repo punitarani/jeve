@@ -26,11 +26,17 @@ def test_no_key_means_no_tracing_and_no_sdk() -> None:
         assert span.export() == ""
 
 
-def test_a_key_is_not_enough_if_tracing_is_switched_off() -> None:
-    """`JEVE_TRACING=off` kills telemetry without rotating a secret."""
+def test_the_key_is_the_only_switch() -> None:
+    """One way to say it. Unset the key and nothing traces; set it and it does.
 
-    settings = Settings(braintrust_api_key="sk-test", tracing_enabled=False)
-    assert tracing.configure(settings=settings) is False
+    A separate on/off flag would be a second way to say the same thing, and
+    would let the two disagree.
+    """
+
+    assert tracing.configure(settings=Settings()) is False
+    tracing.reset()
+    assert tracing.configure(settings=Settings(braintrust_api_key="sk-test"))
+    tracing.reset()
 
 
 def test_unreadable_settings_disable_tracing_rather_than_raising(

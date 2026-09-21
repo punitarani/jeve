@@ -6,9 +6,10 @@ are: it cuts across the layering instead of sitting in it, and
 
 Three properties are load-bearing, and each has a test:
 
-- **Off by default.** With no `BRAINTRUST_API_KEY` — or `JEVE_TRACING=off` —
-  `braintrust` is never imported, no socket is opened, and `span()` yields a
-  null span. A clean clone and CI stay offline with nothing to configure.
+- **Off by default.** With no `BRAINTRUST_API_KEY`, `braintrust` is never
+  imported, no socket is opened, and `span()` yields a null span. The key is
+  the only switch — a second one would be a second way to say the same thing.
+  A clean clone and CI stay offline with nothing to configure.
 - **Never fatal.** Every call into the SDK is wrapped. The first failure prints
   one line and latches tracing off for the rest of the process. Telemetry must
   not be able to halt a tick: `gateway._log_discrepancy` exists because an
@@ -156,7 +157,7 @@ def configure(*, settings: Settings | None = None, sink: Sink | None = None) -> 
         _looked = True
         try:
             resolved = settings or load_settings()
-            if not resolved.tracing_enabled or not resolved.braintrust_api_key:
+            if not resolved.braintrust_api_key:
                 return False
             _sink = _BraintrustSink(
                 project=resolved.braintrust_project,
