@@ -217,6 +217,12 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # typecheck/build depend on contracts:generate, which is `uv run` —
+      # the web job needs Python deps for what is otherwise a TypeScript gate.
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --directory py
       # No eslint config exists in the repo — tsc strict is the static gate.
       - run: npx nx run web:typecheck
       - run: npx nx run web:build
