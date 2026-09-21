@@ -20,7 +20,12 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "jeve"
 
 # package -> packages it must never import, directly or lazily.
 FORBIDDEN: dict[str, set[str]] = {
-    "core": {"world", "decide", "memory", "sim", "gen", "api", "llm"},
+    # OBS-0001: telemetry is the floor. Everything may import it — which is why
+    # it appears in no other row's banned set — and it imports nothing back,
+    # not even `core`. A package that owns an exporter thread and a socket must
+    # not be able to reach the seeded clock, or someone will time a span with it.
+    "obs": {"core", "llm", "decide", "memory", "world", "sim", "gen", "api"},
+    "core": {"world", "decide", "memory", "sim", "gen", "api", "llm", "obs"},
     "llm": {"world", "decide", "memory", "sim", "gen", "api"},
     "decide": {"world", "sim", "gen", "api"},
     "memory": {"sim", "gen", "api"},
@@ -62,7 +67,7 @@ def test_the_import_graph_respects_the_layers() -> None:
 def test_nothing_that_computes_the_world_can_see_generated_text() -> None:
     """The one rule, stated on its own so a failure names it."""
 
-    for package in ("core", "world", "decide", "memory", "sim", "llm"):
+    for package in ("core", "world", "decide", "memory", "sim", "llm", "obs"):
         for path in sorted((SRC / package).rglob("*.py")):
             assert "gen" not in imports_of(path), (
                 f"{path.relative_to(SRC.parent)} imports jeve.gen: simulation "

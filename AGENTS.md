@@ -289,6 +289,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### OBS-0001: One telemetry seam - OpenTelemetry to Axiom, and nothing at all without a token
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `py/src/jeve/obs/**`, `py/src/jeve/sim/daemon.py`, `py/src/jeve/api/app.py`, `py/src/jeve/llm/gateway.py`, `py/src/jeve/llm/ledger.py`, `py/pyproject.toml`, `fly.toml`  
+**Tags**: observability, opentelemetry, axiom, layering, agent-decided
+
+Telemetry is one package, `jeve.obs`, at the bottom of the layering beside `core`, importing nothing from `jeve` but `config`. Nothing outside it names `opentelemetry`, so Axiom is a backend, not a dependency.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### OPS-0001: deployment topology — fly process groups, workers static assets, doppler secrets
 
 **Status**: accepted (2026-09-21)  
