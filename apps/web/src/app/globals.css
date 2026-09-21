@@ -103,6 +103,14 @@ select.pick {
 .up { color: var(--good); border-color: var(--good); }
 .down { color: var(--bad); border-color: var(--bad); }
 
+/* The event-kind filter above the timeline. `.pill` already supplies the
+   rounded border, padding and 11px size; `.chip` adds what a <button> needs
+   to stop looking like one. Off state is aria-pressed, not a class. */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 10px; }
+.chip { cursor: pointer; background: transparent; color: inherit; font: inherit; font-size: 11px; }
+.chip:hover { border-color: var(--text); }
+.chip[aria-pressed="false"] { opacity: 0.45; }
+
 .lane { display: flex; flex-direction: column; gap: 2px; max-height: 60vh; overflow-y: auto; }
 
 .ev {
