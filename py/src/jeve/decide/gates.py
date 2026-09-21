@@ -31,7 +31,7 @@ that there is no question to ask: nobody pays a month early."""
 def _number(value: object, default: float = 0.0) -> float:
     try:
         return float(str(value))
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return default
 
 

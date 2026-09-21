@@ -344,7 +344,7 @@ class Gateway:
             from email.utils import parsedate_to_datetime
 
             when = parsedate_to_datetime(value)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None
         return max(0.0, when.timestamp() - time.time())
 

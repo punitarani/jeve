@@ -69,7 +69,7 @@ class ModelCard:
 def _to_float(value: object) -> float:
     try:
         return float(str(value))
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return 0.0
 
 
