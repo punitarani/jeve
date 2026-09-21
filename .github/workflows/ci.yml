@@ -159,9 +159,12 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      # OPS-0001's confirmation is `fly config validate` — nothing else in
-      # this job provides the binary.
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      # OPS-0001's confirmation is `flyctl config validate` — nothing else in
+      # this job provides the binary. The setup-flyctl action died silently in
+      # run 35625550296, so install straight from the official installer.
+      - run: |
+          curl -fsSL https://fly.io/install.sh | sh
+          echo "$HOME/.fly/bin" >> "$GITHUB_PATH"
       - run: uv sync --frozen --directory py
       - run: pnpm install --frozen-lockfile
       - name: Run each record's confirmation command, once each
@@ -285,7 +288,9 @@ jobs:
     needs: [python, docker]
     steps:
       - uses: actions/checkout@v5
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: |
+          curl -fsSL https://fly.io/install.sh | sh
+          echo "$HOME/.fly/bin" >> "$GITHUB_PATH"
       - uses: dopplerhq/cli-action@v4
       - name: Fetch deploy credentials from Doppler
         env:
