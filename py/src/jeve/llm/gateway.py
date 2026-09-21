@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import random
-import sys
 import time
 from dataclasses import dataclass
 from types import TracebackType
@@ -22,6 +21,7 @@ from typing import Any, Self
 
 import httpx
 
+from jeve import obs
 from jeve.config import Settings, load_settings
 from jeve.errors import (
     BudgetExceededError,
@@ -46,6 +46,7 @@ from jeve.llm.protocol import (
     Purpose,
     Usage,
 )
+from jeve.obs import meters
 
 CHAT_PATH = "/chat/completions"
 
@@ -96,6 +97,9 @@ def _approx_tokens(payload: object) -> int:
         payload = payload.decode()
     text = payload if isinstance(payload, str) else json.dumps(payload, default=str)
     return max(1, int(len(text) / CHARS_PER_TOKEN))
+
+
+log = obs.logger("jeve.llm")
 
 
 class Gateway:
@@ -256,7 +260,10 @@ class Gateway:
             # Same class of failure as the spend checkpoint: an unwritable
             # ops dir must not take the call path down with it — this one
             # did, as a PermissionError inside a decision call on Fly.
-            print(f"discrepancy log disabled: {error}", file=sys.stderr)
+            log.warn(
+                f"discrepancy log disabled: {error}",
+                {"jeve.error_type": type(error).__name__, "jeve.path": str(path)},
+            )
             self._discrepancy_log_disabled = True
 
     # -- the two call paths ------------------------------------------------
@@ -377,24 +384,94 @@ class Gateway:
         on its own terms and the ledger never shows one id settling twice.
         """
 
-        last_error: TransportError | None = None
-        for attempt in range(MAX_ATTEMPTS):
-            attempt_id = call_id if attempt == 0 else f"{call_id}-r{attempt}"
-            try:
-                return await self._attempt(
-                    path,
-                    body,
-                    call_id=attempt_id,
-                    model=model,
-                    worst_case_usd=worst_case_usd,
-                    purpose=purpose,
+        operation = "decide" if path == self._decisions_url else "chat"
+        started = time.perf_counter()
+        # One span per *decision point*, with the HTTP tries as children: what
+        # an operator wants costed is the question asked, not each attempt at
+        # asking it. No prompt or completion text is ever recorded (GEN-0001).
+        with obs.span(
+            f"{operation} {model}",
+            {
+                "gen_ai.operation.name": operation,
+                "gen_ai.provider.name": "openrouter",
+                "gen_ai.request.model": model,
+                "jeve.purpose": purpose,
+                "jeve.call_id": call_id,
+                "jeve.worst_case_usd": worst_case_usd,
+            },
+        ) as call:
+            last_error: TransportError | None = None
+            for attempt in range(MAX_ATTEMPTS):
+                attempt_id = call_id if attempt == 0 else f"{call_id}-r{attempt}"
+                try:
+                    payload, latency = await self._attempt(
+                        path,
+                        body,
+                        call_id=attempt_id,
+                        model=model,
+                        worst_case_usd=worst_case_usd,
+                        purpose=purpose,
+                    )
+                except _Retryable as retry:
+                    last_error = retry.error
+                    meters.LLM_RETRIES.add(1, {"gen_ai.request.model": model})
+                    if attempt + 1 < MAX_ATTEMPTS:
+                        await self._backoff(attempt, retry.retry_after)
+                    continue
+                except ProviderBudgetError:
+                    self._record_call(operation, model, "provider_budget", started)
+                    raise
+                except BaseException:
+                    self._record_call(operation, model, "error", started)
+                    raise
+                usage: Usage = payload["__usage"]
+                call.set(
+                    {
+                        "gen_ai.response.model": str(payload.get("model") or model),
+                        "gen_ai.usage.input_tokens": usage.input_tokens,
+                        "gen_ai.usage.output_tokens": usage.output_tokens,
+                        "jeve.cost_usd": usage.cost_usd,
+                        "jeve.cost_estimated": usage.cost_is_estimated,
+                        "jeve.attempts": attempt + 1,
+                    }
                 )
-            except _Retryable as retry:
-                last_error = retry.error
-                if attempt + 1 < MAX_ATTEMPTS:
-                    await self._backoff(attempt, retry.retry_after)
-        assert last_error is not None
-        raise last_error
+                self._record_call(operation, model, "ok", started)
+                meters.LLM_COST.add(
+                    usage.cost_usd,
+                    {
+                        "gen_ai.request.model": model,
+                        "jeve.purpose": purpose,
+                        "jeve.estimated": usage.cost_is_estimated,
+                    },
+                )
+                for direction, count in (
+                    ("input", usage.input_tokens),
+                    ("output", usage.output_tokens),
+                ):
+                    meters.LLM_TOKENS.record(
+                        count,
+                        {
+                            "gen_ai.token.type": direction,
+                            "gen_ai.request.model": model,
+                        },
+                    )
+                return payload, latency
+            assert last_error is not None
+            self._record_call(operation, model, "transport_error", started)
+            raise last_error
+
+    def _record_call(
+        self, operation: str, model: str, outcome: str, started: float
+    ) -> None:
+        """Close the books on one logical call, however it ended."""
+
+        attrs: obs.Attrs = {
+            "gen_ai.operation.name": operation,
+            "gen_ai.request.model": model,
+            "jeve.outcome": outcome,
+        }
+        meters.LLM_CALLS.add(1, attrs)
+        meters.LLM_DURATION.record(time.perf_counter() - started, attrs)
 
     async def _attempt(
         self,
@@ -420,16 +497,30 @@ class Gateway:
         try:
             try:
                 async with self._permits:
-                    if isinstance(body, bytes):
-                        # Already serialised: these exact bytes are the cache
-                        # key (DECIDE-0004), so they must be what is sent.
-                        response = await self._client.post(
-                            path,
-                            content=body,
-                            headers={"content-type": "application/json"},
+                    # Inside the permit, so the span measures the round trip
+                    # rather than the queue behind eight concurrent workers.
+                    with obs.span(
+                        "gen_ai.attempt",
+                        {
+                            "http.request.method": "POST",
+                            "url.path": path,
+                            "jeve.call_id": call_id,
+                        },
+                    ) as attempt:
+                        if isinstance(body, bytes):
+                            # Already serialised: these exact bytes are the
+                            # cache key (DECIDE-0004), so they must be what
+                            # is sent.
+                            response = await self._client.post(
+                                path,
+                                content=body,
+                                headers={"content-type": "application/json"},
+                            )
+                        else:
+                            response = await self._client.post(path, json=body)
+                        attempt.set(
+                            {"http.response.status_code": response.status_code}
                         )
-                    else:
-                        response = await self._client.post(path, json=body)
             except httpx.HTTPError as error:
                 # Unknown whether it was billed. Keep the reservation as spend.
                 self._ledger.settle(

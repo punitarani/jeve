@@ -596,3 +596,75 @@ async def test_the_raw_response_is_available_before_it_is_parsed(
             usage=raw.usage,
         )
     await gateway.aclose()
+
+
+def test_a_decision_call_is_a_span_with_its_cost_and_tokens(
+    tmp_path: Path,
+) -> None:
+    """OBS-0001: the money path is the one worth tracing.
+
+    One logical call is one span with the retries as children, and the cost
+    and token counts come off the same `Usage` the ledger settles against —
+    so a chart of spend and the ledger cannot disagree.
+    """
+
+    from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from jeve import obs
+    from tests.conftest import counter_points
+
+    spans = InMemorySpanExporter()
+    reader = InMemoryMetricReader()
+    obs.shutdown()
+    obs.start(
+        "jeve-test",
+        settings=Settings(axiom_token="test-token"),
+        span_exporter=spans,
+        metric_reader=reader,
+        log_exporter=InMemoryLogRecordExporter(),  # type: ignore[no-untyped-call]
+    )
+    try:
+        recorder = Recorder()
+
+        async def run() -> None:
+            gateway = await _gateway(tmp_path, recorder)
+            await gateway.decide(_decision_request())
+            await gateway.aclose()
+
+        asyncio.run(run())
+        data = reader.get_metrics_data()
+        obs.shutdown()
+
+        finished = {s.name: s for s in spans.get_finished_spans()}
+        call = finished[f"decide {JEV}"]
+        attributes = call.attributes or {}
+        assert attributes["gen_ai.operation.name"] == "decide"
+        assert attributes["gen_ai.provider.name"] == "openrouter"
+        assert attributes["gen_ai.request.model"] == JEV
+        assert attributes["gen_ai.response.model"] == DECISION_BODY["model"]
+        assert attributes["jeve.attempts"] == 1
+        # The prompt is never recorded: generated text does not leave the
+        # process, and the state we send is the simulation's own (GEN-0001).
+        assert not [k for k in attributes if "messages" in k or "prompt" in k]
+
+        # The HTTP round trip is a child, so a retry is visible as a second
+        # child rather than as a second call.
+        attempt = finished["gen_ai.attempt"]
+        assert (attempt.attributes or {})["http.response.status_code"] == 200
+        assert attempt.parent is not None
+        assert attempt.parent.span_id == call.context.span_id
+
+        calls = counter_points(data, "jeve.llm.calls")
+        assert list(calls.values()) == [1]
+        assert "jeve.outcome=ok" in next(iter(calls))
+
+        cost = counter_points(data, "jeve.llm.cost")
+        assert sum(cost.values()) == pytest.approx(
+            float(str(attributes["jeve.cost_usd"]))
+        )
+    finally:
+        obs.shutdown()
