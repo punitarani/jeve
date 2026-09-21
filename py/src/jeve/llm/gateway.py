@@ -376,7 +376,10 @@ class Gateway:
             from email.utils import parsedate_to_datetime
 
             when = parsedate_to_datetime(value)
-        except (TypeError, ValueError):
+        # ruff 0.16.8's formatter rewrites this tuple to `except A, B:` — a
+        # SyntaxError, and how all three of these got into the tree in the
+        # first place. The skip is what keeps the package importable.
+        except (TypeError, ValueError):  # fmt: skip
             return None
         return max(0.0, when.timestamp() - time.time())
 

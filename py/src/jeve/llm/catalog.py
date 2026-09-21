@@ -69,7 +69,10 @@ class ModelCard:
 def _to_float(value: object) -> float:
     try:
         return float(str(value))
-    except (TypeError, ValueError):
+    # ruff 0.16.8's formatter rewrites this tuple to `except A, B:` — a
+    # SyntaxError, and how all three of these got into the tree in the
+    # first place. The skip is what keeps the package importable.
+    except (TypeError, ValueError):  # fmt: skip
         return 0.0
 
 
