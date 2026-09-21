@@ -71,7 +71,9 @@ echo "postgres on ${PG_PORT}"
 
 say "2/6  install"
 uv sync --directory py --quiet
-pnpm install --frozen-lockfile --silent
+# CI=true: a modules-dir mismatch must fail, never prompt — the script is
+# meant to run unattended.
+CI=true pnpm install --frozen-lockfile --silent
 
 say "3/6  offline checks"
 make lint types test decisions

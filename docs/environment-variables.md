@@ -46,6 +46,12 @@ puts the daemon into `waiting_on_budget`, not a crash (SIM-0003).
 | `JEVE_DIALOGUE_GENERATE` | `on` | `off`/`0`/`false`: `/encounters/{seq}/dialogue` serves the typed record and cached prose only — no spend. |
 | `JEVE_OPS_DIR` | repo `ops/` | Where the `spend.json` checkpoint and `discrepancies.jsonl` land. |
 
+## Test hooks
+
+| Variable | Read by | Notes |
+|---|---|---|
+| `JEVE_TEST_DIE_AT_EVENT` | `world/engine.py` | Crash-injection: raise inside the tick at this event seq. Used by `test_resume.py`; never set it in production. |
+
 ## Web (`apps/web`)
 
 | Variable | Default | Notes |
