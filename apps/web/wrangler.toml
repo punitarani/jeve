@@ -16,3 +16,25 @@ routes = [
 
 [assets]
 directory = "out"
+
+# Workers Logs + traces + real-time Issues, all persisted and queryable in
+# the Cloudflare dashboard. 100% sampling — a static site at this volume
+# costs nothing to observe. Request/error/latency metrics are always
+# collected; there is no metrics toggle.
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+persist = true
+
+[observability.issues]
+enabled = true
