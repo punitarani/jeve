@@ -109,7 +109,9 @@ class _AnotherBuildAnswers:
     def __init__(self, payload: dict[str, Any], served: str) -> None:
         self._payload = {**payload, "model": served}
 
-    def fetch(self, requests: Sequence[DecisionRequest]) -> list[RawDecision]:
+    def fetch(
+        self, requests: Sequence[DecisionRequest], *, parent: str | None = None
+    ) -> list[RawDecision]:
         return [
             RawDecision(payload=dict(self._payload), usage=Usage(), latency_s=0.1)
             for _ in requests
