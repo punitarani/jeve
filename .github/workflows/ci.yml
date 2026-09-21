@@ -38,34 +38,26 @@ jobs:
             exit 1
           fi
 
-      - name: Run each record's confirmation command
-        # A `confirmation` that nobody runs is a comment. This is what stops
-        # them becoming aspirational.
-        #
-        # These are arbitrary shell commands read out of files in the repo, so
-        # they are only executed for branches pushed here — never for a pull
-        # request from a fork, where the command would be attacker-controlled.
-        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          set -o pipefail
-          status=0
-          while IFS= read -r line; do
-            id=$(printf '%s' "$line" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-            cmd=$(printf '%s' "$line" | python3 -c 'import json,sys; print(json.load(sys.stdin)["confirmation"] or "")')
-            [ -z "$cmd" ] && continue
-            echo "--- $id: $cmd"
-            if ! bash -c "$cmd"; then
-              echo "::error::$id confirmation failed: $cmd"
-              status=1
-            fi
-          done < decisions/index.jsonl
-          exit $status
-
       - name: markdownlint
         run: npx --yes markdownlint-cli2
 
   python:
     runs-on: ubuntu-latest
+    # Without a database about half the suite skips: everything that runs the
+    # world. It passed green for two sessions while testing none of it.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: jeve
+          POSTGRES_PASSWORD: jeve
+          POSTGRES_DB: jeve
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U jeve -d jeve"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      JEVE_DATABASE_URL: postgresql://jeve:jeve@127.0.0.1:5432/jeve
     defaults:
       run:
         working-directory: py
@@ -79,7 +71,17 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
-      - run: uv run pytest
+      - run: uv run pytest -ra
+
+      - name: The world's tests ran, not skipped
+        # A service that failed to start would turn the job green again by
+        # skipping. Fail instead.
+        run: |
+          uv run python - <<'PY'
+          from jeve import db
+          with db.connect() as conn:
+              print("postgres:", conn.execute("SHOW server_version").fetchone())
+          PY
 
       - name: No second path to a model
         # LLM-0004. The ruff rule bans the import; this catches a raw URL in
@@ -100,6 +102,68 @@ jobs:
             echo "::error::An API key is committed. Rotate it."
             exit 1
           fi
+
+  confirmations:
+    # A `confirmation` that nobody runs is a comment. This is what stops them
+    # becoming aspirational. Its own job because the commands need uv, pnpm and
+    # a database, and the `decisions` job deliberately has none of them.
+    #
+    # These are arbitrary shell commands read out of files in the repo, so they
+    # are only executed for branches pushed here — never for a pull request
+    # from a fork, where the command would be attacker-controlled.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    # Without a database about half the suite skips: everything that runs the
+    # world. It passed green for two sessions while testing none of it.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: jeve
+          POSTGRES_PASSWORD: jeve
+          POSTGRES_DB: jeve
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U jeve -d jeve"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      JEVE_DATABASE_URL: postgresql://jeve:jeve@127.0.0.1:5432/jeve
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: uv sync --frozen --directory py
+      - run: pnpm install --frozen-lockfile
+      - name: Run each record's confirmation command, once each
+        run: |
+          set -o pipefail
+          python3 - <<'PY' > /tmp/confirmations.tsv
+          import json
+          seen = {}
+          for line in open("decisions/index.jsonl"):
+              record = json.loads(line)
+              command = record.get("confirmation")
+              if command:
+                  seen.setdefault(command, []).append(record["id"])
+          for command, ids in seen.items():
+              print(",".join(ids) + "\t" + command)
+          PY
+          status=0
+          while IFS=$'\t' read -r ids cmd; do
+            echo "::group::$ids: $cmd"
+            if ! bash -c "$cmd"; then
+              echo "::error::$ids confirmation failed: $cmd"
+              status=1
+            fi
+            echo "::endgroup::"
+          done < /tmp/confirmations.tsv
+          exit $status
 
   web:
     runs-on: ubuntu-latest

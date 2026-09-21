@@ -71,7 +71,7 @@ def advance(
         now = SimTime(int(row["sim_time"]))
         if now.seconds >= until:
             return totals
-        if not now.in_office_hours and not now.cafe_open:
+        if not now.anything_open:
             if skip_to_next_open(conn) >= until:
                 return totals
             continue

@@ -301,10 +301,16 @@ async def test_a_rejected_request_gives_its_reservation_back(tmp_path: Path) -> 
     assert spend.reserved_usd == 0.0
 
 
-async def test_a_server_error_keeps_the_reservation_as_spend(tmp_path: Path) -> None:
-    """A 500 may still have been billed; assume it was."""
+@pytest.mark.parametrize("status", [500, 520, 529])
+async def test_a_server_error_keeps_the_reservation_as_spend(
+    tmp_path: Path, status: int
+) -> None:
+    """A 5xx may still have been billed; assume it was.
 
-    recorder = Recorder(decisions=httpx.Response(500, text="boom"))
+    520-529 are here because one 520 ended a 30-day soak (LLM-0006).
+    """
+
+    recorder = Recorder(decisions=httpx.Response(status, text="boom"))
     gateway = await _gateway(tmp_path, recorder)
 
     with pytest.raises(TransportError):
@@ -317,6 +323,19 @@ async def test_a_server_error_keeps_the_reservation_as_spend(tmp_path: Path) -> 
     assert len(recorder.requests) == MAX_ATTEMPTS
     assert spend.estimated_calls == MAX_ATTEMPTS
     assert spend.reserved_usd == 0.0
+
+
+async def test_a_bug_shaped_5xx_is_not_retried(tmp_path: Path) -> None:
+    """501 is a request the server will never serve. Retrying it hides that."""
+
+    recorder = Recorder(decisions=httpx.Response(501, text="not implemented"))
+    gateway = await _gateway(tmp_path, recorder)
+
+    with pytest.raises(TransportError):
+        await gateway.decide(_decision_request())
+    await gateway.aclose()
+
+    assert len(recorder.requests) == 1
 
 
 async def test_the_ceiling_refuses_before_issuing(tmp_path: Path) -> None:
@@ -405,7 +424,9 @@ async def test_a_retired_generative_slug_does_not_block_decisions(
 
     # The fixture catalogue lacks some of the five escape-hatch models.
     assert set(gateway.generative_models) < set(GENERATIVE_PREFERENCE)
-    assert gateway.generative_models[0] == "deepseek/deepseek-v4.1-flash"
+    # LLM-0006: reliability order, so GLM leads and V4.1 Flash is the last resort.
+    assert gateway.generative_models[0] == GLM
+    assert gateway.generative_models[-1] == "deepseek/deepseek-v4.1-flash"
     response = await gateway.decide(_decision_request())
     await gateway.aclose()
     assert response.answers

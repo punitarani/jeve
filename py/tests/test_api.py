@@ -36,7 +36,7 @@ def client() -> Iterator[TestClient]:
                 now = SimTime(int(row["sim_time"]))
                 if now.seconds >= end:
                     break
-                if not now.in_office_hours and not now.cafe_open:
+                if not now.anything_open:
                     if skip_to_next_open(conn) >= end:
                         break
                     continue
@@ -76,6 +76,40 @@ def test_state_is_one_read_with_a_cursor(client: TestClient) -> None:
     assert body["persons"]["counterparty"] == 400
     assert body["clock"]["label"].startswith("d")
     assert len(body["modules"]) == 3
+
+
+def test_state_tells_a_dead_daemon_from_a_sleeping_one(client: TestClient) -> None:
+    """SIM-0002: `status` is what the daemon last said; a killed process goes on
+    saying `running` for ever. The heartbeat is the evidence."""
+
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE sim_meta SET status = 'running', last_error = NULL, "
+            "heartbeat_at = now() - interval '2 seconds', lag_s = 1.25"
+        )
+        conn.commit()
+    health = client.get("/state").json()["health"]
+    assert health["stale"] is False
+    assert health["lag_s"] == 1.25 and 1.0 < health["heartbeat_age_s"] < 30.0
+
+    with db.connect() as conn:
+        conn.execute("UPDATE sim_meta SET heartbeat_at = now() - interval '5 minutes'")
+        conn.commit()
+    assert client.get("/state").json()["health"]["stale"] is True
+
+    # A world that was stopped on purpose is not stale, however long ago.
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE sim_meta SET status = 'waiting_on_model', "
+            "last_error = 'TransportError: /decisions returned 520'"
+        )
+        conn.commit()
+    health = client.get("/state").json()["health"]
+    assert health["stale"] is True and health["last_error"].startswith("TransportError")
+    with db.connect() as conn:
+        conn.execute("UPDATE sim_meta SET status = 'paused', last_error = NULL")
+        conn.commit()
+    assert client.get("/state").json()["health"]["stale"] is False
 
 
 def test_money_is_an_integer_everywhere_on_the_wire(client: TestClient) -> None:

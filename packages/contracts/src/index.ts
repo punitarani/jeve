@@ -18,7 +18,9 @@ export const Clock = z.object({
   weekday: z.number().int(),
   in_office_hours: z.boolean(),
   tick_seq: z.number().int(),
-  status: z.enum(["running", "paused", "waiting_on_model", "halted"]),
+  // Every value the database's CHECK allows. `paused_budget` was missing, so
+  // the day the governor paused the world the page would have failed to parse.
+  status: z.enum(["running", "paused", "paused_budget", "waiting_on_model", "halted"]),
   speed: z.number(),
   run_id: z.string(),
 });
@@ -40,9 +42,22 @@ export const Module = z.object({
 });
 export type Module = z.infer<typeof Module>;
 
+/** Is anybody driving? `clock.status` is the daemon's word; this is the evidence (SIM-0002). */
+export const Health = z.object({
+  /** Seconds since the daemon last proved it was alive. Null before its first beat. */
+  heartbeat_age_s: z.number().nullable(),
+  /** How far the last tick ran over its pacing. */
+  lag_s: z.number(),
+  last_error: z.string().nullable(),
+  /** The status says a process should be alive and the heartbeat says none is. */
+  stale: z.boolean(),
+});
+export type Health = z.infer<typeof Health>;
+
 export const WorldState = z.object({
   seq: z.number().int(),
   clock: Clock,
+  health: Health,
   orgs: z.array(Org),
   modules: z.array(Module),
   tickets: z.object({ untriaged: z.number().int(), open: z.number().int() }),

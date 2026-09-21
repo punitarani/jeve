@@ -35,7 +35,7 @@ from jeve import db
 from jeve.core.clock import DAY, TICK, SimTime
 from jeve.decide.jev_policy import JevPolicy
 from jeve.decide.recorder import ReplayMissError, finalize_cassette, load_cassette
-from jeve.errors import BudgetExceededError
+from jeve.errors import BudgetExceededError, ResponseShapeError, TransportError
 from jeve.sim.runner import CASSETTE, Totals, build_policy, policy_from_env
 from jeve.world.engine import Engine, skip_to_next_open
 from jeve.world.seed_world import ROOT_SEED, seed
@@ -49,6 +49,22 @@ and a town that sits empty for fourteen real minutes in every twenty-four is a
 poor thing to watch. The tick rate while anything is open is unaffected."""
 
 DEFAULT_DAILY_BUDGET_USD = 2.00
+
+MODEL_WEATHER: tuple[type[BaseException], ...] = (
+    TransportError,
+    ResponseShapeError,
+    TimeoutError,
+)
+"""SIM-0002: what the model path raises when the model, or the road to it, is
+having a bad minute — after the gateway's own retries have run out. A tick is
+one transaction, so one that raised has changed nothing and can simply be run
+again. One HTTP 520 used to end the process here, with the page still saying
+`running`. Budget exhaustion and a replay miss are not in this list: waiting
+cannot fix either."""
+
+BACKOFF_BASE_S = 2.0
+BACKOFF_CAP_S = 120.0
+HEARTBEAT_EVERY_S = 5.0
 
 
 @dataclass(slots=True)
@@ -85,15 +101,60 @@ class _Stop:
         return self._requested
 
 
-def _status(conn: Connection[DictRow], status: str) -> None:
-    conn.execute("UPDATE sim_meta SET status = %s, updated_at = now()", (status,))
+def _status(conn: Connection[DictRow], status: str, error: str | None = None) -> None:
+    """Say what the process is doing, and why if it is not simply running."""
+
+    conn.execute(
+        "UPDATE sim_meta SET status = %s, last_error = %s, "
+        "heartbeat_at = now(), updated_at = now()",
+        (status, error),
+    )
     conn.commit()
 
 
-def _sleep(seconds: float, stop: _Stop) -> None:
+def _heartbeat(conn: Connection[DictRow], lag_s: float | None = None) -> None:
+    """Wall-clock proof of life. Never read by the simulation."""
+
+    if lag_s is None:
+        conn.execute("UPDATE sim_meta SET heartbeat_at = now()")
+    else:
+        conn.execute("UPDATE sim_meta SET heartbeat_at = now(), lag_s = %s", (lag_s,))
+    conn.commit()
+
+
+def _sleep(
+    seconds: float, stop: _Stop, conn: Connection[DictRow] | None = None
+) -> None:
+    """Sleep, but stay visibly alive.
+
+    The beat comes from in here as well as from the tick, because most of a
+    daemon's life is this loop: without it every night, every budget pause and
+    every wait for the model would read as a dead process.
+    """
+
     deadline = time.monotonic() + seconds
+    next_beat = time.monotonic() + HEARTBEAT_EVERY_S
     while not stop.requested() and (left := deadline - time.monotonic()) > 0:
         time.sleep(min(0.25, left))
+        if conn is not None and time.monotonic() >= next_beat:
+            _heartbeat(conn)
+            next_beat = time.monotonic() + HEARTBEAT_EVERY_S
+
+
+def _backoff(failures: int) -> float:
+    """Doubling from the base to the cap, jittered by up to a quarter either way.
+
+    The jitter comes off the wall clock, which this module is allowed to read
+    and the simulation is not; none of it reaches sim state.
+    """
+
+    delay = float(min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2 ** (failures - 1)))
+    return delay * (0.75 + 0.5 * (time.monotonic() % 1.0))
+
+
+def _describe(error: BaseException) -> str:
+    first_line = (str(error).splitlines() or [""])[0]
+    return f"{type(error).__name__}: {first_line}"[:500]
 
 
 def run(args: argparse.Namespace) -> int:
@@ -143,6 +204,8 @@ def _loop(
 ) -> int:
     window_started = time.monotonic()
     window_spent_from = _live_spend(policy)
+    failures = 0
+    waiting_since = 0.0
     _status(conn, "running")
 
     while not stop.requested():
@@ -158,10 +221,10 @@ def _loop(
             # Stay up so the API and the page have a live process to look at;
             # the world itself is finished and nothing more is written.
             while not stop.requested():
-                _sleep(1.0, stop)
+                _sleep(1.0, stop, conn)
             return 0
 
-        if not now.in_office_hours and not now.cafe_open:
+        if not now.anything_open:
             before = now.seconds
             after = skip_to_next_open(conn)
             if args.until is not None and after > args.until:
@@ -169,7 +232,7 @@ def _loop(
                 conn.commit()
                 after = args.until
             skipped_ticks = (after - before) / TICK
-            _sleep(skipped_ticks * pace.seconds_per_tick / NIGHT_SPEEDUP, stop)
+            _sleep(skipped_ticks * pace.seconds_per_tick / NIGHT_SPEEDUP, stop, conn)
             continue
 
         # The governor (CORE-0002). A sim-day's worth of real time has a model
@@ -188,7 +251,7 @@ def _loop(
                     f"daily model budget of ${pace.daily_budget_usd:.2f} spent; "
                     f"pausing {pace.window_s - elapsed:.0f}s until the window rolls"
                 )
-                _sleep(pace.window_s - elapsed, stop)
+                _sleep(pace.window_s - elapsed, stop, conn)
                 _status(conn, "running")
                 continue
 
@@ -196,17 +259,49 @@ def _loop(
         try:
             report = engine.tick()
         except BudgetExceededError as error:
-            _status(conn, "halted")
+            _status(conn, "halted", _describe(error))
             print(f"HALTED: {error}", file=sys.stderr)
             return 4
         except ReplayMissError as error:
-            _status(conn, "halted")
+            _status(conn, "halted", _describe(error))
             print(f"HALTED: {error}", file=sys.stderr)
             return 5
+        except MODEL_WEATHER as error:
+            # SIM-0002 / CORE-0004: a dead model is a paused world, not a dead
+            # one and not a world that guessed. The tick rolled back whole, and
+            # the engine has put the sequences back, so the retry is the same
+            # tick; whatever the model did answer is already in the call cache.
+            conn.rollback()
+            failures += 1
+            if failures == 1:
+                waiting_since = time.monotonic()
+            delay = _backoff(failures)
+            waited = time.monotonic() - waiting_since
+            if args.max_wait is not None and waited + delay > args.max_wait:
+                _status(conn, "halted", _describe(error))
+                print(
+                    f"HALTED: the model has not answered for {waited:.0f}s: {error}",
+                    file=sys.stderr,
+                )
+                return 6
+            _status(conn, "waiting_on_model", _describe(error))
+            print(
+                f"waiting on the model (failure {failures}): {_describe(error)}; "
+                f"trying this tick again in {delay:.0f}s",
+                file=sys.stderr,
+            )
+            _sleep(delay, stop, conn)
+            continue
+        if failures:
+            print(f"the model is back after {failures} failed attempt(s)")
+            failures = 0
+            _status(conn, "running")
         totals.ticks += 1
         totals.decisions += report.decisions
         totals.events.update(report.events)
-        _sleep(pace.seconds_per_tick - (time.monotonic() - started), stop)
+        spent = time.monotonic() - started
+        _heartbeat(conn, lag_s=max(0.0, spent - pace.seconds_per_tick))
+        _sleep(pace.seconds_per_tick - spent, stop, conn)
 
     _status(conn, "paused")
     print("stopped on request; the world is at the end of its last complete tick")
@@ -293,6 +388,13 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         default=float(
             os.environ.get("JEVE_DAILY_BUDGET_USD") or DEFAULT_DAILY_BUDGET_USD
         ),
+    )
+    parser.add_argument(
+        "--max-wait",
+        type=float,
+        default=None,
+        help="give up (exit 6) after this many seconds waiting on the model; "
+        "the default is to wait for ever, which is what a daemon should do",
     )
     parser.add_argument("--stats", type=Path, help="write call statistics here")
     parser.add_argument("--verbose", action="store_true")

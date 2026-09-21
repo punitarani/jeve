@@ -62,6 +62,16 @@ class SimTime:
         # The cafe also works Saturday; Sunday it is shut.
         return self.weekday <= 5 and CAFE_OPEN <= self.time_of_day < CAFE_CLOSE
 
+    @property
+    def anything_open(self) -> bool:
+        """False in dead time: the hours a run loop skips rather than ticks.
+
+        The one definition. It was written out in five places, which meant the
+        next change to what a night is would have had to find all five.
+        """
+
+        return self.in_office_hours or self.cafe_open
+
     def label(self) -> str:
         hours, rest = divmod(self.time_of_day, HOUR)
         return f"d{self.day} {_WEEKDAYS[self.weekday]} {hours:02d}:{rest // MINUTE:02d}"
@@ -103,7 +113,7 @@ def next_open(seconds: int) -> int:
     # Bounded: some tick within a week is always open.
     for _ in range(7 * DAY // TICK + 1):
         now = SimTime(moment)
-        if now.in_office_hours or now.cafe_open:
+        if now.anything_open:
             return moment
         moment = moment - moment % TICK + TICK
     raise AssertionError("nothing opens for a whole week")

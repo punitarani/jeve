@@ -1,13 +1,13 @@
 ---
 id: CORE-0006
 title: One Python distribution with layered subpackages, inside an Nx workspace
-status: accepted
+status: superseded
 date: 2026-09-20
 deciders: ["punitarani"]
 scope: ["py/pyproject.toml", "py/src/jeve/**"]
 tags: ["monorepo", "tooling", "python"]
 supersedes: []
-superseded-by: null
+superseded-by: "CORE-0008"
 relates-to: ["CORE-0001"]
 confirmation: "cd py && uv run ruff check . && uv run mypy"
 ---

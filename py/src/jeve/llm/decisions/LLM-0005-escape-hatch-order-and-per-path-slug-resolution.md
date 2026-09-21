@@ -1,13 +1,13 @@
 ---
 id: LLM-0005
 title: Escape-hatch order and per-path slug resolution
-status: accepted
+status: superseded
 date: 2026-09-20
 deciders: ["claude"]
 scope: ["py/src/jeve/llm/catalog.py", "py/src/jeve/llm/gateway.py", "py/scripts/probe_providers.py"]
 tags: ["openrouter", "models", "configuration", "agent-decided"]
 supersedes: ["LLM-0002"]
-superseded-by: null
+superseded-by: "LLM-0006"
 relates-to: ["LLM-0001", "LLM-0003", "DECIDE-0002"]
 confirmation: "cd py && uv run pytest tests/test_catalog.py tests/test_gateway.py"
 ---

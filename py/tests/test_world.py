@@ -284,7 +284,7 @@ def test_a_healthy_product_produces_no_outage_cascade(
         now = SimTime(int(row["sim_time"]))
         if now.seconds >= end:
             break
-        if not now.in_office_hours and not now.cafe_open:
+        if not now.anything_open:
             if skip_to_next_open(conn) >= end:
                 break
             continue

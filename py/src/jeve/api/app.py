@@ -86,7 +86,13 @@ def state() -> dict[str, object]:
     """Everything the dashboard needs for a first paint, in one read."""
 
     with db.connect() as conn:
-        meta = conn.execute("SELECT * FROM sim_meta").fetchone()
+        # The heartbeat's age is taken in SQL: this process may not read the
+        # wall clock, and the database's `now()` is the clock the beat was
+        # written with.
+        meta = conn.execute(
+            "SELECT *, EXTRACT(EPOCH FROM now() - heartbeat_at)::float8 "
+            "AS heartbeat_age_s FROM sim_meta"
+        ).fetchone()
         if meta is None:
             raise HTTPException(503, "the world has not been seeded")
         now = SimTime(int(meta["sim_time"]))
@@ -161,12 +167,35 @@ def state() -> dict[str, object]:
                 "speed": float(meta["speed"]),
                 "run_id": meta["run_id"],
             },
+            "health": _health(meta),
             "orgs": orgs,
             "modules": modules,
             "tickets": tickets,
             "unpaid_invoices": totals,
             "persons": {str(row["kind"]): int(row["n"]) for row in people},
         }
+
+
+STALE_AFTER_S = 30.0
+"""Six missed beats (SIM-0002). The daemon beats every five seconds whatever it
+is doing, asleep for the night included, so silence this long means no process."""
+
+
+def _health(meta: dict[str, Any]) -> dict[str, object]:
+    """Is anybody driving? `status` is the daemon's word; this is the evidence.
+
+    A status of `running` written by a process that has since been killed stays
+    `running` for ever. The heartbeat is what lets a reader tell.
+    """
+
+    age = meta["heartbeat_age_s"]
+    expected_alive = meta["status"] in ("running", "waiting_on_model", "paused_budget")
+    return {
+        "heartbeat_age_s": None if age is None else round(float(age), 1),
+        "lag_s": round(float(meta["lag_s"]), 2),
+        "last_error": meta["last_error"],
+        "stale": expected_alive and (age is None or float(age) > STALE_AFTER_S),
+    }
 
 
 # Hidden from the timeline unless asked for. They are real events, and the

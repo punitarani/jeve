@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 
 import psycopg
 import pytest
@@ -207,3 +207,113 @@ def test_a_tick_is_committed_when_it_returns(conn: Connection[DictRow]) -> None:
         assert seen is not None and int(seen["n"]) == len(report.events) > 0
         assert int(seen["tick"]) == report.tick_seq
         assert clock is not None and int(clock["tick_seq"]) == report.tick_seq
+
+
+# -- SIM-0002: the daemon outlives its model -----------------------------------
+
+
+def _weather(monkeypatch: pytest.MonkeyPatch, fail_on: Mapping[int, Exception]) -> None:
+    """Make the policy raise on chosen calls — from *inside* a tick, where a real
+    model failure lands, so what is tested is the rollback and not a stub."""
+
+    from jeve.decide.policy import DecisionContext
+
+    real = RulesPolicy.decide
+    calls = {"n": 0}
+
+    def decide(self: RulesPolicy, ctx: DecisionContext) -> object:
+        calls["n"] += 1
+        if calls["n"] in fail_on:
+            raise fail_on[calls["n"]]
+        return real(self, ctx)
+
+    monkeypatch.setattr(RulesPolicy, "decide", decide)
+    monkeypatch.setattr(daemon, "BACKOFF_BASE_S", 0.01)
+
+
+def test_a_failing_model_is_waited_for_and_leaves_no_trace(
+    conn: Connection[DictRow],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """One HTTP 520 used to end the process with the page still saying
+    `running`. Now the tick is tried again, and the world that results is the
+    world of a run in which nothing went wrong: no gap, no guess, no scar."""
+
+    from jeve.errors import ResponseShapeError, TransportError
+
+    horizon = ["--seed-world", "--until", str(at(0, 12)), *FLAT_OUT]
+    assert daemon.main(horizon) == 0
+    untroubled = event_log_hash(conn)
+
+    seen: list[tuple[str, str | None]] = []
+    real_status = daemon._status
+
+    def status(c: Connection[DictRow], value: str, error: str | None = None) -> None:
+        seen.append((value, error))
+        real_status(c, value, error)
+
+    monkeypatch.setattr(daemon, "_status", status)
+    _weather(
+        monkeypatch,
+        {
+            5: TransportError("/decisions returned 520: origin error"),
+            6: TimeoutError(),  # the bridge's bare timeout, twice running
+            40: ResponseShapeError("answers missing"),
+        },
+    )
+    assert daemon.main(horizon) == 0
+
+    assert event_log_hash(conn) == untroubled
+    waits = [error for value, error in seen if value == "waiting_on_model"]
+    assert len(waits) == 3
+    assert waits[0] is not None and waits[0].startswith("TransportError: /decisions")
+    assert waits[1] == "TimeoutError: "
+    # Back to `running` after each spell, and the error is cleared with it.
+    assert ("running", None) in seen[1:]
+    row = conn.execute(
+        "SELECT status, last_error, heartbeat_at FROM sim_meta"
+    ).fetchone()
+    assert row is not None
+    assert (row["status"], row["last_error"]) == ("paused", None)
+    assert row["heartbeat_at"] is not None
+    assert "the model is back" in capsys.readouterr().out
+
+
+def test_waiting_can_be_given_a_limit(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A daemon waits for ever; a gate run in the small hours must not."""
+
+    from jeve.errors import TransportError
+
+    always = {n: TransportError("/decisions returned 503") for n in range(1, 500)}
+    _weather(monkeypatch, always)
+    code = daemon.main(
+        ["--seed-world", "--until", str(at(0, 12)), "--max-wait", "0.2", *FLAT_OUT]
+    )
+
+    assert code == 6
+    row = conn.execute("SELECT status, last_error FROM sim_meta").fetchone()
+    assert row is not None and row["status"] == "halted"
+    assert str(row["last_error"]).startswith("TransportError")
+
+
+def test_a_sleeping_daemon_still_has_a_pulse(conn: Connection[DictRow]) -> None:
+    """Most of a daemon's life is a sleep loop. If only ticks beat, every night
+    and every budget pause reads as a dead process."""
+
+    with db.connect() as writer:
+        seed(writer, root_seed=ROOT_SEED)
+        writer.commit()
+        before = daemon.HEARTBEAT_EVERY_S
+        daemon.HEARTBEAT_EVERY_S = 0.05
+        try:
+            daemon._sleep(0.4, daemon._Stop(), writer)
+        finally:
+            daemon.HEARTBEAT_EVERY_S = before
+    row = conn.execute(
+        "SELECT heartbeat_at IS NOT NULL AND now() - heartbeat_at < interval '5 s' "
+        "AS alive FROM sim_meta"
+    ).fetchone()
+    assert row is not None and row["alive"]

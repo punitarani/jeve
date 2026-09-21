@@ -75,8 +75,10 @@ UNBILLED_STATUSES = frozenset({400, 401, 403, 404, 422, 429})
 
 # Worth another attempt. 429 is rejected before inference, so its reservation is
 # released; a 5xx or a dropped connection may have been billed, so that attempt
-# settles at worst case and the retry reserves afresh.
-RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+# settles at worst case and the retry reserves afresh. 520-529 are the edge
+# saying the origin hiccuped: one 520 ended a 30-day soak before they were here
+# (LLM-0006). 501 and 505 stay fatal; those are bugs, not weather.
+RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504, *range(520, 530)})
 MAX_ATTEMPTS = 4
 BACKOFF_BASE_S = 0.5
 BACKOFF_CAP_S = 8.0
