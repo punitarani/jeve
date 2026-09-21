@@ -1,4 +1,4 @@
-# Build stage for Cloudflare Workers
+# Build stage — produce the static export (WEB-0005)
 FROM node:24-alpine AS builder
 
 WORKDIR /app
@@ -19,39 +19,21 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY apps/web ./apps/web
 COPY packages ./packages
 
-# Build the application
+# NEXT_PUBLIC_* is inlined into the bundle here — there is no server to read
+# it later, so the compose file passes the browser-visible API origin.
+ARG NEXT_PUBLIC_JEVE_API=http://127.0.0.1:8000
+ENV NEXT_PUBLIC_JEVE_API=$NEXT_PUBLIC_JEVE_API
+
+# `output: "export"` makes this emit plain files to apps/web/out
 RUN pnpm --filter @jeve/web build
 
-# Export static assets for Cloudflare Pages/Workers
-RUN pnpm --filter @jeve/web exec next build --experimental-build-mode compile
+# Runtime stage — a static file server, not a Next server
+FROM nginxinc/nginx-unprivileged:1.27-alpine
 
-# Production stage - minimal runtime for Cloudflare
-FROM node:24-alpine AS runner
+COPY --from=builder /app/apps/web/out /usr/share/nginx/html
+COPY infra/docker/nginx.web.conf /etc/nginx/conf.d/default.conf
 
-WORKDIR /app
+EXPOSE 8080
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@12.5.1 --activate
-
-# Copy built application
-COPY --from=builder /app/apps/web/.next ./apps/web/.next
-COPY --from=builder /app/apps/web/public ./apps/web/public
-COPY --from=builder /app/apps/web/package.json ./apps/web/
-COPY --from=builder /app/packages ./packages
-
-# Install only production dependencies
-RUN pnpm install --prod --frozen-lockfile --ignore-scripts
-
-# Create non-root user
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nextjs -u 1001
-USER nextjs
-
-EXPOSE 3000
-
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
-
-# For Cloudflare Workers, we need to export the app differently
-# This is a fallback for traditional deployment
-CMD ["pnpm", "--filter", "@jeve/web", "start"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/healthz || exit 1

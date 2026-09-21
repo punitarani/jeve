@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
@@ -20,42 +21,88 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from psycopg import Connection
 from psycopg.rows import DictRow
+from psycopg_pool import ConnectionPool
 
 from jeve import db
+from jeve.config import load_settings
 from jeve.core.clock import SimTime
+
+_pool: ConnectionPool[Connection[DictRow]] | None = None
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """One shared pool for every read endpoint (OPS-0001).
+
+    A fresh TLS connect per request is a hundred milliseconds of handshake the
+    caller pays for; a pool pays it once. The sim daemon is untouched — its
+    writer lock is a session lock and must ride a dedicated connection.
+    """
+
+    global _pool
+    pool = db.connect_pool()
+    await asyncio.to_thread(pool.open)
+    _pool = pool
+    try:
+        yield
+    finally:
+        _pool = None
+        await asyncio.to_thread(pool.close)
+
 
 app = FastAPI(
     title="jeve",
     summary="A continuously-running simulation of a small interconnected economy.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
-# Single instance, no auth, localhost only — a stated constraint.
-#
-# Any local port, not a fixed list: the dev app is on 3000, the end-to-end run
-# uses another to avoid colliding with it, and someone will pick a third. A
-# hard-coded port produces a page that renders from the server and then fails
-# every client fetch, which reads as a broken app rather than a CORS rule.
+# No auth — the browser is the only client, so the origin list is the guard.
+# JEVE_CORS_ORIGINS names the deployed frontends; without it, any localhost
+# port (the dev app on 3000, e2e on another, whatever someone picks next — a
+# hard-coded port reads as a broken app, not a CORS rule).
+_cors_origins = load_settings().cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=list(_cors_origins),
+    allow_origin_regex=(
+        None if _cors_origins else r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"
+    ),
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
 
+@contextmanager
+def _db() -> Iterator[Connection[DictRow]]:
+    """One pooled, autocommit connection for a read.
+
+    Autocommit because every reader here is single-statement: an open read
+    transaction holds locks the daemon waits on for ever, and holds a pooled
+    slot nobody else can use.
+    """
+
+    if _pool is not None:
+        with _pool.connection() as conn:
+            yield conn
+    else:
+        # Tests without a lifespan, and one-off scripts, still work.
+        with db.connect(autocommit=True) as conn:
+            yield conn
+
+
 def _conn() -> Iterator[Connection[DictRow]]:
-    with db.connect() as connection:
+    with _db() as connection:
         yield connection
 
 
 def _rows(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-    with db.connect() as conn:
+    with _db() as conn:
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
 def _row(sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
-    with db.connect() as conn:
+    with _db() as conn:
         found = conn.execute(sql, params).fetchone()
         return dict(found) if found else None
 
@@ -74,7 +121,10 @@ def health() -> JSONResponse:
     """
 
     try:
-        with db.connect() as conn:
+        # Deliberately off-pool: a wedged pool and an unreachable database are
+        # different failures, and this probe answers the question "can the
+        # app serve at all" — which a borrowed connection could only hedge.
+        with db.connect(autocommit=True) as conn:
             conn.execute("SELECT 1")
         return JSONResponse({"ok": True})
     except Exception as error:  # reporting any failure is this endpoint's job
@@ -85,7 +135,7 @@ def health() -> JSONResponse:
 def state() -> dict[str, object]:
     """Everything the dashboard needs for a first paint, in one read."""
 
-    with db.connect() as conn:
+    with _db() as conn:
         # The heartbeat's age is taken in SQL: this process may not read the
         # wall clock, and the database's `now()` is the clock the beat was
         # written with.
@@ -189,7 +239,12 @@ def _health(meta: dict[str, Any]) -> dict[str, object]:
     """
 
     age = meta["heartbeat_age_s"]
-    expected_alive = meta["status"] in ("running", "waiting_on_model", "paused_budget")
+    expected_alive = meta["status"] in (
+        "running",
+        "waiting_on_model",
+        "waiting_on_budget",
+        "paused_budget",
+    )
     return {
         "heartbeat_age_s": None if age is None else round(float(age), 1),
         "lag_s": round(float(meta["lag_s"]), 2),
@@ -358,7 +413,7 @@ def economics() -> dict[str, object]:
     calls this world needed, whether they were live or replayed.
     """
 
-    with db.connect() as conn:
+    with _db() as conn:
         counts = conn.execute(
             "SELECT (SELECT count(*) FROM persons) AS persons, "
             "       (SELECT count(*) FROM orgs) AS orgs, "
@@ -519,7 +574,7 @@ def world_map() -> dict[str, object]:
 def world_agents() -> dict[str, object]:
     """The current frame: where every member of staff is, and how they got there."""
 
-    with db.connect() as conn:
+    with _db() as conn:
         meta = conn.execute(
             "SELECT sim_time, tick_seq, status FROM sim_meta"
         ).fetchone()
@@ -569,7 +624,7 @@ def world_agent(person_id: str) -> dict[str, object]:
 
     from jeve.decide.questions import _TRAIT_WORDS, trait_words
 
-    with db.connect() as conn:
+    with _db() as conn:
         person = conn.execute(
             "SELECT p.id, p.name, p.org_id, p.role, p.traits, o.name AS org_name, "
             "       s.zone, s.mood "
@@ -618,31 +673,35 @@ def world_agent(person_id: str) -> dict[str, object]:
         "trait_words": {
             k: trait_words(k, v) for k, v in traits.items() if k in _TRAIT_WORDS
         },
-        "last_decision": None
-        if decision is None
-        else {
-            "id": int(decision["id"]),
-            "sim_time": int(decision["sim_time"]),
-            "label": SimTime(int(decision["sim_time"])).label(),
-            "question_set": decision["question_set"],
-            "source": decision["source"],
-            "model": decision["model"],
-            "chosen": decision["chosen"],
-            "distributions": decision["distributions"],
-            "draws": decision["draws"],
-        },
-        "last_encounter": None
-        if met is None or other_name is None
-        else {
-            "seq": int(met["seq"]),
-            "label": SimTime(int(met["sim_time"])).label(),
-            "with_id": other_name[0],
-            "with_name": other_name[1],
-            "zone": met["payload"]["zone"],
-            "topic": met["payload"]["topic"],
-            "initiated": met["payload"]["a"] == person_id,
-            "led_to": sorted(met["led_to"] or []),
-        },
+        "last_decision": (
+            None
+            if decision is None
+            else {
+                "id": int(decision["id"]),
+                "sim_time": int(decision["sim_time"]),
+                "label": SimTime(int(decision["sim_time"])).label(),
+                "question_set": decision["question_set"],
+                "source": decision["source"],
+                "model": decision["model"],
+                "chosen": decision["chosen"],
+                "distributions": decision["distributions"],
+                "draws": decision["draws"],
+            }
+        ),
+        "last_encounter": (
+            None
+            if met is None or other_name is None
+            else {
+                "seq": int(met["seq"]),
+                "label": SimTime(int(met["sim_time"])).label(),
+                "with_id": other_name[0],
+                "with_name": other_name[1],
+                "zone": met["payload"]["zone"],
+                "topic": met["payload"]["topic"],
+                "initiated": met["payload"]["a"] == person_id,
+                "led_to": sorted(met["led_to"] or []),
+            }
+        ),
     }
 
 
@@ -652,7 +711,7 @@ def org_detail(org_id: str) -> dict[str, object]:
 
     from jeve.world.map import ORG_ZONE
 
-    with db.connect() as conn:
+    with _db() as conn:
         org = conn.execute(
             "SELECT id, name, kind FROM orgs WHERE id = %s", (org_id,)
         ).fetchone()
@@ -754,7 +813,7 @@ async def encounter_dialogue(
     from jeve.llm import GENERATIVE_PREFERENCE, ChatRequest
 
     def look() -> tuple[Any, Any]:
-        with db.connect() as conn:
+        with _db() as conn:
             found = dialogue.load_encounter(conn, seq)
             if found is None:
                 return None, None
@@ -773,7 +832,15 @@ async def encounter_dialogue(
             body["reason"] = "not rendered yet"
         return body
 
-    if not load_settings().openrouter_api_key:
+    # GEN-0001/OPS-0001: this endpoint can spend money and the API is public.
+    # Production runs with JEVE_DIALOGUE_GENERATE=off — the frontend is
+    # read-only, so prose is rendered by whoever runs the daemon, not by
+    # anyone who can reach a URL.
+    settings = load_settings()
+    if not settings.dialogue_generate:
+        body["reason"] = "prose generation is off on this deployment"
+        return body
+    if not settings.openrouter_api_key:
         body["reason"] = "no API key here, so only the typed record is shown"
         return body
 
@@ -806,7 +873,7 @@ async def encounter_dialogue(
             continue
 
         def keep(model: str = model, reply: Any = reply) -> None:
-            with db.connect(autocommit=True) as conn:
+            with _db() as conn:
                 insert_call(
                     conn,
                     {
@@ -839,6 +906,85 @@ async def encounter_dialogue(
     return body
 
 
+# -- /stream: one poll for every viewer ------------------------------------
+
+_POLL_S = 0.5
+_BATCH = 500
+_QUEUE_DEPTH = 1000
+_KEEPALIVE_S = 5.0
+
+_RESYNC = None
+"""Sentinel in a subscriber queue: it fell 1000 events behind, so the frames it
+was holding are dropped and it refetches from its own cursor instead."""
+
+
+class _StreamHub:
+    """One database poll, fanning out to every subscriber.
+
+    Per-viewer polling was the audit's worst number: each open stream cost a
+    fresh TLS connection every half second. The poll loop owns `_high`, the
+    greatest `seq` it has fetched; a subscriber catches itself up to that
+    watermark directly, then takes what comes after off its queue. Dedup is a
+    `seq` comparison, so an item queued mid-catch-up can never repeat a frame.
+    """
+
+    def __init__(self) -> None:
+        self._task: asyncio.Task[None] | None = None
+        self._subs: set[asyncio.Queue[dict[str, Any] | None]] = set()
+        self._high = 0
+
+    def subscribe(self, after: int) -> asyncio.Queue[dict[str, Any] | None]:
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(
+            maxsize=_QUEUE_DEPTH
+        )
+        self._subs.add(queue)
+        alive = (
+            self._task is not None
+            and not self._task.done()
+            and self._task.get_loop() is asyncio.get_running_loop()
+        )
+        if not alive:
+            # Keep `_high`: a stale poller's watermark is still history this
+            # subscriber catches up itself, and two live pollers could push
+            # the same events out of order — a gap dedup cannot fix.
+            self._high = max(self._high, after)
+            self._task = asyncio.create_task(self._poll())
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue[dict[str, Any] | None]) -> None:
+        self._subs.discard(queue)
+
+    async def _poll(self) -> None:
+        while self._subs:
+            try:
+                rows = await asyncio.to_thread(
+                    _rows,
+                    "SELECT seq, sim_time, tick_seq, kind, actor_id, org_id, "
+                    "payload, causes FROM events "
+                    "WHERE seq > %s ORDER BY seq LIMIT %s",
+                    (self._high, _BATCH),
+                )
+            except Exception:
+                # A dead database is /health's story to tell; the stream just
+                # waits for it to come back.
+                await asyncio.sleep(_POLL_S)
+                continue
+            for row in rows:
+                row["label"] = SimTime(int(row["sim_time"])).label()
+                self._high = int(row["seq"])
+                for queue in self._subs:
+                    try:
+                        queue.put_nowait(row)
+                    except asyncio.QueueFull:
+                        while not queue.empty():
+                            queue.get_nowait()
+                        queue.put_nowait(_RESYNC)
+            await asyncio.sleep(_POLL_S)
+
+
+_hub = _StreamHub()
+
+
 @app.get("/stream")
 async def stream(
     after: int = Query(0, ge=0),
@@ -846,9 +992,8 @@ async def stream(
 ) -> StreamingResponse:
     """Server-sent events, resumed by `seq`.
 
-    Polling rather than LISTEN/NOTIFY for the MVP: one reader, a tick every few
-    seconds at most, and a poll cannot miss an event because the cursor is the
-    sequence itself.
+    Polling rather than LISTEN/NOTIFY: a tick every few seconds at most, and a
+    poll cannot miss an event because the cursor is the sequence itself.
 
     The connection closes itself after `lifetime_s`. Long-lived streams get
     killed by proxies and sleeping laptops anyway, and a server that recycles
@@ -858,29 +1003,38 @@ async def stream(
 
     async def source() -> AsyncIterator[str]:
         cursor = after
-        idle = 0
+        queue = _hub.subscribe(after)
         deadline = asyncio.get_running_loop().time() + lifetime_s
-        while asyncio.get_running_loop().time() < deadline:
-            rows = await asyncio.to_thread(
-                _rows,
-                "SELECT seq, sim_time, tick_seq, kind, actor_id, org_id, payload, "
-                "causes FROM events WHERE seq > %s ORDER BY seq LIMIT 200",
-                (cursor,),
-            )
-            if rows:
-                idle = 0
-                for row in rows:
-                    row["label"] = SimTime(int(row["sim_time"])).label()
-                    cursor = int(row["seq"])
-                    yield f"data: {json.dumps(row, default=str)}\n\n"
-            else:
-                idle += 1
-                # A comment frame keeps proxies and the browser from timing the
-                # connection out during a quiet stretch of sim-night.
-                if idle % 10 == 0:
+        try:
+            while asyncio.get_running_loop().time() < deadline:
+                if cursor < _hub._high:
+                    # Behind the watermark: catch up straight from the table.
+                    rows = await asyncio.to_thread(
+                        _rows,
+                        "SELECT seq, sim_time, tick_seq, kind, actor_id, "
+                        "org_id, payload, causes FROM events "
+                        "WHERE seq > %s ORDER BY seq LIMIT %s",
+                        (cursor, _BATCH),
+                    )
+                    for row in rows:
+                        row["label"] = SimTime(int(row["sim_time"])).label()
+                        cursor = int(row["seq"])
+                        yield f"data: {json.dumps(row, default=str)}\n\n"
+                    continue
+                try:
+                    item = await asyncio.wait_for(queue.get(), _KEEPALIVE_S)
+                except TimeoutError:
+                    # A comment frame keeps proxies and the browser from
+                    # timing the connection out during a quiet sim-night.
                     yield ": keepalive\n\n"
-            await asyncio.sleep(0.5)
-        yield ": reconnect\n\n"
+                    continue
+                if item is _RESYNC or int(item["seq"]) <= cursor:
+                    continue
+                cursor = int(item["seq"])
+                yield f"data: {json.dumps(item, default=str)}\n\n"
+            yield ": reconnect\n\n"
+        finally:
+            _hub.unsubscribe(queue)
 
     return StreamingResponse(
         source(),

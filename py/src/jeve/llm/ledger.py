@@ -1,20 +1,19 @@
-"""The spend ledger: append-only JSONL, locked, and the source of truth.
+"""The spend ledger: append-only, in Postgres, the source of truth (LLM-0007).
 
-Why a file and not a counter in memory: the ceiling has to survive a restart,
-and it has to hold when the simulation process and a one-off script are both
-issuing calls. `ops/spend.json` is a convenience checkpoint derived from this
-file; if the two ever disagree, this file wins.
+Why a table and not the JSONL file this replaced: the ceiling has to survive a
+container restart, and it has to be the same ledger for the daemon and the
+API. A file on a Fly volume is neither. `ops/spend.json` survives as a
+read-only checkpoint for `make spend`; the table is what wins any argument.
 
-Accounting rule: a call *reserves* its worst-case cost before it is issued and
-*settles* at the real cost afterwards. Effective spend counts settled costs
-plus every reservation that never settled. A crashed process therefore leaves
-its reservation standing, which over-counts rather than under-counts. That is
-the right direction for a ceiling.
+Accounting rule, unchanged: a call *reserves* its worst-case cost before it is
+issued and *settles* at the real cost afterwards. Effective spend counts
+settled costs plus every reservation that never settled. A crashed process
+therefore leaves its reservation standing, which over-counts rather than
+under-counts. That is the right direction for a ceiling.
 """
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import time
@@ -22,9 +21,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
-type EntryKind = Literal["reserve", "settle", "release", "baseline", "remote"]
+from psycopg import Connection
+from psycopg.rows import DictRow
+
+from jeve import db
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,146 +75,115 @@ class Spend:
         return abs(remote - self.local_usd) / self.local_usd
 
 
-@contextmanager
-def _locked(path: Path) -> Iterator[None]:
-    """Hold an exclusive advisory lock for the whole read-modify-write."""
+_READ_SQL = """
+SELECT
+  COALESCE(sum(amount_usd) FILTER (WHERE kind = 'settle'), 0) AS settled,
+  count(*) FILTER (WHERE kind = 'settle') AS calls,
+  count(*) FILTER (WHERE kind = 'settle'
+                    AND (detail->>'estimated')::boolean) AS estimated,
+  (SELECT COALESCE(sum(r.amount_usd), 0) FROM spend_entries r
+    WHERE r.kind = 'reserve' AND NOT EXISTS (
+      SELECT 1 FROM spend_entries s
+      WHERE s.call_id = r.call_id AND s.kind IN ('settle', 'release'))
+  ) AS reserved,
+  (SELECT amount_usd FROM spend_entries
+    WHERE kind = 'baseline' ORDER BY seq LIMIT 1) AS baseline,
+  (SELECT amount_usd FROM spend_entries
+    WHERE kind = 'remote' ORDER BY seq DESC LIMIT 1) AS remote,
+  (SELECT EXTRACT(EPOCH FROM ts) FROM spend_entries
+    WHERE kind = 'remote' ORDER BY seq DESC LIMIT 1) AS remote_at
+FROM spend_entries
+"""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    with open(lock_path, "a+") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+# "jevl" — distinct from the writer lock, so ledger serialisation never
+# contends with who is allowed to tick.
+LEDGER_LOCK_KEY = 0x6A65766C
 
 
 class SpendLedger:
-    """Append-only spend record shared by every process in the project."""
+    """Append-only spend record shared by every process on this database.
 
-    def __init__(self, path: Path, *, checkpoint: Path | None = None) -> None:
-        self._path = path
+    Holds one dedicated autocommit connection — accounting must not ride the
+    tick's transaction, because a rolled-back tick must not un-record money
+    that was actually spent. The connection opens lazily so constructing a
+    gateway without a database is still legal.
+    """
+
+    def __init__(
+        self,
+        conn: Connection[DictRow] | None = None,
+        *,
+        checkpoint: Path | None = None,
+    ) -> None:
+        self._conn = conn
         self._checkpoint = checkpoint
-        self._reset()
 
-    def _reset(self) -> None:
-        """Forget everything folded so far; the next read starts from byte 0."""
+    def _c(self) -> Connection[DictRow]:
+        if self._conn is None:
+            self._conn = db.connect_autocommit()
+        return self._conn
 
-        self._offset = 0
-        self._inode: int | None = None
-        self._settled = 0.0
-        self._calls = 0
-        self._estimated = 0
-        self._open: dict[str, float] = {}
-        self._baseline: float | None = None
-        self._remote: float | None = None
-        self._remote_at: float | None = None
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
-    @property
-    def path(self) -> Path:
-        return self._path
+    @contextmanager
+    def locked(self) -> Iterator[None]:
+        """Serialise a read-modify-write against every other ledger user.
 
-    def _append_locked(self, entry: dict[str, object]) -> None:
-        entry.setdefault("ts", time.time())
-        entry.setdefault("pid", os.getpid())
-        with open(self._path, "ab+") as handle:
-            # A process killed mid-write leaves a torn final line. Appending
-            # straight onto it would weld this entry to the fragment and lose
-            # both, so close the fragment off first.
-            size = handle.seek(0, os.SEEK_END)
-            if size > 0:
-                handle.seek(size - 1)
-                if handle.read(1) != b"\n":
-                    handle.write(b"\n")
-            handle.write((json.dumps(entry, sort_keys=True) + "\n").encode())
-
-    def _fold(self, entry: dict[str, object]) -> None:
-        kind = entry.get("kind")
-        if kind == "reserve":
-            self._open[str(entry["id"])] = float(str(entry["amount_usd"]))
-        elif kind == "settle":
-            self._open.pop(str(entry["id"]), None)
-            self._settled += float(str(entry["amount_usd"]))
-            self._calls += 1
-            if entry.get("estimated"):
-                self._estimated += 1
-        elif kind == "release":
-            self._open.pop(str(entry["id"]), None)
-        elif kind == "baseline":
-            self._baseline = float(str(entry["amount_usd"]))
-        elif kind == "remote":
-            self._remote = float(str(entry["amount_usd"]))
-            self._remote_at = float(str(entry["ts"]))
-
-    def _read_locked(self) -> Spend:
-        """Fold in whatever was appended since the last read.
-
-        Re-parsing the whole file on every call is quadratic in the number of
-        calls, and a night of decisions is tens of thousands of them. The file
-        stays the source of truth; this process only remembers how far into it
-        it has read. Every writer holds the same lock, so "up to the last
-        newline" is a consistent prefix.
+        `pg_advisory_xact_lock` is re-entrant in the session that holds it, so
+        a method called under an outer `locked()` joins that transaction
+        rather than deadlocking on itself.
         """
 
-        try:
-            stat = os.stat(self._path)
-        except FileNotFoundError:
-            self._reset()
-            return Spend(0.0, 0.0, 0, 0, None, None, None)
+        conn = self._c()
+        with conn.transaction():
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (LEDGER_LOCK_KEY,))
+            yield
 
-        if stat.st_ino != self._inode or stat.st_size < self._offset:
-            # Replaced or truncated underneath us: start again from the top.
-            self._reset()
-            self._inode = stat.st_ino
-
-        if stat.st_size > self._offset:
-            with open(self._path, "rb") as handle:
-                handle.seek(self._offset)
-                chunk = handle.read()
-            complete = chunk[: chunk.rfind(b"\n") + 1]
-            self._offset += len(complete)
-            for raw in complete.splitlines():
-                if not raw.strip():
-                    continue
-                try:
-                    entry = json.loads(raw)
-                except json.JSONDecodeError:
-                    # A torn line from a killed process. Everything around it
-                    # still counts.
-                    continue
-                if isinstance(entry, dict):
-                    self._fold(entry)
-
-        return Spend(
-            settled_usd=self._settled,
-            reserved_usd=sum(self._open.values()),
-            calls=self._calls,
-            estimated_calls=self._estimated,
-            baseline_usd=self._baseline,
-            remote_usd=self._remote,
-            remote_checked_at=self._remote_at,
+    def _append(
+        self,
+        kind: str,
+        call_id: str | None = None,
+        amount_usd: float | None = None,
+        **detail: object,
+    ) -> None:
+        self._c().execute(
+            "INSERT INTO spend_entries (pid, kind, call_id, amount_usd, detail) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (os.getpid(), kind, call_id, amount_usd, json.dumps(detail)),
         )
 
     def read(self) -> Spend:
-        with _locked(self._path):
-            return self._read_locked()
+        row = self._c().execute(_READ_SQL).fetchone()
+        assert row is not None  # aggregates always produce a row
+        return Spend(
+            settled_usd=float(row["settled"]),
+            reserved_usd=float(row["reserved"]),
+            calls=int(row["calls"]),
+            estimated_calls=int(row["estimated"]),
+            baseline_usd=(None if row["baseline"] is None else float(row["baseline"])),
+            remote_usd=None if row["remote"] is None else float(row["remote"]),
+            remote_checked_at=(
+                None if row["remote_at"] is None else float(row["remote_at"])
+            ),
+        )
 
     def reserve(
         self, call_id: str, amount_usd: float, *, purpose: str, model: str
     ) -> Spend:
         """Book worst-case cost and return spend *including* this reservation."""
 
-        with _locked(self._path):
-            self._append_locked(
-                {
-                    "kind": "reserve",
-                    "id": call_id,
-                    "amount_usd": round(amount_usd, 8),
-                    "purpose": purpose,
-                    "model": model,
-                }
+        with self.locked():
+            self._append(
+                "reserve",
+                call_id,
+                round(amount_usd, 8),
+                purpose=purpose,
+                model=model,
             )
-            spend = self._read_locked()
+            spend = self.read()
         self._write_checkpoint(spend)
         return spend
 
@@ -230,51 +200,45 @@ class SpendLedger:
         latency_s: float = 0.0,
         provider: str | None = None,
     ) -> Spend:
-        with _locked(self._path):
-            self._append_locked(
-                {
-                    "kind": "settle",
-                    "id": call_id,
-                    "amount_usd": round(amount_usd, 8),
-                    "estimated": estimated,
-                    "model": model,
-                    "outcome": outcome,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "latency_s": round(latency_s, 4),
-                    "provider": provider,
-                }
+        with self.locked():
+            self._append(
+                "settle",
+                call_id,
+                round(amount_usd, 8),
+                estimated=estimated,
+                model=model,
+                outcome=outcome,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_s=round(latency_s, 4),
+                provider=provider,
             )
-            spend = self._read_locked()
+            spend = self.read()
         self._write_checkpoint(spend)
         return spend
 
     def release(self, call_id: str, *, reason: str) -> Spend:
         """Give a reservation back. Only for requests that were never billed."""
 
-        with _locked(self._path):
-            self._append_locked({"kind": "release", "id": call_id, "reason": reason})
-            spend = self._read_locked()
+        with self.locked():
+            self._append("release", call_id, reason=reason)
+            spend = self.read()
         self._write_checkpoint(spend)
         return spend
 
     def record_baseline(self, remote_usage_usd: float) -> Spend:
-        with _locked(self._path):
-            spend = self._read_locked()
+        with self.locked():
+            spend = self.read()
             if spend.baseline_usd is None:
-                self._append_locked(
-                    {"kind": "baseline", "amount_usd": round(remote_usage_usd, 8)}
-                )
-                spend = self._read_locked()
+                self._append("baseline", amount_usd=round(remote_usage_usd, 8))
+                spend = self.read()
         self._write_checkpoint(spend)
         return spend
 
     def record_remote(self, remote_usage_usd: float) -> Spend:
-        with _locked(self._path):
-            self._append_locked(
-                {"kind": "remote", "amount_usd": round(remote_usage_usd, 8)}
-            )
-            spend = self._read_locked()
+        with self.locked():
+            self._append("remote", amount_usd=round(remote_usage_usd, 8))
+            spend = self.read()
         self._write_checkpoint(spend)
         return spend
 

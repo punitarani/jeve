@@ -6,15 +6,23 @@ Every test here uses a mock transport. The one real call lives in
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from psycopg import Connection
+from psycopg.rows import DictRow
 
 from jeve.config import Settings
-from jeve.errors import BudgetExceededError, ResponseShapeError, TransportError
+from jeve.errors import (
+    BudgetExceededError,
+    ProviderBudgetError,
+    ResponseShapeError,
+    TransportError,
+)
 from jeve.llm import (
     GENERATIVE_PREFERENCE,
     ChatMessage,
@@ -32,6 +40,12 @@ from tests.test_catalog import DECISION_MODELS, DEFAULT_MODELS
 
 JEV = "typesafe/jev-1.13"
 GLM = "z-ai/glm-5.3-flash"
+
+
+@pytest.fixture(autouse=True)
+def _clean_ledger(spend_table: Connection[DictRow]) -> None:
+    """The ledger is a Postgres table (LLM-0007): every call here books."""
+
 
 DECISION_BODY: dict[str, Any] = {
     "id": "gen-1",
@@ -414,6 +428,115 @@ async def test_a_429_is_retried_and_books_nothing(tmp_path: Path) -> None:
     assert spend.estimated_calls == 0
     assert spend.reserved_usd == 0.0
     assert spend.settled_usd == pytest.approx(DECISION_BODY["usage"]["cost"])
+
+
+def test_retry_after_parses_seconds_and_http_dates() -> None:
+    """Both legal forms must be honoured (B1/B2 in the deployment audit)."""
+
+    from datetime import UTC, datetime, timedelta
+    from email.utils import format_datetime
+
+    from jeve.llm.gateway import Gateway
+
+    assert Gateway._retry_after_seconds("30") == pytest.approx(30.0)
+    assert Gateway._retry_after_seconds("0") == 0.0
+    assert Gateway._retry_after_seconds("garbage") is None
+
+    in_a_minute = datetime.now(UTC) + timedelta(seconds=60)
+    parsed = Gateway._retry_after_seconds(format_datetime(in_a_minute))
+    assert parsed is not None and 50 < parsed <= 61
+    past = Gateway._retry_after_seconds(
+        format_datetime(datetime.now(UTC) - timedelta(seconds=5))
+    )
+    assert past == 0.0
+
+
+async def test_a_402_is_budget_not_weather(tmp_path: Path) -> None:
+    """A spent account cap is not an outage: never retried, never billed."""
+
+    recorder = Recorder(
+        decisions=iter(
+            [
+                httpx.Response(402, text="insufficient credits"),
+                httpx.Response(200, json=DECISION_BODY),
+            ]
+        )
+    )
+    gateway = await _gateway(tmp_path, recorder)
+
+    with pytest.raises(ProviderBudgetError):
+        await gateway.decide(_decision_request())
+    spend = gateway.guard.state().spend
+    await gateway.aclose()
+
+    # One attempt only — a retry cannot refill credit — and it booked
+    # nothing, since the request never reached inference.
+    assert len(recorder.requests) == 1
+    assert spend.effective_usd == 0.0
+
+
+async def test_rate_limit_headers_hold_the_next_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`x-ratelimit-remaining: 0` is a promise the next call fails too."""
+
+    reset = 9_999_999_999.0  # far-future epoch: the wait is what we assert
+    recorder = Recorder(
+        decisions=httpx.Response(
+            200,
+            json=DECISION_BODY,
+            headers={
+                "x-ratelimit-remaining": "0",
+                "x-ratelimit-reset": str(reset),
+            },
+        )
+    )
+    gateway = await _gateway(tmp_path, recorder)
+    await gateway.decide(_decision_request())
+    assert gateway._throttle_until == pytest.approx(reset)
+
+    waits: list[float] = []
+
+    async def spy(delay: float) -> None:
+        waits.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", spy)
+    await gateway.decide(_decision_request())
+    await gateway.aclose()
+
+    # The second call waited out the reset rather than spending a retry.
+    assert waits and waits[0] > 60
+
+
+async def test_retry_after_is_not_clamped_to_the_backoff_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider asking for 30s must not be retried at 8s — it just fails again."""
+
+    import asyncio
+
+    from jeve.llm.gateway import Gateway
+
+    waits: list[float] = []
+
+    async def spy(delay: float) -> None:
+        waits.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", spy)
+    gateway = Gateway(
+        settings=_settings(tmp_path),
+        transport=Recorder().transport(),
+        backoff_base_s=0.0,
+    )
+    try:
+        await gateway._backoff(0, "30")
+        await gateway._backoff(0, None)
+    finally:
+        await gateway.aclose()
+
+    assert waits[0] >= 30.0
+    # With no Retry-After, the usual sub-second base applies.
+    assert waits[1] < 1.0
 
 
 async def test_the_run_cap_stops_a_process_before_the_ladder_would(

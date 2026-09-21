@@ -71,36 +71,39 @@ class BudgetGuard:
         must eventually settle or release `call_id`.
         """
 
-        before = self._ledger.read()
-        used = before.effective_usd
+        # LLM-0007: check and reserve in one serialised transaction. A read
+        # outside the lock could pass for two processes at once, and both
+        # reservations would sail the total past the ceiling.
+        with self._ledger.locked():
+            used = self._ledger.read().effective_usd
 
-        if used >= self._settings.hard_ceiling_usd:
-            raise BudgetExceededError(
-                f"hard ceiling reached: ${used:.4f} of "
-                f"${self._settings.hard_ceiling_usd:.2f}. No further calls."
-            )
-        if purpose == "explore" and used >= self._settings.explore_ceiling_usd:
-            raise BudgetExceededError(
-                f"exploratory work is closed: ${used:.4f} spent, threshold "
-                f"${self._settings.explore_ceiling_usd:.2f}. Gate work only."
-            )
-        if used >= self._settings.halt_ceiling_usd:
-            raise BudgetExceededError(
-                f"halt threshold reached: ${used:.4f} of "
-                f"${self._settings.halt_ceiling_usd:.2f}. Write the handoff."
-            )
+            if used >= self._settings.hard_ceiling_usd:
+                raise BudgetExceededError(
+                    f"hard ceiling reached: ${used:.4f} of "
+                    f"${self._settings.hard_ceiling_usd:.2f}. No further calls."
+                )
+            if purpose == "explore" and used >= self._settings.explore_ceiling_usd:
+                raise BudgetExceededError(
+                    f"exploratory work is closed: ${used:.4f} spent, threshold "
+                    f"${self._settings.explore_ceiling_usd:.2f}. Gate work only."
+                )
+            if used >= self._settings.halt_ceiling_usd:
+                raise BudgetExceededError(
+                    f"halt threshold reached: ${used:.4f} of "
+                    f"${self._settings.halt_ceiling_usd:.2f}. Write the handoff."
+                )
 
-        projected = used + worst_case_usd
-        if projected > self._settings.hard_ceiling_usd:
-            raise BudgetExceededError(
-                f"call would breach the hard ceiling: ${used:.4f} spent, "
-                f"${worst_case_usd:.4f} worst case, "
-                f"${self._settings.hard_ceiling_usd:.2f} ceiling."
-            )
+            projected = used + worst_case_usd
+            if projected > self._settings.hard_ceiling_usd:
+                raise BudgetExceededError(
+                    f"call would breach the hard ceiling: ${used:.4f} spent, "
+                    f"${worst_case_usd:.4f} worst case, "
+                    f"${self._settings.hard_ceiling_usd:.2f} ceiling."
+                )
 
-        return self._ledger.reserve(
-            call_id, worst_case_usd, purpose=purpose, model=model
-        )
+            return self._ledger.reserve(
+                call_id, worst_case_usd, purpose=purpose, model=model
+            )
 
     def needs_remote_check(self, *, now: float | None = None) -> bool:
         spend = self._ledger.read()

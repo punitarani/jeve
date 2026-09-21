@@ -25,6 +25,16 @@ class TransportError(JeveError):
     """The request did not complete. May or may not have been billed."""
 
 
+class ProviderBudgetError(JeveError):
+    """The upstream refused for money (HTTP 402): the account cap is spent.
+
+    Unbilled — the request never reached inference — and never retried by the
+    gateway, because a two-minute backoff cannot refill credits. It is also not
+    a halt: the cap resets on its billing window, so the daemon waits it out
+    (`waiting_on_budget`, SIM-0003) instead of exiting for an operator.
+    """
+
+
 class ModelVersionDriftError(JeveError):
     """A different build of the model answered than the one the repo is pinned to.
 

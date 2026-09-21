@@ -299,6 +299,67 @@ def test_waiting_can_be_given_a_limit(
     assert str(row["last_error"]).startswith("TransportError")
 
 
+def test_a_spent_upstream_budget_waits_and_says_so(
+    conn: Connection[DictRow],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """SIM-0003: a 402 is not weather — it waits on a minutes clock, still
+    beating, and the same tick is retried when credit returns. A run with
+    `--max-wait` gives up deliberately, not on an exception."""
+
+    from jeve.errors import ProviderBudgetError
+
+    assert daemon.main(["--seed-world", "--until", str(at(0, 10)), *FLAT_OUT]) == 0
+
+    seen: list[tuple[str, str | None]] = []
+    real_status = daemon._status
+
+    def status(c: Connection[DictRow], value: str, error: str | None = None) -> None:
+        seen.append((value, error))
+        real_status(c, value, error)
+
+    monkeypatch.setattr(daemon, "_status", status)
+    _weather(monkeypatch, {3: ProviderBudgetError("/decisions returned 402")})
+    code = daemon.main(["--until", str(at(0, 12)), "--budget-wait", "0.01", *FLAT_OUT])
+
+    assert code == 0
+    waits = [error for value, error in seen if value == "waiting_on_budget"]
+    assert len(waits) == 1
+    assert waits[0] is not None and waits[0].startswith("ProviderBudgetError")
+    assert ("running", None) in seen
+    assert sim_time(conn) == at(0, 12)
+    assert "waiting on the upstream budget" in capsys.readouterr().err
+
+
+def test_a_budget_wait_can_also_be_given_a_limit(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--max-wait` covers the upstream cap too: gate runs cannot hang."""
+
+    from jeve.errors import ProviderBudgetError
+
+    always = {n: ProviderBudgetError("402") for n in range(1, 500)}
+    _weather(monkeypatch, always)
+    code = daemon.main(
+        [
+            "--seed-world",
+            "--until",
+            str(at(0, 12)),
+            "--max-wait",
+            "0.05",
+            "--budget-wait",
+            "0.05",
+            *FLAT_OUT,
+        ]
+    )
+
+    assert code == 6
+    row = conn.execute("SELECT status, last_error FROM sim_meta").fetchone()
+    assert row is not None and row["status"] == "halted"
+    assert str(row["last_error"]).startswith("ProviderBudgetError")
+
+
 def test_a_sleeping_daemon_still_has_a_pulse(conn: Connection[DictRow]) -> None:
     """Most of a daemon's life is a sleep loop. If only ticks beat, every night
     and every budget pause reads as a dead process."""

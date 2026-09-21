@@ -26,6 +26,8 @@ WORKDIR /app
 # Copy dependencies and source
 COPY --from=builder /app/.venv ./.venv
 COPY --from=builder /app/src ./src
+COPY py/migrations ./migrations
+COPY infra/docker/sim-entrypoint.sh ./sim-entrypoint.sh
 
 # Create non-root user
 RUN addgroup -g 1001 -S python
@@ -40,4 +42,7 @@ ENV PYTHONPATH="/app/src"
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD pgrep -f "python -m jeve.sim" || exit 1
 
-CMD ["python", "-m", "jeve.sim"]
+# The wrapper maps deliberate halts (exits 4-7) to a clean exit, so
+# `restart: on-failure` means what it says. Args are env-driven via
+# JEVE_POLICY / JEVE_CALLS; compose sets them.
+CMD ["sh", "/app/sim-entrypoint.sh"]

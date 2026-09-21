@@ -25,6 +25,7 @@ from jeve.config import Settings, load_settings
 from jeve.errors import (
     BudgetExceededError,
     ModelResolutionError,
+    ProviderBudgetError,
     ResponseShapeError,
     TransportError,
 )
@@ -70,8 +71,9 @@ MIN_RESERVATION_USD = 0.0005
 
 # Statuses where the request was rejected before any inference happened, so the
 # reservation can be given back. Anything else settles at the reserved amount:
-# we cannot prove we were not billed.
-UNBILLED_STATUSES = frozenset({400, 401, 403, 404, 422, 429})
+# we cannot prove we were not billed. 402 belongs here — OpenRouter refuses
+# before inference when the account cap is spent — and it gets its own raise.
+UNBILLED_STATUSES = frozenset({400, 401, 402, 403, 404, 422, 429})
 
 # Worth another attempt. 429 is rejected before inference, so its reservation is
 # released; a 5xx or a dropped connection may have been billed, so that attempt
@@ -82,6 +84,10 @@ RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504, *range(520, 530)})
 MAX_ATTEMPTS = 4
 BACKOFF_BASE_S = 0.5
 BACKOFF_CAP_S = 8.0
+# How long a server's own "wait this long" is honoured inside the gateway.
+# Past this, the call surfaces as weather and the daemon's minutes-scale
+# retry takes over (SIM-0002) — matching its cap means neither loop lies.
+RETRY_AFTER_CAP_S = 120.0
 
 
 def _approx_tokens(payload: object) -> int:
@@ -112,9 +118,7 @@ class Gateway:
         self._run_reserved_usd = 0.0
         self._backoff_base_s = backoff_base_s
         self._generative: tuple[str, ...] = ()
-        self._ledger = SpendLedger(
-            self._settings.ledger_path, checkpoint=self._settings.spend_path
-        )
+        self._ledger = SpendLedger(checkpoint=self._settings.spend_path)
         self._guard = BudgetGuard(self._settings, self._ledger)
         self._client = httpx.AsyncClient(
             base_url=self._settings.openrouter_base_url,
@@ -131,6 +135,7 @@ class Gateway:
         self._catalog: ModelCatalog | None = None
         self._call_seq = 0
         self._remote_lock = asyncio.Lock()
+        self._throttle_until = 0.0
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -181,6 +186,7 @@ class Gateway:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+        self._ledger.close()
 
     @property
     def guard(self) -> BudgetGuard:
@@ -277,8 +283,12 @@ class Gateway:
 
         The ladder protects the night; this protects one run from a loop. It
         counts in-flight reservations for the same reason the ladder does.
+        A cap of zero means none — the deployed daemon is governed by the
+        daily budget and OpenRouter's own ceiling instead (LLM-0007).
         """
 
+        if self._run_cap_usd <= 0:
+            return
         projected = self._run_spent_usd + self._run_reserved_usd + worst_case_usd
         if projected > self._run_cap_usd:
             raise BudgetExceededError(
@@ -286,13 +296,55 @@ class Gateway:
                 f"process, cap ${self._run_cap_usd:.2f} (JEVE_RUN_CAP_USD)."
             )
 
+    def _note_rate_limit(self, headers: httpx.Headers) -> None:
+        """Believe a provider that says the account is out of requests.
+
+        `x-ratelimit-remaining: 0` with a reset time is a promise the next
+        call fails too; holding it here means the throttled call waits rather
+        than spending one of its retries discovering that.
+        """
+
+        remaining = headers.get("x-ratelimit-remaining")
+        reset = headers.get("x-ratelimit-reset")
+        if remaining is None or reset is None:
+            return
+        try:
+            remaining_n = float(remaining)
+            reset_at = float(reset)
+        except ValueError:
+            return
+        if remaining_n > 0:
+            return
+        # Epoch seconds or milliseconds, depending on the provider.
+        if reset_at > 1e12:
+            reset_at /= 1000.0
+        self._throttle_until = max(self._throttle_until, reset_at)
+
+    @staticmethod
+    def _retry_after_seconds(value: str) -> float | None:
+        """Parse Retry-After: delta-seconds or an HTTP-date."""
+
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        try:
+            from email.utils import parsedate_to_datetime
+
+            when = parsedate_to_datetime(value)
+        except TypeError, ValueError:
+            return None
+        return max(0.0, when.timestamp() - time.time())
+
     async def _backoff(self, attempt: int, retry_after: str | None) -> None:
         delay = min(BACKOFF_CAP_S, self._backoff_base_s * (2**attempt))
         if retry_after is not None:
-            try:
-                delay = max(delay, min(BACKOFF_CAP_S, float(retry_after)))
-            except ValueError:
-                pass
+            asked = self._retry_after_seconds(retry_after)
+            if asked is not None:
+                # The server's word outranks our schedule. Capped at the
+                # daemon's own patience: past that the tick retries under
+                # waiting_on_model, which is honest about what's happening.
+                delay = max(delay, min(RETRY_AFTER_CAP_S, asked))
         # Full jitter on top: eight workers hitting a limit together must not
         # come back together.
         await asyncio.sleep(delay + random.uniform(0.0, delay))
@@ -344,6 +396,9 @@ class Gateway:
     ) -> tuple[dict[str, Any], float]:
         await self._sync_remote()
         self._check_run_cap(worst_case_usd)
+        throttled_for = self._throttle_until - time.time()
+        if throttled_for > 0:
+            await asyncio.sleep(min(RETRY_AFTER_CAP_S, throttled_for))
         self._guard.authorise(
             call_id, worst_case_usd=worst_case_usd, purpose=purpose, model=model
         )
@@ -379,6 +434,8 @@ class Gateway:
 
             latency = time.perf_counter() - started
 
+            self._note_rate_limit(response.headers)
+
             if response.status_code != 200:
                 status = response.status_code
                 if status in UNBILLED_STATUSES:
@@ -393,6 +450,12 @@ class Gateway:
                         latency_s=latency,
                     )
                     self._run_spent_usd += worst_case_usd
+                if status == 402:
+                    # LLM-0007: the account cap is spent. Retrying inside the
+                    # gateway is pointless — the daemon waits out the window.
+                    raise ProviderBudgetError(
+                        f"{path} returned 402: {response.text[:400]}"
+                    )
                 failure = TransportError(
                     f"{path} returned {status}: {response.text[:400]}"
                 )

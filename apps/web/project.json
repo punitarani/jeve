@@ -10,6 +10,10 @@
 			"continuous": true
 		},
 		"build": { "command": "pnpm --filter @jeve/web build" },
+		"test": {
+			"command": "test -f apps/web/out/index.html && (test -f apps/web/out/world/index.html || test -f apps/web/out/world.html)",
+			"dependsOn": ["build"]
+		},
 		"typecheck": { "command": "tsc --noEmit -p apps/web/tsconfig.json" },
 		"e2e": {
 			"command": "pnpm --filter @jeve/web exec playwright test",

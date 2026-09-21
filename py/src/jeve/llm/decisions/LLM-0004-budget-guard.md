@@ -1,13 +1,14 @@
 ---
+
 id: LLM-0004
 title: Guard spend with reservations in a locked ledger at the repo root
-status: accepted
+status: superseded
 date: 2026-09-20
 deciders: ["claude"]
 scope: ["py/src/jeve/llm/budget.py", "py/src/jeve/llm/ledger.py"]
 tags: ["cost", "safety", "agent-decided"]
 supersedes: []
-superseded-by: null
+superseded-by: "LLM-0007"
 relates-to: ["CORE-0002", "LLM-0001"]
 confirmation: "cd py && uv run pytest tests/test_ledger_and_budget.py"
 ---

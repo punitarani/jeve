@@ -15,7 +15,14 @@ class Clock(BaseModel):
     weekday: int
     in_office_hours: bool
     tick_seq: int
-    status: Literal["running", "paused", "paused_budget", "waiting_on_model", "halted"]
+    status: Literal[
+        "running",
+        "paused",
+        "paused_budget",
+        "waiting_on_model",
+        "waiting_on_budget",
+        "halted",
+    ]
     speed: float
     run_id: str
 

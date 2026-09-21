@@ -103,7 +103,10 @@ export NEXT_PUBLIC_JEVE_API="http://127.0.0.1:${API_PORT}"
 export JEVE_NEXT_DIST=".next-e2e"
 pnpm --filter @jeve/web exec next build > "$LOGS/web-build.log" 2>&1 \
   || { tail -40 "$LOGS/web-build.log"; exit 1; }
-pnpm --filter @jeve/web exec next start --port "$WEB_PORT" > "$LOGS/web.log" 2>&1 &
+# WEB-0005: `output: "export"` emits plain files into the dist dir — with
+# JEVE_NEXT_DIST that is apps/web/.next-e2e, not out/ — and there is no
+# `next start`, so serve the directory the way the production static hosts do.
+node scripts/static-serve.mjs "apps/web/${JEVE_NEXT_DIST}" --port "$WEB_PORT" > "$LOGS/web.log" 2>&1 &
 WEB_PID=$!
 for _ in $(seq 1 60); do
   curl -sf "http://localhost:${WEB_PORT}/" >/dev/null && break || sleep 1

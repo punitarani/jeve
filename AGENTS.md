@@ -84,8 +84,10 @@ This project uses nested AGENTS.md files for area-specific standards:
 ruff enforces it. The gateway reserves worst-case cost before issuing, settles
 at the real cost, and refuses past the ceiling. Thresholds: $12 stops
 exploratory work, $16 halts everything and triggers the handoff, $20 is the
-backstop. State is in `ops/ledger.jsonl` and survives restarts — do not add a
-second path to a model, and do not reset the ledger.
+backstop. State is the `spend_entries` table in Postgres (LLM-0007), shared by
+the daemon and the API and durable across restarts — do not add a second path
+to a model, and do not reset the ledger. `ops/spend.json` is a read-only
+checkpoint for humans; the table wins any argument.
 
 ## Verify
 
@@ -251,18 +253,6 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
-### LLM-0004: Guard spend with reservations in a locked ledger at the repo root
-
-**Status**: accepted (2026-09-20)  
-**Scope**: `py/src/jeve/llm/budget.py`, `py/src/jeve/llm/ledger.py`  
-**Tags**: cost, safety, agent-decided
-
-Every call reserves its worst-case cost in an append-only locked ledger before it is issued and settles at the real cost afterwards; effective spend counts settled costs plus every reservation that never settled.
-
-This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
-
----
-
 ### LLM-0006: Dialogue model order by measured reliability, and 52x is retryable
 
 **Status**: accepted (2026-09-20)  
@@ -270,6 +260,30 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: openrouter, models, retries, agent-decided
 
 The generative order is GLM 5.3 Flash, Gemini 3.8 Flash, GPT-5.6 Luna, DeepSeek V4 Pro (0813), DeepSeek V4.1 Flash. Per-path resolution from LLM-0005 stands: a decision slug that does not resolve is fatal, a generative slug that does not resolve is skipped.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### LLM-0007: the spend ledger lives in Postgres and OpenRouter holds the ceiling
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `py/src/jeve/llm/ledger.py`, `py/src/jeve/llm/budget.py`, `py/src/jeve/llm/gateway.py`, `py/migrations/0008_spend_ledger.sql`, `py/tests/test_ledger_and_budget.py`  
+**Tags**: cost, safety, deployment, agent-decided
+
+`spend_ledger` is an append-only table; `SpendLedger` keeps its reserve/settle/release/baseline/remote API with `read()` as SQL aggregation, and `authorise` holds a transaction-level advisory lock across read+reserve. Ceilings are env-tunable and set high; OpenRouter's 402 — surfaced as `ProviderBudgetError` — is the real stop, and the daemon answers it with `waiting_on_budget`, not a halt (SIM-0003).
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### OPS-0001: deployment topology — fly process groups, workers static assets, doppler secrets
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `infra/**`, `fly.toml`, `docker-compose.prod.yml`, `apps/web/wrangler.toml`, `.github/workflows/ci.yml`, `Makefile`  
+**Tags**: deployment, fly, cloudflare, doppler, agent-decided
+
+`fly.toml` is one app `jeve-backend` with process groups `api` (the only ingress, on `JEVE_DATABASE_POOLED_URL` when set, else the direct DSN) and `sim` (`sim-entrypoint.sh`, `on-failure` restarts, no service). The web app is an assets-only Worker serving `out/`. Secrets live in Doppler projects `app`/`infra`/`worker` and land as Fly secrets and GitHub secrets; the sim's Postgres URL must be a *direct* connection because the writer lock is a session-level advisory lock. The frontend is read-only, so the dialogue endpoint's spend path is off in production (`JEVE_DIALOGUE_GENERATE=off`).
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 
@@ -294,6 +308,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: daemon, robustness, backpressure, agent-decided
 
 The run loop treats `TransportError`, `ResponseShapeError` and `TimeoutError` as weather. The tick is rolled back, `sim_meta.status` becomes `waiting_on_model` with the error's class and first line in `last_error`, and the same tick is tried again after a jittered backoff that doubles to a cap of two minutes. The first tick that succeeds sets `running` and clears the error. Budget exhaustion and a replay miss keep their own statuses and exits: they are not weather, and retrying them cannot help.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### SIM-0003: waiting on budget is a status, and deliberate halts exit clean
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `py/src/jeve/sim/daemon.py`, `py/migrations/0007_waiting_on_budget.sql`, `infra/docker/sim-entrypoint.sh`, `py/tests/test_daemon.py`  
+**Tags**: daemon, robustness, cost, agent-decided
+
+A 402 raises `ProviderBudgetError`; the daemon rolls the tick back, writes `waiting_on_budget` to `sim_meta`, beats from the sleep loop, and retries the same tick on a minutes-scale interval (`JEVE_BUDGET_WAIT_S`). In the container, `sim-entrypoint.sh` maps exits 4–7 to 0, so `on-failure` restarts crashes and leaves deliberate halts down; the reason stays in `sim_meta`, which is where an operator looks anyway.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 
@@ -330,6 +356,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: three.js, rendering, lighting, characters, agent-decided
 
 The look is computed, not post-processed: occlusion and colour jitter are baked per corner when the voxels are built, sky and sun are a pure function of the sim clock, shadow maps are for real GPUs only, and people are posed from four optional fields on the scene model.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WEB-0005: the site is a static export; nothing server-renders
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `apps/web/**`, `scripts/e2e.sh`, `infra/docker/Dockerfile.web`  
+**Tags**: nextjs, cloudflare, deployment, agent-decided
+
+`next.config.ts` sets `output: "export"`. `page.tsx` renders a static shell; a client component fetches `fetchState`/`fetchLatestEvents` on mount and the "API is not reachable" copy becomes a client-side state. `NEXT_PUBLIC_JEVE_API` is inlined at build time, so changing it means rebuilding. `wrangler.toml` is assets-only (`directory = "out"`, no `main`, no `binding`).
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

@@ -36,10 +36,10 @@ class Settings(BaseModel):
     halt_ceiling_usd: float = HALT_CEILING_USD
     hard_ceiling_usd: float = HARD_CEILING_USD
     run_cap_usd: float = RUN_CAP_USD
-
-    @property
-    def ledger_path(self) -> Path:
-        return self.ops_dir / "ledger.jsonl"
+    # LLM-0007: the ladder is a guardrail, not the stop — OpenRouter's cap is.
+    # Set high in production; the daemon answers a 402 with waiting_on_budget.
+    cors_origins: tuple[str, ...] = ()
+    dialogue_generate: bool = True
 
     @property
     def spend_path(self) -> Path:
@@ -83,9 +83,23 @@ def load_settings(*, ops_dir: Path | None = None) -> Settings:
         root = Path(override)
     else:
         root = find_repo_root() / "ops"
+
+    def _usd(name: str, default: float) -> float:
+        return float(os.environ.get(name) or default)
+
     return Settings(
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
         openrouter_base_url=base_url.rstrip("/"),
         ops_dir=root,
-        run_cap_usd=float(os.environ.get("JEVE_RUN_CAP_USD") or RUN_CAP_USD),
+        run_cap_usd=_usd("JEVE_RUN_CAP_USD", RUN_CAP_USD),
+        explore_ceiling_usd=_usd("JEVE_EXPLORE_CEILING_USD", EXPLORE_CEILING_USD),
+        halt_ceiling_usd=_usd("JEVE_HALT_CEILING_USD", HALT_CEILING_USD),
+        hard_ceiling_usd=_usd("JEVE_HARD_CEILING_USD", HARD_CEILING_USD),
+        cors_origins=tuple(
+            origin.strip()
+            for origin in os.environ.get("JEVE_CORS_ORIGINS", "").split(",")
+            if origin.strip()
+        ),
+        dialogue_generate=os.environ.get("JEVE_DIALOGUE_GENERATE", "on")
+        not in ("off", "0", "false"),
     )

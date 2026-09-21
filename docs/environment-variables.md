@@ -1,129 +1,71 @@
 # Environment Variables
 
-This document describes the environment variables used across the jeve monorepo and their configuration in Doppler.
+Only variables the code actually reads are listed here — if a name is not in
+this table, setting it does nothing. Sources: `py/src/jeve/config.py`,
+`py/src/jeve/db.py`, `py/src/jeve/sim/daemon.py`, `py/src/jeve/sim/runner.py`.
 
-## Doppler Projects
+## Database
 
-The monorepo uses three Doppler projects to organize environment variables by deployment target:
+| Variable | Read by | Default | Notes |
+|---|---|---|---|
+| `JEVE_DATABASE_URL` | everything | `postgresql://jeve:jeve@127.0.0.1:55432/jeve` | The **direct** DSN. The daemon's writer lock and migrations require it — never a transaction-mode pooler. |
+| `DATABASE_URL` | everything | — | Fallback; `fly postgres attach` writes this. |
+| `JEVE_DATABASE_POOLED_URL` | api | falls back to `DATABASE_URL` then `JEVE_DATABASE_URL` | Pooled reads for HTTP requests. |
+| `JEVE_PG_PORT` | `db.dsn()` | `55432` | Local-only default port when no URL is set. |
 
-### 1. app (Cloudflare Workers - Web App)
+## Money (`jeve.llm`, LLM-0004/LLM-0007)
 
-**Purpose**: Environment variables for the Next.js web application deployed to Cloudflare Workers.
+| Variable | Default | Notes |
+|---|---|---|
+| `OPENROUTER_API_KEY` | unset | Required for any live call; absent means replay-only. |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | The decisions endpoint is resolved as its sibling (`/api/alpha/decisions`). |
+| `JEVE_RUN_CAP_USD` | `1` | Per-process cap; **`<= 0` disables** — set `0` in production. |
+| `JEVE_EXPLORE_CEILING_USD` | `12` | Past this, `explore` calls are refused. |
+| `JEVE_HALT_CEILING_USD` | `16` | Past this, all calls are refused (the handoff rung). |
+| `JEVE_HARD_CEILING_USD` | `20` | Projection may not cross it, ever. |
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `NODE_ENV` | Node environment | `production` |
-| `NEXT_PUBLIC_API_URL` | API endpoint URL | `https://jeve-api.punitarani.com` |
-| `NEXT_PUBLIC_JEVE_API` | Alternative API URL | `https://jeve-api.punitarani.com` |
-| `NEXT_PUBLIC_JEVE_APP` | App URL | `https://jeve.punitarani.com` |
-| `NEXT_TELEMETRY_DISABLED` | Disable Next.js telemetry | `1` |
+The ladder is the guardrail; OpenRouter's account cap is the stop. A 402
+puts the daemon into `waiting_on_budget`, not a crash (SIM-0003).
 
-### 2. infra (GitHub Actions CI/CD)
+## Daemon (`python -m jeve.sim`)
 
-**Purpose**: Environment variables for CI/CD pipelines and deployment automation.
+| Variable | Flag | Default | Notes |
+|---|---|---|---|
+| `JEVE_POLICY` | `--policy` | `jev` | `rules` runs the world free, for soak tests. |
+| `JEVE_CALLS` | `--calls` | `replay` | `record` for production — replay is the deterministic dev mode. |
+| `JEVE_CASSETTE` | `--cassette` | `py/fixtures/cassettes/golden.jsonl` | `off`/`none` disables the file; production uses the `model_calls` table. |
+| `JEVE_SIM_DAY_MINUTES` | `--day-minutes` | `24` | Wall minutes per sim day; `0` is flat-out (fixtures). |
+| `JEVE_DAILY_BUDGET_USD` | `--daily-budget` | `2` | Governor pauses the clock when the window's spend exceeds it. |
+| `JEVE_BUDGET_WAIT_S` | `--budget-wait` | `900` | Seconds between retries while OpenRouter says 402. |
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API token | `cfut_...` |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID | `64485cb6...` |
-| `CLOUDFLARE_WORKER_NAME` | Worker name | `jeve-web` |
-| `FLY_API_TOKEN` | Fly.io API token | `FlyV1 ...` |
-| `FLY_APP_NAME` | Fly.io app name | `jeve-backend` |
-| `JEVE_DATABASE_URL` | Database URL for CI | `postgresql://...` |
-| `DOCKER_REGISTRY` | Docker registry | `docker.io` |
-| `MIGRATIONS_DB_URL` | Database for migrations | `postgresql://...` |
+## API (`uvicorn jeve.api.app:app`)
 
-### 3. worker (Fly.io - Backend Services)
+| Variable | Default | Notes |
+|---|---|---|
+| `JEVE_CORS_ORIGINS` | unset → localhost any port | Comma-separated origins; production is `https://jeve.punitarani.com`. |
+| `JEVE_DIALOGUE_GENERATE` | `on` | `off`/`0`/`false`: `/encounters/{seq}/dialogue` serves the typed record and cached prose only — no spend. |
+| `JEVE_OPS_DIR` | repo `ops/` | Where the `spend.json` checkpoint and `discrepancies.jsonl` land. |
 
-**Purpose**: Environment variables for backend services (API and simulation worker) deployed to Fly.io.
+## Web (`apps/web`)
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `API_HOST` | API bind host | `0.0.0.0` |
-| `API_PORT` | API bind port | `8000` |
-| `PYTHONPATH` | Python module path | `/app/src` |
-| `FLY_APP_NAME` | Fly.io app name | `jeve-backend` |
-| `FLY_REGION` | Fly.io region | `iad` |
-| `JEVE_DATABASE_URL` | Primary database URL | `postgresql://...` |
-| `JEVE_DATABASE_POOLED_URL` | Pooled database URL | `postgresql://...` |
-| `JEVE_CORS_ORIGINS` | Allowed CORS origins | `https://jeve.punitarani.com` |
-| `JEVE_OPS_DIR` | Operations directory | `/tmp/jeve-ops` |
-| `JEVE_POLICY` | Simulation policy | `jev` |
-| `JEVE_SIM_POLICY` | Sim policy | `jev` |
-| `JEVE_SIM_CALLS` | Call mode | `record` |
-| `JEVE_SIM_DAYS` | Simulation days | `35` |
-| `JEVE_SIM_DAY_MINUTES` | Sim day minutes | `24` |
-| `JEVE_SIM_SPEED` | Simulation speed | `1.0` |
-| `JEVE_CALLS` | Call mode | `record` |
-| `JEVE_BUDGET_CEILING_USD` | Budget ceiling | `20` |
-| `JEVE_BUDGET_EXPLORATION_USD` | Exploration budget | `12` |
-| `JEVE_DAILY_BUDGET_USD` | Daily budget | `2.00` |
-| `JEVE_RUN_CAP_USD` | Run cap | `100` |
-| `OPENROUTER_API_KEY` | OpenRouter API key | `sk-or-v1-...` |
-| `OPENROUTER_BASE_URL` | OpenRouter base URL | `https://openrouter.ai/api/v1` |
+| Variable | Default | Notes |
+|---|---|---|
+| `NEXT_PUBLIC_JEVE_API` | `http://127.0.0.1:8000` | **Build-time inlined** (WEB-0005). Production: `https://jeve-api.punitarani.com`. |
 
-## Usage
+## CI/CD credentials (GitHub secrets / Doppler `infra`)
 
-### Local Development
+`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `FLY_API_TOKEN`. Nothing in
+the codebase reads them; they authenticate the deploy jobs.
+
+## Doppler layout
+
+Three projects, matching the `.env.*.example` files:
+
+* **app** — `NEXT_PUBLIC_JEVE_API` (build-time only)
+* **worker** — everything above for api + sim; synced to `fly secrets`
+* **infra** — the CI/CD credentials
 
 ```bash
-# Use Doppler for local development
 doppler run --project worker --config dev -- make api
-doppler run --project app --config dev -- cd apps/web && pnpm dev
+doppler run --project infra  --config prd -- make deploy
 ```
-
-### Production Deployment
-
-```bash
-# Deploy with Doppler secrets
-doppler run --project infra --config prd -- make deploy
-```
-
-### CI/CD Integration
-
-GitHub Actions uses the `infra` project for deployment credentials:
-
-```yaml
-- name: Deploy to Cloudflare Workers
-  uses: cloudflare/wrangler-action@v3
-  with:
-    apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-    accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-```
-
-## Security Notes
-
-* All sensitive values are stored in Doppler, not in code
-* Use different configs for dev/stg/prd environments
-* Rotate API keys regularly
-* Monitor usage and spending limits
-* Use least-privilege access for service accounts
-
-## Adding New Variables
-
-1. Determine which project the variable belongs to
-2. Add to the appropriate Doppler config:
-   ```bash
-   doppler secrets set NEW_VAR=value --project PROJECT --config CONFIG
-   ```
-3. Update this documentation
-4. Test the application with the new variable
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Missing environment variable**
-   * Check if the variable exists in the correct Doppler project
-   * Verify the config (dev/stg/prd) is correct
-   * Ensure the application is using `doppler run`
-
-2. **Permission denied**
-   * Verify you have access to the Doppler project
-   * Check if the token is valid
-   * Ensure the correct scope is being used
-
-3. **Wrong value in production**
-   * Check if the variable is set in the `prd` config
-   * Verify the deployment is using the correct project
-   * Check for typos in variable names

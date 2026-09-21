@@ -1,5 +1,10 @@
-# Production deployment configuration
-# Local stateful dependencies remain in docker-compose.yml
+# Self-hosted production stack: Postgres, the API, the daemon, the static site.
+# For the hosted deployment (Fly + Cloudflare + Doppler) see docs/deployment.md.
+#
+# NEXT_PUBLIC_JEVE_API is the API origin *as the browser sees it* — it is
+# inlined into the bundle at build time, so compose passes it as a build arg.
+# Credentials interpolate from the environment with dev-safe defaults; set
+# POSTGRES_PASSWORD / OPENROUTER_API_KEY / JEVE_DATABASE_URL for real use.
 
 name: jeve-prod
 
@@ -8,21 +13,22 @@ services:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.web
+      args:
+        # Browser-side URL: the container's own hostname means nothing to a
+        # visitor's browser. Published port 8000 on the host is the default.
+        NEXT_PUBLIC_JEVE_API: ${NEXT_PUBLIC_JEVE_API:-http://127.0.0.1:8000}
     ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=production
-      - NEXT_TELEMETRY_DISABLED=1
-      - NEXT_PUBLIC_API_URL=http://api:8000
+      - "3000:8080"
+    restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 10s
 
   api:
     build:
@@ -31,8 +37,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - JEVE_DATABASE_URL=postgresql://jeve:jeve@postgres:5432/jeve
+      - JEVE_DATABASE_URL=postgresql://jeve:${POSTGRES_PASSWORD:-jeve}@postgres:5432/jeve
+      - JEVE_CORS_ORIGINS=${JEVE_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      # The dialogue endpoint can spend; self-hosters may want it on.
+      - JEVE_DIALOGUE_GENERATE=${JEVE_DIALOGUE_GENERATE:-on}
       - PYTHONPATH=/app/src
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -48,13 +58,25 @@ services:
       context: .
       dockerfile: infra/docker/Dockerfile.sim
     environment:
-      - JEVE_DATABASE_URL=postgresql://jeve:jeve@postgres:5432/jeve
+      - JEVE_DATABASE_URL=postgresql://jeve:${POSTGRES_PASSWORD:-jeve}@postgres:5432/jeve
+      - JEVE_POLICY=jev
+      - JEVE_CALLS=record
+      # The cache is the model_calls table; a cassette in a container is an
+      # unbounded file on an ephemeral disk (LLM-0007).
+      - JEVE_CASSETTE=off
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      # Guardrails, not the stop — OpenRouter's own cap is. Zero disables the
+      # per-process cap that used to halt the daemon every few days.
+      - JEVE_RUN_CAP_USD=${JEVE_RUN_CAP_USD:-0}
       - PYTHONPATH=/app/src
+    # Deliberate halts arrive as exit 0 through the entrypoint, so on-failure
+    # restarts crashes only — never a world that asked to stop.
+    restart: on-failure
     depends_on:
       postgres:
         condition: service_healthy
-      api:
-        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "pgrep", "-f", "python -m jeve.sim"]
       interval: 30s
@@ -62,11 +84,24 @@ services:
       retries: 3
       start_period: 10s
 
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.api
+    environment:
+      - JEVE_DATABASE_URL=postgresql://jeve:${POSTGRES_PASSWORD:-jeve}@postgres:5432/jeve
+      - PYTHONPATH=/app/src
+    command: ["python", "-c", "from jeve import db; print(db.migrate())"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   postgres:
     image: postgres:18-alpine
     environment:
       POSTGRES_USER: jeve
-      POSTGRES_PASSWORD: jeve
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jeve}
       POSTGRES_DB: jeve
       TZ: UTC
       PGTZ: UTC
@@ -76,8 +111,9 @@ services:
       - timezone=UTC
       - -c
       - log_min_duration_statement=500
-    ports:
-      - "5432:5432"
+    # No host port: Postgres is internal to this stack. `docker compose exec`
+    # reaches it when an operator needs to.
+    restart: unless-stopped
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

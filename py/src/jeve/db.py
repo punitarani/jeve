@@ -17,6 +17,7 @@ import psycopg
 import psycopg.sql
 from psycopg import Connection
 from psycopg.rows import DictRow, dict_row
+from psycopg_pool import ConnectionPool
 
 from jeve.config import find_repo_root
 
@@ -26,21 +27,47 @@ DEFAULT_DSN = "postgresql://jeve:jeve@127.0.0.1:55432/jeve"
 
 
 def dsn() -> str:
-    """Connection string.
+    """The direct connection string — for writers and migrations.
 
     The port defaults to 55432, not 5432: connecting to a developer's existing
-    Postgres and migrating it would be a bad morning.
+    Postgres and migrating it would be a bad morning. `DATABASE_URL` is the
+    fallback because `fly postgres attach` sets exactly that.
     """
 
     if explicit := os.environ.get("JEVE_DATABASE_URL"):
         return explicit
+    if attached := os.environ.get("DATABASE_URL"):
+        return attached
     port = os.environ.get("JEVE_PG_PORT", "55432")
     return f"postgresql://jeve:jeve@127.0.0.1:{port}/jeve"
 
 
+def pooled_dsn() -> str:
+    """The API's connection string, through the pooler when there is one.
+
+    `JEVE_DATABASE_POOLED_URL` is the managed side of a Fly Postgres pair;
+    without it the API shares `dsn()`. Advisory locks and migrations must
+    never use this — a transaction-mode pooler does not hold session state.
+    """
+
+    return (
+        os.environ.get("JEVE_DATABASE_POOLED_URL")
+        or os.environ.get("DATABASE_URL")
+        or dsn()
+    )
+
+
+# Prepared statements are cached per physical connection; behind a
+# transaction-mode pooler the next statement lands on a different one, so the
+# name is stale and the query fails. None means never prepare.
+KWA = {"prepare_threshold": None}
+
+
 @contextmanager
 def connect(*, autocommit: bool = False) -> Iterator[Connection[DictRow]]:
-    with psycopg.connect(dsn(), row_factory=dict_row, autocommit=autocommit) as conn:
+    with psycopg.connect(
+        dsn(), row_factory=dict_row, autocommit=autocommit, **KWA
+    ) as conn:
         yield conn
 
 
@@ -52,7 +79,25 @@ def connect_autocommit() -> Connection[DictRow]:
     The caller closes it.
     """
 
-    return psycopg.connect(dsn(), row_factory=dict_row, autocommit=True)
+    return psycopg.connect(dsn(), row_factory=dict_row, autocommit=True, **KWA)
+
+
+def connect_pool() -> ConnectionPool[Connection[DictRow]]:
+    """The API's shared pool — one per process, opened at lifespan start.
+
+    Read-mostly, autocommit: a pooled connection has no transaction of its own
+    to pin. `check` verifies a checkout is alive before handing it to a
+    request, which is what keeps a dead pooled backend from becoming a 500.
+    """
+
+    return ConnectionPool(
+        pooled_dsn(),
+        open=False,
+        min_size=2,
+        max_size=8,
+        check=ConnectionPool.check_connection,
+        kwargs={"row_factory": dict_row, "autocommit": True, **KWA},
+    )
 
 
 def migration_files() -> list[Path]:

@@ -38,6 +38,7 @@ from jeve.decide.recorder import ReplayMissError, finalize_cassette, load_casset
 from jeve.errors import (
     BudgetExceededError,
     ModelVersionDriftError,
+    ProviderBudgetError,
     ResponseShapeError,
     TransportError,
 )
@@ -70,6 +71,10 @@ cannot fix either."""
 BACKOFF_BASE_S = 2.0
 BACKOFF_CAP_S = 120.0
 HEARTBEAT_EVERY_S = 5.0
+DEFAULT_BUDGET_WAIT_S = 900.0
+"""SIM-0003: how long between retries when OpenRouter says the account is out
+of credit (402). Minutes, not seconds — the cap resets on a billing window,
+and a faster poll is a heartbeat pretending to be progress."""
 
 
 @dataclass(slots=True)
@@ -181,7 +186,7 @@ def run(args: argparse.Namespace) -> int:
                 f"seeded {summary.orgs} orgs, {summary.persons} persons "
                 f"({summary.staff} staff + {summary.counterparties} counterparties)"
             )
-        if args.policy == "jev":
+        if args.policy == "jev" and args.cassette is not None:
             # In both modes: a recording run must not pay again for what it has.
             loaded = load_cassette(conn, args.cassette)
             conn.commit()
@@ -213,6 +218,7 @@ def _loop(
     window_spent_from = _live_spend(policy)
     failures = 0
     waiting_since = 0.0
+    budget_since = 0.0
     _status(conn, "running")
 
     while not stop.requested():
@@ -279,6 +285,31 @@ def _loop(
             _status(conn, "halted", _describe(error))
             print(f"HALTED: {error}", file=sys.stderr)
             return 7
+        except ProviderBudgetError as error:
+            # SIM-0003: the upstream cap is spent. Not weather — a two-minute
+            # backoff refills nothing — and not a halt, because the window
+            # rolls over and the world resumes by itself. Slow retry, still
+            # beating, same tick.
+            conn.rollback()
+            if budget_since == 0.0:
+                budget_since = time.monotonic()
+            waited = time.monotonic() - budget_since
+            delay = args.budget_wait
+            if args.max_wait is not None and waited + delay > args.max_wait:
+                _status(conn, "halted", _describe(error))
+                print(
+                    f"HALTED: upstream budget has been out for {waited:.0f}s: {error}",
+                    file=sys.stderr,
+                )
+                return 6
+            _status(conn, "waiting_on_budget", _describe(error))
+            print(
+                f"waiting on the upstream budget: {_describe(error)}; "
+                f"trying this tick again in {delay:.0f}s",
+                file=sys.stderr,
+            )
+            _sleep(delay, stop, conn)
+            continue
         except MODEL_WEATHER as error:
             # SIM-0002 / CORE-0004: a dead model is a paused world, not a dead
             # one and not a world that guessed. The tick rolled back whole, and
@@ -305,9 +336,11 @@ def _loop(
             )
             _sleep(delay, stop, conn)
             continue
-        if failures:
-            print(f"the model is back after {failures} failed attempt(s)")
+        if failures or budget_since:
+            if failures:
+                print(f"the model is back after {failures} failed attempt(s)")
             failures = 0
+            budget_since = 0.0
             _status(conn, "running")
         totals.ticks += 1
         totals.decisions += report.decisions
@@ -334,7 +367,7 @@ def _report(
     if isinstance(policy, JevPolicy):
         stats = policy.recorder.stats
         policy.close()
-        if args.calls == "record":
+        if args.calls == "record" and args.cassette is not None:
             finalize_cassette(args.cassette)
         if args.stats is not None:
             args.stats.write_text(
@@ -406,16 +439,32 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "--max-wait",
         type=float,
         default=None,
-        help="give up (exit 6) after this many seconds waiting on the model; "
-        "the default is to wait for ever, which is what a daemon should do",
+        help="give up (exit 6) after this many seconds waiting on the model or "
+        "the upstream budget; the default is to wait for ever, which is what "
+        "a daemon should do",
     )
     parser.add_argument(
+        "--budget-wait",
+        type=float,
+        default=float(os.environ.get("JEVE_BUDGET_WAIT_S") or DEFAULT_BUDGET_WAIT_S),
+        help="seconds between retries while the upstream budget (402) is out",
+    )
+
+    def _cassette(value: str | None) -> Path | None:
+        # `off`/`none` means no write-through: production's cache is the
+        # model_calls table, and a cassette would grow without bound on disk.
+        if value is not None and value.lower() in ("off", "none"):
+            return None
+        return Path(value) if value is not None else None
+
+    parser.add_argument(
         "--cassette",
-        type=Path,
-        default=CASSETTE,
-        help="recorded calls to preload and, when recording, to append to. The "
-        "default is the golden cassette `make e2e` replays; a soak keeps its own, "
-        "so that a long live run never rewrites the file a replay depends on",
+        type=_cassette,
+        default=_cassette(os.environ.get("JEVE_CASSETTE") or str(CASSETTE)),
+        help="recorded calls to preload and, when recording, to append to; "
+        "'off' disables the file entirely (JEVE_CASSETTE). The default is the "
+        "golden cassette `make e2e` replays; a soak keeps its own, so that a "
+        "long live run never rewrites the file a replay depends on",
     )
     parser.add_argument("--stats", type=Path, help="write call statistics here")
     parser.add_argument("--verbose", action="store_true")

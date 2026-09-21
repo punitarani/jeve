@@ -1,328 +1,138 @@
 # Deployment
 
-This document describes how to deploy the jeve monorepo applications using modern cloud platforms.
+How jeve runs in production (OPS-0001), and how to operate it.
 
-## Architecture
+## Topology
 
-The system consists of four main components deployed across different platforms:
+| Piece | Where | Notes |
+|---|---|---|
+| Web (`apps/web`) | Cloudflare Workers static assets | `output: "export"` → `out/`; no Worker script, no SSR (WEB-0005) |
+| API (`py/src/jeve/api`) | Fly.io process group `api` | uvicorn on a `psycopg_pool`; public at `jeve-api.punitarani.com` |
+| Daemon (`py/src/jeve/sim`) | Fly.io process group `sim` | No ingress; the only writer, on the direct DSN |
+| Postgres | Fly Postgres (or any managed PG) | us-east-1; app region `iad` |
+| Secrets | Doppler → `fly secrets` / GitHub Actions | Nothing sensitive in `fly.toml`/`wrangler.toml` |
 
-1. **Web** (`apps/web/`) - Next.js frontend → **Cloudflare Workers**
-2. **API** (`apps/api/`) - FastAPI backend → **Fly.io**
-3. **Sim** (`apps/sim/`) - Simulation worker → **Fly.io**
-4. **Database** - PostgreSQL → **Fly.io Postgres** or external provider
+```mermaid
+flowchart LR
+    browser -->|HTTPS| cf[Workers static assets<br/>jeve.punitarani.com]
+    browser -->|GET /state, /stream| api[api process group<br/>jeve-api.punitarani.com]
+    api --> pool[JEVE_DATABASE_POOLED_URL]
+    sim[sim process group<br/>python -m jeve.sim] --> direct[JEVE_DATABASE_URL]
+    pool --> pg[(Postgres)]
+    direct --> pg
+    sim -->|OpenRouter| or[OpenRouter]
+```
 
-## Platform Choices
+Why two database URLs: the daemon's writer lock is a *session-level*
+advisory lock, which a transaction-mode pooler silently drops. `sim` uses
+`JEVE_DATABASE_URL` (direct); `api` uses `JEVE_DATABASE_POOLED_URL` when set
+and falls back to the direct DSN. `DATABASE_URL` (what `fly postgres attach`
+writes) is accepted as a fallback for both.
 
-### Cloudflare Workers (Web)
-
-* **Why**: Global CDN, edge computing, excellent Next.js support
-* **Benefits**: Zero cold starts, automatic scaling, DDoS protection
-* **Deployment**: `wrangler deploy`
-
-### Fly.io (Backend Services)
-
-* **Why**: Simple deployment, good pricing, global regions, persistent storage
-* **Benefits**: Easy Postgres integration, process groups, health checks
-* **Deployment**: `fly deploy`
-
-## Environment Configuration
-
-### Local Development
+## First deploy
 
 ```bash
-# Copy appropriate env file
-cp .env.app.example .env.local      # For web development
-cp .env.worker.example .env         # For backend development
+# Postgres (or point JEVE_DATABASE_URL at an external provider)
+fly postgres create --name jeve-db --region iad
+fly postgres attach jeve-db --app jeve-backend   # sets DATABASE_URL
 
-# Start dependencies
-make db-up
+fly secrets set OPENROUTER_API_KEY=...           # the only secret sim needs
+fly secrets set JEVE_DATABASE_URL=postgresql://...@jeve-db.internal:5432/jeve
+# Optional, if you front Postgres with a transaction-mode pooler:
+fly secrets set JEVE_DATABASE_POOLED_URL=postgresql://...:6432/jeve
 
-# Run services
-make api      # Terminal 1 - API server
-make sim      # Terminal 2 - Simulation worker
-cd apps/web && pnpm dev  # Terminal 3 - Web development server
+fly deploy            # release_command runs migrations, then api + sim
+cd apps/web && NEXT_PUBLIC_JEVE_API=https://jeve-api.punitarani.com \
+    pnpm exec next build && wrangler deploy
 ```
 
-### Production Deployment
+CI does the same on push to `main` (`deploy-backend`, `deploy-web` in
+`.github/workflows/ci.yml`), gated on tests, contracts drift and image builds.
 
-#### Web App (Cloudflare Workers)
+## What production runs with
+
+The sim group's command is
+`sh /app/sim-entrypoint.sh --policy jev --calls record --cassette off`:
+
+* **`--calls record`** — every model response is stored in `model_calls`,
+  which is the replayable cache. Production never replays.
+* **`--cassette off`** — the golden cassette is a dev artifact. In a
+  container it would be an unbounded append on ephemeral disk.
+* **The entrypoint maps deliberate halts (exit 4–7) to exit 0.** Fly's
+  default `on-fail` policy restarts non-zero exits only, so a crash comes
+  back and a halt stays down until you redeploy or `fly machines start`.
+
+Budgets (LLM-0007): `JEVE_RUN_CAP_USD=0` disables the per-process cap — the
+old default ($1) would have halted the daemon every few days. The
+$12/$16/$20 ladder is a guardrail, not the stop; OpenRouter's own account
+cap is the real ceiling. All four are env-tunable
+(`JEVE_{EXPLORE,HALT,HARD}_CEILING_USD` are set high in `fly.toml`).
+
+## Statuses worth knowing
+
+`sim_meta.status`, surfaced by `GET /state` as `clock.status` + `health`:
+
+| Status | Meaning | Operator action |
+|---|---|---|
+| `running` | ticking | — |
+| `waiting_on_model` | provider outage; tick rolls back and retries | none — it heals |
+| `waiting_on_budget` | OpenRouter answered 402 (cap spent); retries every `JEVE_BUDGET_WAIT_S` (default 15 min) | top up credit, or wait out the window |
+| `paused_budget` | `JEVE_DAILY_BUDGET_USD` spent for the window; clock resumes at rollover | raise the budget or wait |
+| `paused` | `--until` horizon reached | — |
+| `halted` | deliberate stop (replay miss, cap, model drift) | read `last_error`, fix, redeploy |
+
+`health.stale` goes true whenever the heartbeat is older than 30 s — a
+`running` written by a dead process is not alive.
+
+## Endpoints
+
+`GET /health` — 200 only when Postgres answers. `GET /state`, `/events`,
+`/world/*`, `/causal/{seq}`, `/economics` — pooled reads.
+`GET /stream?after=<seq>` — SSE; one shared poller fans out to subscribers.
+`GET /encounters/{seq}/dialogue` — typed record always; prose only from the
+cache in production (`JEVE_DIALOGUE_GENERATE=off`), because the endpoint is
+unauthenticated and can spend.
+
+## Operations
 
 ```bash
-# Install Wrangler CLI
-npm install -g wrangler
-
-# Login to Cloudflare
-wrangler login
-
-# Deploy web app
-make deploy-web
-# or: cd apps/web && wrangler deploy
+fly logs -a jeve-backend --process sim     # the daemon's voice
+fly checks list -a jeve-backend            # api health
+fly ssh console -a jeve-backend            # a shell inside a machine
+fly secrets set JEVE_HALT_CEILING_USD=...  # retune without a redeploy
 ```
 
-#### Backend Services (Fly.io)
+**Rollback**: `fly releases` lists image versions;
+`fly deploy --image <previous>` restores one. Migrations are additive, so a
+rollback does not need a schema undo. If a migration ever must be reversed,
+revert it explicitly rather than replaying history.
+
+**Backup**: Postgres is the whole world — events, decisions, model\_calls,
+spend ledger. For Fly Postgres, snapshot the volume:
+`fly volumes snapshots list <vol>` / `fly volumes create --snapshot-id`.
+Logical copy: `fly proxy 5433:5432 -a jeve-db` then
+`pg_dump postgresql://jeve:...@localhost:5433/jeve > backup.sql`.
+Restore is a fresh cluster + `psql < backup.sql` + `fly secrets set
+JEVE_DATABASE_URL=...`.
+
+**Spend**: `make spend` reads the `spend_entries` table directly (the
+`ops/spend.json` checkpoint is a local convenience). The same table backs
+`/economics`, so the daemon and the API never disagree.
+
+## Data growth (measured)
+
+35 sim-days ≈ 14,764 events / 31,623 decisions / 50 MB. At ~60 sim-days per
+real day that is ≈86 MB/day, ≈2.6 GB/month, ≈31 GB/year. The decision is to
+keep everything — causal history is the research artefact — so size the
+Postgres volume for it and snapshot before growing it. If that ever changes,
+retention is an `events`/`decisions` prune job, not a schema change.
+
+## Self-hosting alternative
+
+`docker-compose.prod.yml` runs the same topology locally: Postgres (internal
+only), a `migrate` one-shot, api on 8000, the static site behind nginx on
+3000, and the daemon with the same entrypoint semantics.
 
 ```bash
-# Install Fly CLI
-curl -L https://fly.io/install.sh | sh
-
-# Login to Fly.io
-fly auth login
-
-# Launch app (first time only)
-fly launch --config fly.toml
-
-# Deploy API
-make deploy-api
-# or: fly deploy --config fly.toml
-
-# Deploy simulation worker
-make deploy-sim
-# or: fly deploy --config fly.toml --process-group sim
+OPENROUTER_API_KEY=... docker compose -f docker-compose.prod.yml up -d --build
 ```
-
-## Environment Variables
-
-### Web App (.env.app.example)
-
-```bash
-# API endpoint
-NEXT_PUBLIC_API_URL=https://api.jeve.app
-
-# Cloudflare deployment
-CLOUDFLARE_API_TOKEN=your-cloudflare-api-token
-CLOUDFLARE_ACCOUNT_ID=your-account-id
-CLOUDFLARE_WORKER_NAME=jeve-web
-```
-
-### Backend Services (.env.worker.example)
-
-```bash
-# Database connection
-JEVE_DATABASE_URL=postgresql://jeve:jeve@jeve-db.internal:5432/jeve
-
-# API configuration
-API_HOST=0.0.0.0
-API_PORT=8000
-
-# Simulation configuration
-JEVE_SIM_POLICY=jev|rules
-JEVE_SIM_CALLS=replay|record
-JEVE_BUDGET_CEILING_USD=20.0
-
-# Fly.io deployment
-FLY_API_TOKEN=your-fly-api-token
-FLY_APP_NAME=jeve-backend
-FLY_REGION=iad  # Washington D.C. - closest to us-east-1 database
-```
-
-### Infrastructure (.env.infra.example)
-
-```bash
-# Database for CI/CD
-JEVE_DATABASE_URL=postgresql://jeve:jeve@localhost:5432/jeve
-
-# Deployment credentials
-CLOUDFLARE_API_TOKEN=your-cloudflare-api-token
-FLY_API_TOKEN=your-fly-api-token
-
-# Monitoring
-SENTRY_DSN=your-sentry-dsn
-```
-
-## Database Setup
-
-### Fly.io Postgres
-
-```bash
-# Create Postgres cluster
-fly postgres create --name jeve-db
-
-# Attach to app
-fly postgres attach jeve-db --app jeve-backend
-
-# Get connection string
-fly postgres connect jeve-db
-```
-
-### External Database
-
-```bash
-# Set database URL
-fly secrets set JEVE_DATABASE_URL=postgresql://user:pass@host:port/db
-```
-
-## Secrets Management
-
-### Cloudflare Workers
-
-```bash
-# Set secrets
-wrangler secret put CLOUDFLARE_API_TOKEN
-wrangler secret put NEXT_PUBLIC_ANALYTICS_ID
-```
-
-### Fly.io
-
-```bash
-# Set secrets
-fly secrets set OPENROUTER_API_KEY=your-key
-fly secrets set JEVE_DATABASE_URL=your-db-url
-```
-
-## Health Checks
-
-### Web App (Cloudflare)
-
-* Automatic health checks via Cloudflare's edge network
-* Custom health check endpoint: `/api/health`
-
-### API Service (Fly.io)
-
-* HTTP health check: `GET /health`
-* TCP health check on port 8000
-* Automatic restart on failure
-
-### Simulation Worker (Fly.io)
-
-* Process monitoring via Fly.io
-* Automatic restart on failure
-* Health via writer lock status
-
-## Monitoring
-
-### Cloudflare Workers
-
-* Built-in analytics and logging
-* Real User Monitoring (RUM)
-* Performance metrics
-
-### Fly.io
-
-* Application metrics and logging
-* Database metrics
-* Custom health checks
-
-## Scaling
-
-### Web App (Cloudflare)
-
-* Automatic scaling to zero
-* Global edge deployment
-* No cold starts for static content
-
-### Backend Services (Fly.io)
-
-* Horizontal scaling: `fly scale count`
-* Vertical scaling: `fly scale vm`
-* Auto-scaling based on metrics
-
-## CI/CD Integration
-
-### GitHub Actions
-
-```yaml
-# Deploy web app
-- name: Deploy to Cloudflare Workers
-  uses: cloudflare/wrangler-action@v3
-  with:
-    apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-    workingDirectory: apps/web
-
-# Deploy backend
-- name: Deploy to Fly.io
-  uses: superfly/flyctl-actions/setup-flyctl@master
-  env:
-    FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-  run: fly deploy --config fly.toml
-```
-
-## Cost Optimization
-
-### Cloudflare Workers
-
-* Pay per request (very cost-effective for web)
-* Free tier available for low traffic
-
-### Fly.io
-
-* Pay per VM hour
-* Auto-stop machines when idle
-* Shared CPU for development
-
-## Security
-
-### Cloudflare Workers
-
-* DDoS protection built-in
-* Web Application Firewall (WAF)
-* Automatic HTTPS
-
-### Fly.io
-
-* Private networking between services
-* WireGuard encryption
-* Secrets management
-
-## Backup and Recovery
-
-### Database
-
-```bash
-# Fly.io Postgres backup
-fly postgres backup jeve-db
-
-# Manual backup
-fly ssh console -C "pg_dump $DATABASE_URL" > backup.sql
-```
-
-### Application State
-
-* Stateless web app (Cloudflare handles state)
-* Simulation state in Postgres (persistent volumes)
-* Configuration via environment variables
-
-## Troubleshooting
-
-### Common Issues
-
-1. **API not accessible**
-   * Check Fly.io status: `fly status`
-   * View logs: `fly logs`
-   * Check health: `fly checks`
-
-2. **Web app not updating**
-   * Check Cloudflare deployment: `wrangler deployments list`
-   * Clear cache: `wrangler kv:key delete --binding=ASSETS`
-
-3. **Database connection issues**
-   * Verify `JEVE_DATABASE_URL` is set correctly
-   * Check Fly.io Postgres status
-   * Test connectivity: `fly ssh console`
-
-### Debug Commands
-
-```bash
-# Fly.io debugging
-fly ssh console
-fly logs --app jeve-backend
-fly status --app jeve-backend
-
-# Cloudflare debugging
-wrangler tail
-wrangler dev --local
-```
-
-## Migration from Docker
-
-The current setup supports both Docker and cloud-native deployment:
-
-* **Local development**: Use `make docker-up` for local testing
-* **Production**: Use Cloudflare Workers + Fly.io for better performance and cost
-* **Hybrid**: Run database locally, deploy apps to cloud
-
-This approach provides:
-
-* Better performance (edge computing)
-* Lower costs (pay-per-use)
-* Easier scaling (managed services)
-* Better developer experience (simple deployment)

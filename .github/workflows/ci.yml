@@ -203,9 +203,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Use Nx targets for consistent task execution
+      # No eslint config exists in the repo — tsc strict is the static gate.
       - run: npx nx run web:typecheck
-      - run: npx nx run web:lint
       - run: npx nx run web:build
       - run: npx nx run web:test
 
@@ -232,7 +231,11 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @jeve/web build
+      # NEXT_PUBLIC_* is inlined at build time — wrangler vars are not (the
+      # site is a static export, WEB-0005).
+      - env:
+          NEXT_PUBLIC_JEVE_API: https://jeve-api.punitarani.com
+        run: pnpm --filter @jeve/web build
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
@@ -244,15 +247,15 @@ jobs:
   deploy-backend:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    needs: [python, api, sim]
+    # `api` and `sim` are nx targets inside the python job, not job ids —
+    # depending on them by name made this job never runnable.
+    needs: [python, docker]
     steps:
       - uses: actions/checkout@v5
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - name: Deploy API to Fly.io
+      # One deploy ships every process group in fly.toml (api and sim) from
+      # one image; the release_command in fly.toml runs migrations first.
+      - name: Deploy api+sim to Fly.io
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: fly deploy --config fly.toml --process-group api
-      - name: Deploy Sim to Fly.io
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: fly deploy --config fly.toml --process-group sim
+        run: fly deploy --config fly.toml

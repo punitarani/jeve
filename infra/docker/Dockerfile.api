@@ -26,6 +26,11 @@ WORKDIR /app
 # Copy dependencies and source
 COPY --from=builder /app/.venv ./.venv
 COPY --from=builder /app/src ./src
+# Migrations resolve to /app/migrations off db.py's path; the deploy's
+# release_command runs them. The sim entrypoint rides this image too — on
+# Fly both process groups share one build.
+COPY py/migrations ./migrations
+COPY infra/docker/sim-entrypoint.sh ./sim-entrypoint.sh
 
 # Create non-root user
 RUN addgroup -g 1001 -S python

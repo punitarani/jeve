@@ -1,41 +1,17 @@
-# Cloudflare Workers configuration for jeve web app
-# Deploy with: wrangler deploy
-
+# Cloudflare Workers static assets for the jeve site (WEB-0005).
+# `next build` emits `out/`; Wrangler uploads and serves it. There is no
+# Worker script — an `assets.binding` without a `main` is invalid — and no
+# runtime vars: NEXT_PUBLIC_* values are inlined at build time.
+#
+# Deploy with: wrangler deploy          (from apps/web)
 name = "jeve-web"
 compatibility_date = "2026-09-21"
-compatibility_flags = ["nodejs_compat"]
 
-# Static assets (Next.js build output)
 [assets]
-  directory = ".next"
-  binding = "ASSETS"
+directory = "out"
 
-# Environment variables
-[vars]
-  NEXT_PUBLIC_API_URL = "https://jeve-api.punitarani.com"
-  NEXT_PUBLIC_JEVE_API = "https://jeve-api.punitarani.com"
-  NEXT_PUBLIC_JEVE_APP = "https://jeve.punitarani.com"
-  NODE_ENV = "production"
-  NEXT_TELEMETRY_DISABLED = "1"
-
-# Routes for the application
-[[routes]]
-  pattern = "jeve.punitarani.com/*"
-  zone_name = "punitarani.com"
-
-# Custom domain
-[env.production]
-  name = "jeve-web-prod"
-  routes = [
-    { pattern = "jeve.punitarani.com", custom_domain = true }
-  ]
-
-[env.staging]
-  name = "jeve-web-staging"
-  routes = [
-    { pattern = "staging.jeve.punitarani.com", custom_domain = true }
-  ]
-
-# Secrets (set with: wrangler secret put KEY)
-# wrangler secret put CLOUDFLARE_API_TOKEN
-# wrangler secret put NEXT_PUBLIC_ANALYTICS_ID
+# The custom domain. The API is a separate origin (jeve-api.punitarani.com),
+# baked into the bundle via NEXT_PUBLIC_JEVE_API when the site is built.
+routes = [
+  { pattern = "jeve.punitarani.com", custom_domain = true }
+]

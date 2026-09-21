@@ -36,7 +36,10 @@ test: ## pytest, no network
 	@echo "Testing Python..."
 	npx nx run py:test
 	@echo "Testing applications..."
-	npx nx run-many -t test --projects=api,sim,web
+	# --parallel=1: api and sim tests share the dev database, and sim's daemon
+	# subprocesses hold the writer lock — run in parallel and api's seeding
+	# fixture loses the lock race to a daemon that is still finishing a tick.
+	npx nx run-many -t test --projects=api,sim,web --parallel=1
 
 .PHONY: decisions
 decisions: ## Validate records; fail if generated artifacts are stale
@@ -60,8 +63,8 @@ persona-probe: ## Does sampling Jev preserve persona? 280 live calls, ~half a ce
 	$(UV) python scripts/persona_probe.py
 
 .PHONY: spend
-spend: ## What has been spent so far
-	@test -f ops/spend.json && cat ops/spend.json || echo '{"effective_usd": 0}'
+spend: ## What has been spent so far — from the table, not the checkpoint
+	@$(UV) python -c "from jeve.llm.ledger import SpendLedger; import json; s = SpendLedger().read(); print(json.dumps({'effective_usd': round(s.effective_usd, 6), 'settled_usd': round(s.settled_usd, 6), 'reserved_usd': round(s.reserved_usd, 6), 'calls': s.calls, 'baseline_usd': s.baseline_usd, 'remote_usd': s.remote_usd}, indent=2))" 2>/dev/null || (test -f ops/spend.json && cat ops/spend.json || echo '{"effective_usd": 0}')
 
 .PHONY: db-up
 db-up: ## Start Postgres and apply migrations
@@ -120,16 +123,16 @@ docker-logs: ## View production stack logs
 	docker-compose -f docker-compose.prod.yml logs -f
 
 .PHONY: deploy-web
-deploy-web: ## Deploy web app to Cloudflare Workers
-	cd apps/web && wrangler deploy
+deploy-web: ## Deploy web app to Cloudflare Workers (builds first: NEXT_PUBLIC_* is inlined)
+	cd apps/web && NEXT_PUBLIC_JEVE_API=https://jeve-api.punitarani.com pnpm exec next build && wrangler deploy
 
 .PHONY: deploy-api
 deploy-api: ## Deploy API to Fly.io
-	fly deploy --config fly.toml
+	fly deploy --config fly.toml --process-groups api
 
 .PHONY: deploy-sim
 deploy-sim: ## Deploy simulation worker to Fly.io
-	fly deploy --config fly.toml --process-group sim
+	fly deploy --config fly.toml --process-groups sim
 
 .PHONY: deploy
 deploy: deploy-web deploy-api deploy-sim ## Deploy all services

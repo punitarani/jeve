@@ -54,7 +54,7 @@ def build_policy(
     calls: CallMode,
     *,
     root_seed: int,
-    cassette: Path = CASSETTE,
+    cassette: Path | None = CASSETTE,
 ) -> Policy:
     if name == "rules":
         return RulesPolicy(root_seed)

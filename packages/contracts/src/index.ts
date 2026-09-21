@@ -20,7 +20,7 @@ export const Clock = z.object({
   tick_seq: z.number().int(),
   // Every value the database's CHECK allows. `paused_budget` was missing, so
   // the day the governor paused the world the page would have failed to parse.
-  status: z.enum(["running", "paused", "paused_budget", "waiting_on_model", "halted"]),
+  status: z.enum(["running", "paused", "paused_budget", "waiting_on_model", "waiting_on_budget", "halted"]),
   speed: z.number(),
   run_id: z.string(),
 });
