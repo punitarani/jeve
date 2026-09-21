@@ -1,4 +1,50 @@
-# Session 3 — in progress (status log; the handoff proper is written at the end)
+# Session 3 — stopped early, on the owner's instruction (usage limit)
+
+Session 3 was planned as a 13-14 h build. It was stopped after roughly two hours
+of work because the owner has limited usage credits and asked for the branch to be
+left mergeable. **Most of the plan was not done.** This section says exactly what
+was, what was not, and what is measured.
+
+## What shipped (all on `feat/mvp-overnight`, PR #1)
+
+| Item | State | Evidence |
+|---|---|---|
+| Daemon survives its model (SIM-0002, LLM-0006) | done | `tests/test_daemon.py`: a 520, a timeout and a malformed response mid-tick leave an event log byte-identical to an untroubled run; heartbeat and `health` on `/state` |
+| Cache key v2 (DECIDE-0004) | done | `tests/test_call_key.py`: reorder, reword and new model build are all misses; a different build halts the run |
+| Randomness keyed by entity (CORE-0009) | done | `test_economy.py` walks the source for `tick_seq` in a seed path; counterfactual in `ops/soak.md` shows invoice amounts identical across arms while cash differs |
+| The economy closes (WORLD-0005) | done | `make soak`: 35 rules-days, 8 invariants, PASS; `ops/soak.live.md`: 10 live days decided by Jev, PASS, $0.0069 per sim-day |
+| Gates in one module, scheduler registry, `OrgSpec` data | done | `decide/gates.py`, `world/scheduler.py`, `core/orgs.py` |
+| Look: sun shadows, baked AO, four sky states, four distinct buildings, people with heads/hats, lit windows and lamps at night | merged from `ui/look` | `apps/web/decisions/WEB-0004`, `docs/audit/2026-09-22/ui-agent/NOTES.md`; 61 fps on the real GPU in the agent's own shots |
+| CI runs against Postgres 18; record confirmations run in a job that has the tools | done | see the PR's checks |
+
+## What was NOT done (cut, not deferred silently)
+
+- **104 embodied staff.** `core/orgs.py` already carries the headcounts (44/24/20/16) and a test-asserted total, and `ui/look` has layouts that fit them, but `world/map.py` is still the 40x28 town and `seed_world.py` still seeds 24 staff. The map sizes and roster are drafted, not applied.
+- **Plans, beliefs, encounter outcomes (P3):** no `plans` or `beliefs` tables, no `agent.plan`, no typed knowledge. `agent.tick` is still one Jev call per staff per open tick. Encounters still change exactly one thing (escalation). DECIDE-0001, CORE-0002, WORLD-0003 and MEM-0001 are **not** superseded and MEM-0001 remains unimplemented.
+- **5-minute tick:** stayed at 15 minutes. **Quintile trait words, `vocality`/`risk_appetite` rendering:** not done.
+- **UI:** `apps/web` is unchanged except the timeline opening on the newest events. No shared client store, no hero camera reframing, no ticker, no bubble work, no `/lab` split, no design tokens, no before/after screenshot set. The UI agent stopped on a usage limit; its uncommitted follow-up (`people.ts`, `people.test.ts`) is still in `.claude/worktrees/` and is not on any branch.
+- **P2:** no fault-injection gate over a whole soak (the daemon's survival is unit-tested, not soaked); no eviction of a malformed cached row; the cassette was not pruned.
+- **P6:** no README, `.env.example`, `make web`/`make dev`, per-question-set max-p in `ops/economics.md`, or org-as-data design doc. The scheduled ADR reconciliation (CORE-0004 / DECIDE-0002) was not done.
+
+## Findings worth your attention
+
+- **Money circulates, and Tallybird still runs down.** Over 35 rules-days its cash falls from $48,000 to $7,900 with insolvency warnings naming the cause. The invariant only requires that a failing firm was seen failing; per the rule against tuning, it was left alone. It is a finding about the parameters, not the plumbing.
+- Halloran and Ledgerline reach 24 and 38 of 100 clients in 35 days: the plumbing no longer starves clients, but each firm bills only ~12% of its clients a month.
+- The counterfactual now separates late money from different money: 41 of 41 invoices identical in amount across arms, 15 issued at a different time, cash differs at every firm.
+
+## Spend
+
+$0.3067 total ($0.10 this session): cassette re-recording, the 10-day live soak with its counterfactual arm, and a smoke call. Ceiling ladder untouched.
+
+## To continue
+
+1. Apply the 104-seat map (`world/map.py` bounds are in the plan and in the `ui/look` layout tests), seed the roster, re-record.
+2. Plans, beliefs and encounter outcomes (the research question's other half), then the client store and hero framing.
+3. Restore the UI agent's stranded work: `git -C .claude/worktrees/agent-a21345bc74ea4fd87 status`.
+
+---
+
+# Session 3 — earlier status log (Phase 0 gate)
 
 Plan: build session 3, approved 2026-09-20 19:10 PDT. Input: `docs/audit/2026-09-21/README.md`.
 Record numbers follow the scaffolder, not the plan's labels: the plan's "CORE-0010 layering"
