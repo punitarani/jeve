@@ -47,6 +47,13 @@ test: ## pytest, no network
 decisions: ## Validate records; fail if generated artifacts are stale
 	python3 scripts/gen-decisions.py --check
 	python3 scripts/test_gen_decisions.py
+	python3 scripts/test_run_confirmations.py
+
+.PHONY: confirm
+confirm: ## Run every decision record's confirmation command, once each
+	# CI collects the pytest ones instead, because the job has just run the
+	# whole suite (OPS-0002). Here they execute.
+	python3 scripts/run-confirmations.py
 
 .PHONY: gen
 gen: ## Regenerate the decision index and Cursor rules
