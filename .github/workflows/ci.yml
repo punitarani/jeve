@@ -63,6 +63,14 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+      # `npx nx` resolves the local install — without node_modules it would
+      # fetch whatever nx is latest that minute, not the lockfile's 23.2.1.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
 
       # The Python project lives in py/ — there is no root pyproject.toml, so a
       # bare `uv sync` fails before any check runs.
@@ -94,10 +102,11 @@ jobs:
         run: |
           # `config.py` names the base URL as a default the gateway reads. It
           # is configuration, not a caller: nothing there opens a connection.
+          # `.env.*.example` files document the same default for operators.
           if git grep -nE 'openrouter\.ai/api' -- \
                ':!py/src/jeve/llm/**' ':!py/src/jeve/config.py' \
                ':!decisions/**' ':!docs/**' \
-               ':!.github/**' ':!ops/**' ':!*.md'; then
+               ':!.github/**' ':!ops/**' ':!*.md' ':!.env*'; then
             echo "::error::Only jeve.llm may address OpenRouter (LLM-0004)."
             exit 1
           fi
@@ -150,6 +159,9 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      # OPS-0001's confirmation is `fly config validate` — nothing else in
+      # this job provides the binary.
+      - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: uv sync --frozen --directory py
       - run: pnpm install --frozen-lockfile
       - name: Run each record's confirmation command, once each

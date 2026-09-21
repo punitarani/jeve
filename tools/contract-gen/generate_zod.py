@@ -6,6 +6,7 @@ under `uv run --directory py` so `jeve` resolves from the installed package —
 no path juggling. `contracts:check-drift` regenerates and fails on a git diff.
 """
 
+import enum
 import types
 import typing
 from pathlib import Path
@@ -67,6 +68,15 @@ def python_type_to_zod(annotation: object, *, required: bool) -> str:
             value = python_type_to_zod(args[1], required=True)
             return f"z.record({key}, {value})"
         return "z.record(z.string(), z.unknown())"
+    if origin is tuple:
+        # A fixed-length tuple is a zod tuple: a Tile is [x, y], not a list.
+        args = get_args(annotation)
+        inner = ", ".join(python_type_to_zod(a, required=True) for a in args)
+        return f"z.tuple([{inner}])"
+    if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
+        # An enum is the vocabulary's single source: zod gets its values.
+        args = ", ".join(f'"{m.value}"' for m in annotation)
+        return f"z.enum([{args}])"
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
         return annotation.__name__
     raise TypeError(f"no zod mapping for {annotation!r}")
@@ -103,7 +113,13 @@ import { z } from "zod";
         for name, field in model.model_fields.items():
             out += comment(field.description)
             required = field.default is PydanticUndefined
-            out += f"  {name}: {python_type_to_zod(field.annotation, required=required)},\n"
+            zod = python_type_to_zod(field.annotation, required=required)
+            # A default means the key may be absent, whatever its type — the
+            # union branch already marks `X | None = default`; everything else
+            # gets its `.optional()` here.
+            if not required and not zod.endswith(".optional()"):
+                zod += ".optional()"
+            out += f"  {name}: {zod},\n"
         out += "});\n"
         out += f"export type {model.__name__} = z.infer<typeof {model.__name__}>;\n\n"
 

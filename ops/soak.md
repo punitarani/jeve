@@ -2,7 +2,7 @@
 
 Written by `make soak`. Invariants, not outcomes: a firm may fail here; it may not fail unexplained (WORLD-0005).
 
-**PASS** — 7 of 7 invariants hold.
+**PASS** — 8 of 8 invariants hold.
 
 | invariant | holds | evidence |
 |---|---|---|
@@ -13,6 +13,22 @@ Written by `make soak`. Invariants, not outcomes: a firm may fail here; it may n
 | wages come back as demand | yes | households were paid $147,800 and spent $4,365 at the cafe |
 | a firm running out of money was seen running out, with a cause | yes | none unexplained |
 | the economy reaches more than one month's clients | yes | tallybird 100 reached / 100 decided, of 100, halloran 24 reached / 13 decided, of 100, ledgerline 38 reached / 19 decided, of 100, thirdrail 100 reached / 100 decided, of 100 |
+| the outage moves money without re-rolling it | yes | invoice amounts identical across arms and cash different |
+
+## Counterfactual: the same world without the month-end outage
+
+| | outage | no outage |
+|---|---:|---:|
+| month-end client invoices issued | 41 | 41 |
+| issued in both arms | 41 | 41 |
+| of those, same amount in both arms | 41 | 41 |
+| of those, issued at a different time | 15 | 15 |
+| tallybird cash at the end | $7,900.00 | $8,170.00 |
+| halloran cash at the end | $78,580.91 | $89,825.43 |
+| ledgerline cash at the end | $75,154.50 | $98,004.48 |
+| thirdrail cash at the end | $35,768.76 | $35,059.10 |
+
+**Invoice amounts constant across arms:** yes (41 of 41). **Cash differs across arms:** yes.
 
 ## Measures (reported, not asserted)
 

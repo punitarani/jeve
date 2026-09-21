@@ -19,6 +19,48 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from jeve.world.map import Zone
+
+# sim_meta.status's CHECK constraint is the vocabulary — every status the
+# daemon can write, on the wire verbatim.
+SimStatus = Literal[
+    "running",
+    "paused",
+    "paused_budget",
+    "waiting_on_model",
+    "waiting_on_budget",
+    "halted",
+]
+OrgKind = Literal["software", "law", "accounting", "cafe"]
+# The tile vocabulary lives in world/map.py's layout code, not in an enum —
+# the wire test over /world/map is what keeps this list honest.
+TileKindName = Literal[
+    "grass",
+    "plaza",
+    "path",
+    "wall",
+    "floor",
+    "door",
+    "desk",
+    "counter",
+    "table",
+    "tree",
+    "fountain",
+    "chair",
+    "bench",
+    "whiteboard",
+    "server_rack",
+    "bookshelf",
+    "conference",
+    "reception",
+    "filing",
+    "partition",
+    "kitchen",
+    "plant",
+    "planter",
+    "lamp",
+]
+
 
 class Clock(BaseModel):
     sim_time: int
@@ -27,14 +69,7 @@ class Clock(BaseModel):
     weekday: int
     in_office_hours: bool
     tick_seq: int
-    status: Literal[
-        "running",
-        "paused",
-        "paused_budget",
-        "waiting_on_model",
-        "waiting_on_budget",
-        "halted",
-    ] = Field(
+    status: SimStatus = Field(
         description="Every value the database's CHECK allows. `paused_budget` "
         "was missing, so the day the governor paused the world the page would "
         "have failed to parse."
@@ -46,7 +81,7 @@ class Clock(BaseModel):
 class Org(BaseModel):
     id: str
     name: str
-    kind: Literal["software", "law", "accounting", "cafe"]
+    kind: OrgKind
     cash_cents: int
     receivable_cents: int
 
@@ -186,6 +221,159 @@ class DecisionsByKind(BaseModel):
     usd: float
 
 
+# -- the spatial world (WORLD-0003, WEB-0002) -------------------------------
+
+
+class Building(BaseModel):
+    """One building's footprint. `door` is the walkable tile in its wall."""
+
+    zone: Zone
+    org_id: str
+    name: str
+    x0: int
+    y0: int
+    x1: int
+    y1: int
+    door: tuple[int, int]
+
+
+class TownMap(BaseModel):
+    """GET /world/map — the whole town, as data. Static for a page's life."""
+
+    width: int
+    height: int
+    tiles: list[list[TileKindName]]
+    zones: list[list[Zone]]
+    buildings: list[Building]
+    crowd_spots: dict[str, list[tuple[int, int]]]
+    seats: dict[str, list[tuple[int, int]]]
+
+
+class Agent(BaseModel):
+    """One member of staff's position, as /world/agents serves it."""
+
+    id: str
+    name: str
+    org_id: str
+    role: str
+    zone: Zone
+    # NULL while at home — present on the wire as null, not omitted.
+    x: int | None
+    y: int | None
+    path: list[tuple[int, int]]
+    moved_tick: int
+    mood: int
+
+
+class AgentsFrame(BaseModel):
+    """GET /world/agents — the current frame: staff, the crowd, what is down."""
+
+    seq: int
+    tick_seq: int
+    sim_time: int
+    label: str
+    status: SimStatus
+    agents: list[Agent]
+    crowd: dict[str, int]
+    down_modules: list[str]
+
+
+class DecisionBrief(BaseModel):
+    """A person's last decision: the distribution Jev returned and the draw."""
+
+    id: int
+    sim_time: int
+    label: str
+    question_set: str
+    source: Literal["rules", "jev", "llm"]
+    model: str | None
+    chosen: dict[str, Any]
+    distributions: dict[str, dict[str, float]]
+    draws: dict[str, float]
+
+
+class EncounterBrief(BaseModel):
+    """Whom a person last met, and what the meeting led to."""
+
+    seq: int
+    label: str
+    with_id: str
+    with_name: str
+    zone: Zone
+    topic: str
+    initiated: bool
+    led_to: list[str]
+
+
+class AgentDetail(BaseModel):
+    """GET /world/agents/{id} — who they are, what they last decided, met."""
+
+    id: str
+    name: str
+    org_id: str
+    org_name: str
+    role: str
+    zone: Zone
+    mood: int
+    traits: dict[str, float]
+    trait_words: dict[str, str]
+    last_decision: DecisionBrief | None
+    last_encounter: EncounterBrief | None
+
+
+class OrgDetail(BaseModel):
+    """GET /orgs/{id} — one firm's books, people, and what is going on."""
+
+    id: str
+    name: str
+    kind: OrgKind
+    zone: Zone
+    cash_cents: int
+    receivable_cents: int
+    staff_present: int
+    staff_total: int
+    open_tickets: int
+    unpaid_invoices: int
+    active: list[str]
+
+
+class DialogueLine(BaseModel):
+    speaker: str
+    text: str
+
+
+class EncounterTyped(BaseModel):
+    """The typed record of one encounter — this, not the prose, is what
+    happened (GEN-0001)."""
+
+    seq: int
+    between: tuple[str, str]
+    zone: str
+    topic: str
+    mood: str
+    escalated: bool
+
+
+class EncounterProse(BaseModel):
+    """A rendering of the typed record. `skipped` is sent only by a fresh
+    render — cached prose has none — so the wire omits it rather than
+    sending null."""
+
+    lines: list[DialogueLine]
+    model: str
+    cost_usd: float
+    cached: bool
+    skipped: list[str] = []
+
+
+class EncounterDialogue(BaseModel):
+    """GET /encounters/{seq}/dialogue — the record always; prose if held."""
+
+    typed: EncounterTyped
+    prose: EncounterProse | None
+    reason: str | None
+
+
 class Economics(BaseModel):
     spend_usd: float
     spend_is_estimated_calls: int
@@ -224,5 +412,17 @@ MODELS: list[type[BaseModel]] = [
     SpendWithoutDedup,
     DecisionsByModel,
     DecisionsByKind,
+    Building,
+    TownMap,
+    Agent,
+    AgentsFrame,
+    DecisionBrief,
+    EncounterBrief,
+    AgentDetail,
+    OrgDetail,
+    DialogueLine,
+    EncounterTyped,
+    EncounterProse,
+    EncounterDialogue,
     Economics,
 ]

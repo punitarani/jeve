@@ -71,9 +71,11 @@ The sim group's command is
 
 Budgets (LLM-0007): `JEVE_RUN_CAP_USD=0` disables the per-process cap — the
 old default ($1) would have halted the daemon every few days. The
-$12/$16/$20 ladder is a guardrail, not the stop; OpenRouter's own account
-cap is the real ceiling. All four are env-tunable
-(`JEVE_{EXPLORE,HALT,HARD}_CEILING_USD` are set high in `fly.toml`).
+$12/$16/$20 ladder is a development guardrail measured against *lifetime*
+ledger spend: left at its defaults it would halt the daemon permanently at
+$16 cumulative, so `fly.toml` sets `JEVE_{EXPLORE,HALT,HARD}_CEILING_USD` to
+$10k — high enough never to bind in a real run, still a backstop if the
+account cap were ever unset. OpenRouter's own cap is the real ceiling.
 
 ## Statuses worth knowing
 

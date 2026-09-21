@@ -70,8 +70,13 @@ services:
       - JEVE_CASSETTE=off
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       # Guardrails, not the stop — OpenRouter's own cap is. Zero disables the
-      # per-process cap that used to halt the daemon every few days.
+      # per-process cap, and the lifetime ladder sits far above any real run:
+      # the dev defaults ($12/$16/$20) would halt the daemon for good at $16
+      # of cumulative spend (LLM-0007).
       - JEVE_RUN_CAP_USD=${JEVE_RUN_CAP_USD:-0}
+      - JEVE_EXPLORE_CEILING_USD=${JEVE_EXPLORE_CEILING_USD:-10000}
+      - JEVE_HALT_CEILING_USD=${JEVE_HALT_CEILING_USD:-10000}
+      - JEVE_HARD_CEILING_USD=${JEVE_HARD_CEILING_USD:-10000}
       - PYTHONPATH=/app/src
     # Deliberate halts arrive as exit 0 through the entrypoint, so on-failure
     # restarts crashes only — never a world that asked to stop.

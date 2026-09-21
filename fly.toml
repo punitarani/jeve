@@ -31,9 +31,13 @@ primary_region = "iad"  # Washington D.C. — closest to us-east-1
   # through the public API. Cached prose still serves.
   JEVE_DIALOGUE_GENERATE = "off"
   # LLM-0007: local ceilings are observability, not the stop — OpenRouter's
-  # own cap is. The run cap is off; the ladder stays high so it watches
-  # rather than halts.
+  # own cap is. The run cap is off and the ladder sits far above any real
+  # run (~$120/day worst case at the governor's $2/window), so it watches
+  # rather than halts: crossing $10k means something else broke entirely.
   JEVE_RUN_CAP_USD = "0"
+  JEVE_EXPLORE_CEILING_USD = "10000"
+  JEVE_HALT_CEILING_USD = "10000"
+  JEVE_HARD_CEILING_USD = "10000"
   JEVE_CASSETTE = "off"
 
 [processes]

@@ -39,8 +39,7 @@ Working checklist for the autonomous completion loop. Updated as work lands.
   sim on boot. Checkpoint is now best-effort: warn once, disable; the table
   stays authoritative. API now waits on `migrate` in compose.
 * **Broken**: nothing known.
-* **Missing**: `HANDOFF.md`; production secrets not yet set
-  (deploy-blocked by choice).
+* **Missing**: production secrets not yet set (deploy-blocked by choice).
 
 ## Budget
 

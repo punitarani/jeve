@@ -177,6 +177,153 @@ export const DecisionsByKind = z.object({
 });
 export type DecisionsByKind = z.infer<typeof DecisionsByKind>;
 
+/** One building's footprint. `door` is the walkable tile in its wall. */
+export const Building = z.object({
+  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  org_id: z.string(),
+  name: z.string(),
+  x0: z.number().int(),
+  y0: z.number().int(),
+  x1: z.number().int(),
+  y1: z.number().int(),
+  door: z.tuple([z.number().int(), z.number().int()]),
+});
+export type Building = z.infer<typeof Building>;
+
+/** GET /world/map — the whole town, as data. Static for a page's life. */
+export const TownMap = z.object({
+  width: z.number().int(),
+  height: z.number().int(),
+  tiles: z.array(z.array(z.enum(["grass", "plaza", "path", "wall", "floor", "door", "desk", "counter", "table", "tree", "fountain", "chair", "bench", "whiteboard", "server_rack", "bookshelf", "conference", "reception", "filing", "partition", "kitchen", "plant", "planter", "lamp"]))),
+  zones: z.array(z.array(z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]))),
+  buildings: z.array(Building),
+  crowd_spots: z.record(z.string(), z.array(z.tuple([z.number().int(), z.number().int()]))),
+  seats: z.record(z.string(), z.array(z.tuple([z.number().int(), z.number().int()]))),
+});
+export type TownMap = z.infer<typeof TownMap>;
+
+/** One member of staff's position, as /world/agents serves it. */
+export const Agent = z.object({
+  id: z.string(),
+  name: z.string(),
+  org_id: z.string(),
+  role: z.string(),
+  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  x: z.number().int().nullable(),
+  y: z.number().int().nullable(),
+  path: z.array(z.tuple([z.number().int(), z.number().int()])),
+  moved_tick: z.number().int(),
+  mood: z.number().int(),
+});
+export type Agent = z.infer<typeof Agent>;
+
+/** GET /world/agents — the current frame: staff, the crowd, what is down. */
+export const AgentsFrame = z.object({
+  seq: z.number().int(),
+  tick_seq: z.number().int(),
+  sim_time: z.number().int(),
+  label: z.string(),
+  status: z.enum(["running", "paused", "paused_budget", "waiting_on_model", "waiting_on_budget", "halted"]),
+  agents: z.array(Agent),
+  crowd: z.record(z.string(), z.number().int()),
+  down_modules: z.array(z.string()),
+});
+export type AgentsFrame = z.infer<typeof AgentsFrame>;
+
+/** A person's last decision: the distribution Jev returned and the draw. */
+export const DecisionBrief = z.object({
+  id: z.number().int(),
+  sim_time: z.number().int(),
+  label: z.string(),
+  question_set: z.string(),
+  source: z.enum(["rules", "jev", "llm"]),
+  model: z.string().nullable(),
+  chosen: z.record(z.string(), z.unknown()),
+  distributions: z.record(z.string(), z.record(z.string(), z.number())),
+  draws: z.record(z.string(), z.number()),
+});
+export type DecisionBrief = z.infer<typeof DecisionBrief>;
+
+/** Whom a person last met, and what the meeting led to. */
+export const EncounterBrief = z.object({
+  seq: z.number().int(),
+  label: z.string(),
+  with_id: z.string(),
+  with_name: z.string(),
+  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  topic: z.string(),
+  initiated: z.boolean(),
+  led_to: z.array(z.string()),
+});
+export type EncounterBrief = z.infer<typeof EncounterBrief>;
+
+/** GET /world/agents/{id} — who they are, what they last decided, met. */
+export const AgentDetail = z.object({
+  id: z.string(),
+  name: z.string(),
+  org_id: z.string(),
+  org_name: z.string(),
+  role: z.string(),
+  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  mood: z.number().int(),
+  traits: z.record(z.string(), z.number()),
+  trait_words: z.record(z.string(), z.string()),
+  last_decision: DecisionBrief.nullable(),
+  last_encounter: EncounterBrief.nullable(),
+});
+export type AgentDetail = z.infer<typeof AgentDetail>;
+
+/** GET /orgs/{id} — one firm's books, people, and what is going on. */
+export const OrgDetail = z.object({
+  id: z.string(),
+  name: z.string(),
+  kind: z.enum(["software", "law", "accounting", "cafe"]),
+  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  cash_cents: z.number().int(),
+  receivable_cents: z.number().int(),
+  staff_present: z.number().int(),
+  staff_total: z.number().int(),
+  open_tickets: z.number().int(),
+  unpaid_invoices: z.number().int(),
+  active: z.array(z.string()),
+});
+export type OrgDetail = z.infer<typeof OrgDetail>;
+
+export const DialogueLine = z.object({
+  speaker: z.string(),
+  text: z.string(),
+});
+export type DialogueLine = z.infer<typeof DialogueLine>;
+
+/** The typed record of one encounter — this, not the prose, is what happened (GEN-0001). */
+export const EncounterTyped = z.object({
+  seq: z.number().int(),
+  between: z.tuple([z.string(), z.string()]),
+  zone: z.string(),
+  topic: z.string(),
+  mood: z.string(),
+  escalated: z.boolean(),
+});
+export type EncounterTyped = z.infer<typeof EncounterTyped>;
+
+/** A rendering of the typed record. `skipped` is sent only by a fresh render — cached prose has none — so the wire omits it rather than sending null. */
+export const EncounterProse = z.object({
+  lines: z.array(DialogueLine),
+  model: z.string(),
+  cost_usd: z.number(),
+  cached: z.boolean(),
+  skipped: z.array(z.string()).optional(),
+});
+export type EncounterProse = z.infer<typeof EncounterProse>;
+
+/** GET /encounters/{seq}/dialogue — the record always; prose if held. */
+export const EncounterDialogue = z.object({
+  typed: EncounterTyped,
+  prose: EncounterProse.nullable(),
+  reason: z.string().nullable(),
+});
+export type EncounterDialogue = z.infer<typeof EncounterDialogue>;
+
 export const Economics = z.object({
   spend_usd: z.number(),
   spend_is_estimated_calls: z.number().int(),

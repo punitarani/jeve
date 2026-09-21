@@ -236,6 +236,30 @@ def test_responses_match_the_pydantic_contract(client: TestClient) -> None:
 
     contracts.Economics.model_validate(client.get("/economics").json())
 
+    # The spatial surface (WORLD-0003): the map is static, the frame and the
+    # detail panels are live reads.
+    contracts.TownMap.model_validate(client.get("/world/map").json())
+    frame = contracts.AgentsFrame.model_validate(client.get("/world/agents").json())
+    assert frame.agents
+    contracts.AgentDetail.model_validate(
+        client.get(f"/world/agents/{frame.agents[0].id}").json()
+    )
+    contracts.OrgDetail.model_validate(client.get("/orgs/tallybird").json())
+
+    # The dialogue endpoint always carries the typed record; prose is absent
+    # for an encounter nobody paid to render. `generate=false` keeps the test
+    # offline.
+    encounter = client.get(
+        "/events", params={"kinds": "encounter", "latest": "true", "limit": 1}
+    ).json()["events"]
+    assert encounter, "the fixture runs through four open days with no encounters?"
+    contracts.EncounterDialogue.model_validate(
+        client.get(
+            f"/encounters/{encounter[0]['seq']}/dialogue",
+            params={"generate": "false"},
+        ).json()
+    )
+
 
 def test_economics_reports_measured_spend(client: TestClient) -> None:
     body = client.get("/economics").json()

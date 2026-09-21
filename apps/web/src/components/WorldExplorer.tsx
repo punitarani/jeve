@@ -105,7 +105,18 @@ function useDetail<T>(path: string, schema: ZodType<T>, tick: number) {
 		let live = true;
 		fetch(`${API}${path}`, { cache: "no-store" })
 			.then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-			.then((raw) => live && (setData(schema.parse(raw)), setError(null)))
+			.then((raw) => {
+				if (!live) return;
+				// safeParse, like lib/api: a shape change is a readable contract
+				// error, not a thrown exception three components deep.
+				const parsed = schema.safeParse(raw);
+				if (parsed.success) {
+					setData(parsed.data);
+					setError(null);
+				} else {
+					setError(`${path} did not match the contract`);
+				}
+			})
 			.catch((e: unknown) => live && setError(String(e)));
 		return () => {
 			live = false;

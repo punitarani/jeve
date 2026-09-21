@@ -29,10 +29,15 @@ Two directions, both failing checks:
 * A required `X | None` field generates `.nullable()`; a field with a default
   generates `.optional()` — matching the wire, where the API omits keys rather
   than sending JSON null.
+* `Literal[...]` and `StrEnum` annotations generate `z.enum`; a fixed-length
+  `tuple[...]` generates `z.tuple` (a `Tile` is `[x, y]`, not a list).
 * `MODELS` in `contracts.py` is the emission order: dependencies come before
   the schemas that reference them (zod consts read their references at module
   load).
 * `ORG_COLORS` is emitted as a constant, not a schema.
+* `world.ts` keeps only what is not on the wire — the `Zone`/`TileKind`
+  vocabularies, `Tile`, and `ORG_PALETTE` for the renderer. Every API
+  response schema, `/world/*` included, is generated.
 
 ## Maintenance
 

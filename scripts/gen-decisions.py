@@ -2,8 +2,9 @@
 """Validate decision records and regenerate everything derived from them.
 
 Markdown is canonical. `decisions/INDEX.md`, `decisions/index.jsonl`,
-`decisions/schema.json` and `.cursor/rules/decision-*.mdc` are outputs and are
-never hand-edited — CI regenerates them and fails if the tree is dirty.
+`decisions/schema.json` and the generated block in `AGENTS.md` are outputs
+and are never hand-edited — CI regenerates them and fails if the tree is
+dirty.
 
 Stdlib only, on purpose. The upstream ADR tools are archived or unmaintained,
 and a hundred lines we own beats a dependency we cannot fix at 3am.

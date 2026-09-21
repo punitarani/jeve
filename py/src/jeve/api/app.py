@@ -68,7 +68,7 @@ app.add_middleware(
     allow_origin_regex=(
         None if _cors_origins else r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"
     ),
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET"],
     allow_headers=["*"],
 )
 
@@ -128,7 +128,11 @@ def health() -> JSONResponse:
             conn.execute("SELECT 1")
         return JSONResponse({"ok": True})
     except Exception as error:  # reporting any failure is this endpoint's job
-        return JSONResponse({"ok": False, "error": str(error)}, status_code=503)
+        # Public endpoint: the class names the failure without echoing a DSN
+        # or internal hostname the way str(error) would.
+        return JSONResponse(
+            {"ok": False, "error": type(error).__name__}, status_code=503
+        )
 
 
 @app.get("/state")
