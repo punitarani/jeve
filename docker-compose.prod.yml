@@ -80,7 +80,7 @@ services:
       # LLM-0008: unset key means tracing is simply off, which is the default
       # here — the daemon behaves exactly as it did before either way.
       - BRAINTRUST_API_KEY=${BRAINTRUST_API_KEY:-}
-      - BRAINTRUST_PROJECT=${BRAINTRUST_PROJECT:-jeve}
+      - BRAINTRUST_PROJECT_ID=${BRAINTRUST_PROJECT_ID:-}
       - PYTHONPATH=/app/src
     # Deliberate halts arrive as exit 0 through the entrypoint, so on-failure
     # restarts crashes only — never a world that asked to stop.

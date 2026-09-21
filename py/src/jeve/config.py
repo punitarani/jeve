@@ -45,7 +45,8 @@ class Settings(BaseModel):
     # `jeve.tracing` never imports the SDK and opens no socket, which is what
     # keeps CI and a clean clone offline.
     braintrust_api_key: str | None = None
-    braintrust_project: str = "jeve"
+    braintrust_project_id: str | None = None
+    """An id, not a name: a project that gets renamed keeps its spans."""
 
     @property
     def spend_path(self) -> Path:
@@ -109,5 +110,5 @@ def load_settings(*, ops_dir: Path | None = None) -> Settings:
         dialogue_generate=os.environ.get("JEVE_DIALOGUE_GENERATE", "on")
         not in ("off", "0", "false"),
         braintrust_api_key=os.environ.get("BRAINTRUST_API_KEY") or None,
-        braintrust_project=os.environ.get("BRAINTRUST_PROJECT") or "jeve",
+        braintrust_project_id=os.environ.get("BRAINTRUST_PROJECT_ID") or None,
     )

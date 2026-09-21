@@ -169,12 +169,7 @@ def test_the_real_sdk_produces_the_span_shape_we_meant() -> None:
     init_test_logger("jeve-span-shape")
     with bt._internal_with_memory_background_logger() as memory:
         tracing.reset()
-        assert tracing.configure(
-            settings=Settings(
-                braintrust_api_key=bt.TEST_API_KEY,
-                braintrust_project="jeve-span-shape",
-            )
-        )
+        assert tracing.configure(settings=Settings(braintrust_api_key=bt.TEST_API_KEY))
         with tracing.span("decide.batch", type="task", metadata={"mode": "record"}):
             with tracing.span("jev.decide", type="llm", input={"state": "x"}) as call:
                 call.log(

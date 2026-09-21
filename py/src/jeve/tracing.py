@@ -103,7 +103,9 @@ class _Guarded:
 class _BraintrustSink:
     """The real sink. Imports the SDK only once tracing is known to be on."""
 
-    def __init__(self, *, project: str, api_key: str) -> None:
+    DEFAULT_PROJECT = "jeve"
+
+    def __init__(self, *, project_id: str | None, api_key: str) -> None:
         import braintrust
         from braintrust.span_types import SpanTypeAttribute
 
@@ -113,7 +115,14 @@ class _BraintrustSink:
         # a wrong key costs nothing until a span is actually written. The
         # default `async_flush=True` batches on a background thread, which is
         # what a daemon that runs for days needs.
-        braintrust.init_logger(project=project, api_key=api_key)
+        # `project_id` wins where it is set, per the SDK; the name is the
+        # fallback, and braintrust creates that project if it is missing.
+        # Passing both is one call rather than a branch — and `init_logger`
+        # with neither resolves to no object at all, which only shows up
+        # later as an assertion inside span export.
+        braintrust.init_logger(
+            project=self.DEFAULT_PROJECT, project_id=project_id, api_key=api_key
+        )
 
     def start_span(
         self, name: str, *, type: str | None, parent: str | None, **event: Any
@@ -160,7 +169,7 @@ def configure(*, settings: Settings | None = None, sink: Sink | None = None) -> 
             if not resolved.braintrust_api_key:
                 return False
             _sink = _BraintrustSink(
-                project=resolved.braintrust_project,
+                project_id=resolved.braintrust_project_id,
                 api_key=resolved.braintrust_api_key,
             )
             return True
