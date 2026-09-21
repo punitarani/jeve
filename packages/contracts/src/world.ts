@@ -56,6 +56,12 @@ export const TownMap = z.object({
   zones: z.array(z.array(Zone)),
   buildings: z.array(Building),
   crowd_spots: z.record(z.string(), z.array(Tile)),
+  /**
+   * Per zone, the tiles somebody sits on rather than stands on: chairs and
+   * benches, whether they belong to staff or to visitors (WEB-0004). A barista's
+   * place behind the counter is not one.
+   */
+  seats: z.record(z.string(), z.array(Tile)),
 });
 export type TownMap = z.infer<typeof TownMap>;
 

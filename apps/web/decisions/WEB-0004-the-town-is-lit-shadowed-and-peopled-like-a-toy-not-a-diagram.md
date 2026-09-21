@@ -4,7 +4,7 @@ title: The town is lit, shadowed and peopled like a toy, not a diagram
 status: accepted
 date: 2026-09-20
 deciders: ["claude"]
-scope: ["packages/world/src/render.ts", "packages/world/src/voxels.ts", "packages/world/src/model.ts", "py/src/jeve/world/map.py", "packages/contracts/src/world.ts"]
+scope: ["packages/world/src/render.ts", "packages/world/src/voxels.ts", "packages/world/src/sky.ts", "packages/world/src/model.ts", "py/src/jeve/world/map.py", "packages/contracts/src/world.ts"]
 tags: ["three.js", "rendering", "lighting", "characters", "agent-decided"]
 supersedes: []
 superseded-by: null

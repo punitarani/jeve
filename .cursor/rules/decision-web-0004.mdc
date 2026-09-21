@@ -1,6 +1,6 @@
 ---
 description: WEB-0004: The town is lit, shadowed and peopled like a toy, not a diagram. The look is computed, not post-processed: occlusion and colour jitter are baked per corner when the voxels are built, sky and sun are a pure function of the sim clock, shadow maps are for real GPUs only, and people are posed from four optional fields on the scene model. Consult before changing this area, or when asking why it works this way, what was decided, or whether it can be changed. Topics: three.js, rendering, lighting, characters, agent-decided.
-globs: packages/world/src/render.ts,packages/world/src/voxels.ts,packages/world/src/model.ts,py/src/jeve/world/map.py,packages/contracts/src/world.ts
+globs: packages/world/src/render.ts,packages/world/src/voxels.ts,packages/world/src/sky.ts,packages/world/src/model.ts,py/src/jeve/world/map.py,packages/contracts/src/world.ts
 alwaysApply: false
 ---
 

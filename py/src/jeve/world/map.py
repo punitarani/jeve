@@ -38,7 +38,12 @@ ORG_ZONE: dict[str, Zone] = {
 }
 ZONE_ORG: dict[Zone, str] = {zone: org for org, zone in ORG_ZONE.items()}
 
-WALKABLE = frozenset({"floor", "door", "plaza", "path", "grass"})
+WALKABLE = frozenset(
+    {"floor", "door", "plaza", "path", "grass", "chair", "bench", "deck"}
+)
+SITTABLE = frozenset({"chair", "bench"})
+"""Walkable tiles that are furniture to sit on. Someone whose spot is one of
+these is drawn sitting (WEB-0004); everybody else stands."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +99,13 @@ class TownMap:
     def zone_of(self, tile: Tile) -> Zone:
         x, y = tile
         return Zone(self.zones[y][x])
+
+    def sittable(self, zone: Zone) -> tuple[Tile, ...]:
+        """The places in a zone where one sits: its chairs and benches, staff's
+        and visitors' alike, in the order they are handed out."""
+
+        spots = (*self.seats[zone], *self.visitor_spots[zone])
+        return tuple(t for t in dict.fromkeys(spots) if self.kind(t) in SITTABLE)
 
 
 def _office(grid: list[list[str]], b: Building) -> tuple[list[Tile], list[Tile]]:

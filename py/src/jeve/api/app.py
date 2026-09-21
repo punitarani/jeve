@@ -472,6 +472,13 @@ def world_map() -> dict[str, object]:
             Zone.CAFE.value: [list(t) for t in plan.visitor_spots[Zone.CAFE]],
             Zone.PLAZA.value: [list(t) for t in plan.visitor_spots[Zone.PLAZA]],
         },
+        # WEB-0004: the tiles somebody sits on, so a client can draw them
+        # sitting. Not `plan.seats`, which is where staff *work*: a barista's
+        # place is behind the counter, on her feet.
+        "seats": {
+            zone.value: [list(t) for t in plan.sittable(zone)]
+            for zone in plan.visitor_spots
+        },
     }
 
 

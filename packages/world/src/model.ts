@@ -12,6 +12,8 @@
  */
 import type { Agent, AgentsFrame, Tile, TownMap, Zone } from "@jeve/contracts";
 
+import { minuteOfDay, skyAt } from "./sky";
+
 export type Move = {
   seq: number;
   tick: number;
@@ -41,7 +43,29 @@ export type Walker = {
   routeEnd: number;
   /** Where the walk ends up: a zone, or off the map. */
   routeToZone: Zone | null;
+
+  // -- pose (WEB-0004). All optional, all set through `WorldModel.setPose`. --
+  // The renderer draws from these and from nothing else: it does not read the
+  // event stream. Unset means "no opinion", not "false" — see each field.
+
+  /**
+   * Drawn sitting: legs forward, body lowered onto the seat. When undefined the
+   * renderer falls back to one inference: somebody standing still on a tile the
+   * map lists in `seats` is sitting on it. `false` overrides that.
+   */
+  seated?: boolean;
+  /** World yaw in radians to stand facing, as `heading` is: 0 faces +y (south). */
+  facing?: number;
+  /**
+   * The id of the person they are talking to. While that person is visible it
+   * wins over `facing`: they turn towards them, and gesture a little.
+   */
+  talkingTo?: string;
+  /** Drawn with a ring on the ground under them and a marker over their head. */
+  selected?: boolean;
 };
+
+export type Pose = Partial<Pick<Walker, "seated" | "facing" | "talkingTo" | "selected">>;
 
 export type CrowdDot = { x: number; y: number; phase: number; tint: number };
 
@@ -83,6 +107,12 @@ export class WorldModel {
   downModules: string[] = [];
   /** True while the scene is replaying recorded movement rather than live. */
   replaying = false;
+  /**
+   * Light the scene as at this minute of the day instead of the sim clock's.
+   * For looking at four times of day without simulating four days; null in
+   * anything a visitor sees.
+   */
+  clockOverride: number | null = null;
 
   private truth = new Map<string, Agent>();
   private history: Move[] = [];
@@ -94,6 +124,29 @@ export class WorldModel {
 
   setMap(map: TownMap): void {
     this.map = map;
+  }
+
+  /** Minutes since midnight on the sim clock: what the sky is a function of. */
+  get minute(): number {
+    return this.clockOverride ?? minuteOfDay(this.label);
+  }
+
+  /**
+   * Pose somebody (WEB-0004). The one way poses are set.
+   *
+   * Only the keys present in `pose` change, and a key present with the value
+   * `undefined` clears that field back to "no opinion" — so
+   * `setPose(id, { talkingTo: undefined })` ends a conversation and leaves
+   * `seated` alone. Unknown ids are ignored: an event can name somebody the
+   * first frame has not delivered yet.
+   */
+  setPose(id: string, pose: Pose): void {
+    const walker = this.walkers.get(id);
+    if (walker === undefined) return;
+    if ("seated" in pose) walker.seated = pose.seated;
+    if ("facing" in pose) walker.facing = pose.facing;
+    if ("talkingTo" in pose) walker.talkingTo = pose.talkingTo;
+    if ("selected" in pose) walker.selected = pose.selected;
   }
 
   /** The authoritative frame: where the server says everyone is right now. */
@@ -382,8 +435,14 @@ export class WorldModel {
     live: boolean;
     visible: number;
     walking: number;
+    /** The minute of the sim day the scene is lit for, and the light at it. */
+    minute: number;
+    sky: string;
+    sunIntensity: number;
+    lamps: number;
     agents: { id: string; x: number; y: number; zone: Zone; visible: boolean }[];
   } {
+    const sky = skyAt(this.minute);
     const agents = [...this.walkers.values()].map((w) => ({
       id: w.id,
       x: Math.round(w.x * 100) / 100,
@@ -399,6 +458,10 @@ export class WorldModel {
       live: this.live,
       visible: agents.filter((a) => a.visible).length,
       walking: [...this.walkers.values()].filter((w) => w.walking).length,
+      minute: this.minute,
+      sky: sky.top,
+      sunIntensity: Math.round(sky.sunIntensity * 1000) / 1000,
+      lamps: Math.round(sky.lamps * 1000) / 1000,
       agents,
     };
   }
