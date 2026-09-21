@@ -64,7 +64,9 @@ curl -sf "$API/health" >/dev/null || { cat "$LOGS/api.log"; exit 1; }
 echo "2/4  site on ${WEB_PORT} (production build)"
 export NEXT_PUBLIC_JEVE_API="$API" JEVE_NEXT_DIST="$DIST"
 pnpm --filter @jeve/web exec next build > "$LOGS/web-build.log" 2>&1 || { tail -40 "$LOGS/web-build.log"; exit 1; }
-pnpm --filter @jeve/web exec next start --port "$WEB_PORT" > "$LOGS/web.log" 2>&1 &
+# WEB-0005: the build is a static export — `next start` does not exist for it,
+# and the files land in the dist dir (apps/web/$DIST), not out/.
+node scripts/static-serve.mjs "apps/web/${DIST}" --port "$WEB_PORT" > "$LOGS/web.log" 2>&1 &
 for _ in $(seq 1 40); do curl -sf "$WEB" >/dev/null && break || sleep 1; done
 
 echo "3/4  the day, hour by hour"
