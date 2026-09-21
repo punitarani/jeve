@@ -47,8 +47,15 @@ test("the primary flow: click an outage and follow what it caused", async ({
   const timeline = page.getByTestId("timeline");
   await expect(timeline).toBeVisible();
 
-  const total = await page.locator(".ev").count();
-  expect(total).toBeGreaterThan(50);
+  // `encounter` is filtered out by default, so `.ev` counts what is shown.
+  // The substantial log this test needs is what was *loaded*, which the
+  // header carries as "N of M events" (just "M events" with no filter on).
+  const heading = page.getByRole("heading", { name: /causal timeline/i });
+  const loaded = Number(
+    (await heading.textContent())?.match(/(\d+) events/)?.[1],
+  );
+  expect(loaded).toBeGreaterThan(50);
+  expect(await page.locator(".ev").count()).toBeGreaterThan(0);
 
   // Nothing is dimmed until something is selected.
   expect(await page.locator(".ev.dim").count()).toBe(0);
@@ -128,4 +135,62 @@ test("filtering to one org narrows the timeline", async ({ page }) => {
       [...new Set(els.map((el) => el.children[1]?.textContent))].filter(Boolean),
     );
   expect(orgs).toEqual(["thirdrail"]);
+});
+
+test("encounters start filtered out, and the chip puts them back", async ({
+  page,
+}) => {
+  const chip = page.getByTestId("kind-encounter");
+  await expect(chip).toBeVisible();
+
+  // The panel opens on signal: staff small-talk is offered, not shown.
+  await expect(chip).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator('.ev[data-kind="encounter"]')).toHaveCount(0);
+
+  const before = await page.locator(".ev").count();
+  await chip.click();
+  await expect(chip).toHaveAttribute("aria-pressed", "true");
+  await expect
+    .poll(async () => page.locator(".ev").count(), { timeout: 10_000 })
+    .toBeGreaterThan(before);
+
+  // And it is reversible.
+  await chip.click();
+  await expect
+    .poll(async () => page.locator('.ev[data-kind="encounter"]').count(), {
+      timeout: 10_000,
+    })
+    .toBe(0);
+});
+
+test("a filtered-out kind still shows inside a cascade", async ({ page }) => {
+  // An encounter is how an outage reaches a ticket (WORLD-0003). Hiding the
+  // kind must not put a hole in the chain this dashboard exists to show.
+  await page.locator('[data-kind="incident.started"]').first().click();
+  await expect(page.locator(".ev.sel")).toHaveCount(1);
+  await expect
+    .poll(async () => page.locator(".ev.dim").count(), { timeout: 10_000 })
+    .toBeGreaterThan(0);
+
+  // Every encounter on screen earned its place by being causally related.
+  await expect(
+    page.locator('.ev[data-kind="encounter"][data-related="no"]'),
+  ).toHaveCount(0);
+});
+
+test("rows carry a readable line, not just the kind name", async ({ page }) => {
+  // Everything on, so the encounter rows are on screen too. Scoped by testid:
+  // Playwright matches an accessible name as a substring, and "tallybird"
+  // contains "all", so a name query here would hit every org's row.
+  await page.getByTestId("filter-all").click();
+
+  // Where it happened and what it was about, not just the word "encounter".
+  await expect(page.locator('.ev[data-kind="encounter"]').first()).toContainText(
+    /encounter · \w/,
+  );
+
+  // And the kind that opens the primary flow names the module that went down.
+  await expect(
+    page.locator('.ev[data-kind="incident.started"]').first(),
+  ).toContainText(/incident\.started · \w/);
 });

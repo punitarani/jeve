@@ -6,17 +6,60 @@ still works with no Docker); CI and `make e2e` run them for real.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
 import pytest
-from psycopg import Connection
+from psycopg import Connection, sql
 from psycopg.rows import DictRow
 
 from jeve import db, tracing
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Under xdist, each worker gets a database of its own (OPS-0002).
+
+    Every heavy module seeds, truncates or write-locks the one database behind
+    `JEVE_DATABASE_URL`, and `test_db` drops its schema outright — two workers
+    sharing it would wipe each other's worlds. Worker `gwN` runs on
+    `<database>_gwN`, created here if it does not exist yet.
+
+    Written to `os.environ` rather than monkeypatched because the daemon
+    subprocesses in `test_resume` and `test_daemon` inherit the environment,
+    and they must write to the same database their parent is watching.
+    """
+
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker:
+        return
+
+    parts = urlsplit(db.dsn())
+    name = f"{parts.path.lstrip('/') or 'jeve'}_{worker}"
+    os.environ["JEVE_DATABASE_URL"] = urlunsplit(parts._replace(path=f"/{name}"))
+
+    try:
+        with psycopg.connect(
+            urlunsplit(parts._replace(path="/postgres")), autocommit=True
+        ) as admin:
+            found = admin.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s", (name,)
+            ).fetchone()
+            if found is None:
+                admin.execute(
+                    sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name))
+                )
+    except psycopg.OperationalError:
+        # No server at all: every database fixture skips, exactly as it does
+        # without xdist. Anything else — no CREATEDB right, say — propagates
+        # and fails the worker loudly. Several workers quietly sharing one
+        # database is the failure this hook exists to prevent, and it would
+        # show up as an unrelated test being wiped mid-run.
+        return
 
 
 @pytest.fixture(scope="module")

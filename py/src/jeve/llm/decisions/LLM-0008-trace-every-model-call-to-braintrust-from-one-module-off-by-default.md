@@ -9,7 +9,7 @@ tags: ["observability", "braintrust", "llm", "agent-decided"]
 supersedes: []
 superseded-by: null
 relates-to: ["LLM-0001", "LLM-0004", "LLM-0007", "DECIDE-0004", "CORE-0005"]
-confirmation: "cd py && uv run pytest tests/test_tracing.py -q"
+confirmation: "cd py && uv run pytest tests/test_tracing.py"
 ---
 
 # LLM-0008 — trace every model call to braintrust, from one module, off by default
