@@ -7,11 +7,12 @@
 name = "jeve-web"
 compatibility_date = "2026-09-21"
 
-[assets]
-directory = "out"
-
 # The custom domain. The API is a separate origin (jeve-api.punitarani.com),
 # baked into the bundle via NEXT_PUBLIC_JEVE_API when the site is built.
+# Top-level: inside [assets] it parses as assets.routes and is ignored.
 routes = [
   { pattern = "jeve.punitarani.com", custom_domain = true }
 ]
+
+[assets]
+directory = "out"

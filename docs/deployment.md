@@ -29,6 +29,12 @@ advisory lock, which a transaction-mode pooler silently drops. `sim` uses
 and falls back to the direct DSN. `DATABASE_URL` (what `fly postgres attach`
 writes) is accepted as a fallback for both.
 
+The store is Postgres, not PlanetScale: the writer lock and the spend ledger
+both ride `pg_advisory_xact_lock`, migrations use Postgres SQL (`FILTER`,
+`jsonb`, advisory locks), and the driver is psycopg. A MySQL-compatible host
+cannot satisfy LLM-0007 — if PlanetScale is ever required it is a new
+decision record and a storage-port, not a config change.
+
 ## First deploy
 
 ```bash
