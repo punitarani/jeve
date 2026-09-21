@@ -297,4 +297,4 @@ jobs:
       # One deploy ships every process group in fly.toml (api and sim) from
       # one image; the release_command in fly.toml runs migrations first.
       - name: Deploy api+sim to Fly.io
-        run: fly deploy --config fly.toml
+        run: flyctl deploy --config fly.toml

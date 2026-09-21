@@ -10,7 +10,7 @@ tags: ["deployment", "fly", "cloudflare", "doppler", "agent-decided"]
 supersedes: []
 superseded-by: null
 relates-to: ["LLM-0007", "SIM-0003", "WEB-0005", "GEN-0001"]
-confirmation: "fly config validate --config fly.toml"
+confirmation: "flyctl config validate --config fly.toml"
 
 ---
 
