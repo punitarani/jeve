@@ -67,8 +67,9 @@ The component layer is **shadcn (Base UI preset, nova style), vendored into
 
 * e2e's `person-select` driver is a Base UI listbox (`role=option`), not a
   `<select>` — the spec clicks the trigger and picks the option by name.
-* New dependencies: `@base-ui/react`, `tailwindcss` v4 + `@tailwindcss/postcss`
-  + `tw-animate-css`, `sonner`, `next-themes`, `class-variance-authority`,
-  `cn`, `lucide-react`, `motion` (jelly-loader), `shadcn` (dev-time CLI).
+* New dependencies: `@base-ui/react`, `tailwindcss` v4 (with
+  `@tailwindcss/postcss` and `tw-animate-css`), `sonner`, `next-themes`,
+  `class-variance-authority`, `cn`, `lucide-react`, `motion` (jelly-loader),
+  `shadcn` (dev-time CLI).
 * `components.json` is the registry entry point; adding a component is
   `pnpm dlx shadcn add <name-or-url>`.
