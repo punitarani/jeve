@@ -56,6 +56,31 @@ cd apps/web && NEXT_PUBLIC_JEVE_API=https://jeve-api.punitarani.com \
 CI does the same on push to `main` (`deploy-backend`, `deploy-web` in
 `.github/workflows/ci.yml`), gated on tests, contracts drift and image builds.
 
+## Production bootstrap (what the first real deploy needed)
+
+PlanetScale Postgres gives two roles: a DDL-capable migration role and a
+read-write app role with `SELECT`/`INSERT`/`UPDATE`/`DELETE` — no `CREATE`,
+no `TRUNCATE`, no sequence ownership. That shaped three things:
+
+* `fly.toml`'s `release_command` exports `MIGRATIONS_DB_URL` as
+  `JEVE_DATABASE_URL`, so migrations run under the DDL role while the app
+  keeps the least-privilege DSN.
+* `db.applied()` checks `to_regclass` before `CREATE TABLE` — `IF NOT EXISTS`
+  still requires `CREATE` privilege, so the sim cannot boot against a
+  migrated schema without it.
+* The world was seeded once under the migration role
+  (`JEVE_DATABASE_URL=$MIGRATIONS_DB_URL` + `seed()`). The daemon's own
+  `not seeded → seed()` path needs `TRUNCATE ... RESTART IDENTITY`, and
+  `RESTART IDENTITY` requires sequence *ownership*, which identity columns
+  cannot hand out. The app role holds a `TRUNCATE` grant (plus
+  `ALTER DEFAULT PRIVILEGES` for future tables), but a wipe-and-reseed is
+  an operator action under the migration role, not something the daemon
+  can do alone.
+
+Machine topology is 1 api + 1 sim — `fly deploy --ha=false` in CI keeps it
+that way; the default creates a spare machine per group, and a second sim
+can never write anyway (the advisory lock is the single writer, SIM-0001).
+
 ## What production runs with
 
 The sim group's command is
