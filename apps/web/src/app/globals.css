@@ -75,6 +75,23 @@ a { color: inherit; }
 .orgrow:first-of-type { border-top: 0; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 
+.page-pad { padding: 32px; }
+.pre-wrap { white-space: pre-wrap; }
+.fineprint { font-size: 12px; margin: 0; }
+.section-pad { padding: 0 18px 24px; }
+.push-right { margin-left: auto; }
+.swatch-sm { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 8px; }
+select.pick {
+  background: #0e1116;
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font: inherit;
+  width: 100%;
+  margin-bottom: 10px;
+}
+
 .pill {
   display: inline-block;
   padding: 1px 7px;
