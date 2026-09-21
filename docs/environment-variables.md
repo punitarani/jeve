@@ -54,7 +54,6 @@ puts the daemon into `waiting_on_budget`, not a crash (SIM-0003).
 | `BRAINTRUST_API_KEY` | unset | The switch. Absent, `jeve.tracing` never imports the SDK and opens no socket — CI and a clean clone trace nothing. |
 | `BRAINTRUST_PROJECT` | `jeve` | The Braintrust project spans land in. |
 | `JEVE_TRACING` | `on` | `off`/`0`/`false`: never trace, even with a key set — killing telemetry without rotating a secret. |
-| `BRAINTRUST_API_URL` | unset | Self-hosted Braintrust only. Read by the SDK itself, not by `Settings`. |
 
 Spans carry OpenRouter's reported cost as `metrics.estimated_cost`, so a trace
 and the `spend_entries` ledger price a call the same way. A tracing failure is
