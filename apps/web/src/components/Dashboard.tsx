@@ -12,8 +12,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { SimEvent, WorldState } from "@jeve/contracts";
 import { ORG_COLORS } from "@jeve/contracts";
 import { fetchCausal, fetchState, money } from "@/lib/api";
+import { EVENT_TONE } from "@/lib/tone";
 import { Timeline } from "./Timeline";
 import { PersonPanel } from "./PersonPanel";
+
+// `encounter` is ~67% of everything the timeline loads (ops/soak.md: 2,072 of
+// the 3,097 events that survive the API's own BACKGROUND_EVENTS cut) — staff
+// small-talk that buries the outage this panel exists to show. Same reasoning
+// as that server-side cut, but one click away from coming back.
+const HIDDEN_BY_DEFAULT = ["encounter"];
 
 export function Dashboard({
 	initialState,
@@ -27,6 +34,12 @@ export function Dashboard({
 	const [selected, setSelected] = useState<number | null>(null);
 	const [chain, setChain] = useState<Map<number, number> | null>(null);
 	const [org, setOrg] = useState<string | null>(null);
+	// The hidden set, not the selected set: the kinds only become known once
+	// the events have arrived, so "a kind nobody ruled out is visible" has to
+	// be the default, and the initial state has to be a literal.
+	const [hidden, setHidden] = useState<ReadonlySet<string>>(
+		() => new Set(HIDDEN_BY_DEFAULT),
+	);
 
 	// Refresh the header rather than the whole page: the timeline is a record
 	// of what happened, so it does not need to move under the reader.
@@ -65,10 +78,36 @@ export function Dashboard({
 		[selected],
 	);
 
+	// Counted over everything loaded rather than over `visible`: chip counts
+	// that moved when you picked an org would reflow the row under the cursor.
+	// Loudest first, so the kind worth switching off is the one you reach for.
+	const kinds = useMemo(() => {
+		const counts = new Map<string, number>();
+		for (const event of events)
+			counts.set(event.kind, (counts.get(event.kind) ?? 0) + 1);
+		return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+	}, [events]);
+
+	const toggleKind = useCallback((kind: string) => {
+		setHidden((prev) => {
+			const next = new Set(prev);
+			if (!next.delete(kind)) next.add(kind);
+			return next;
+		});
+	}, []);
+
 	const down = state.modules.filter((m) => m.status === "down");
 	const visible = useMemo(
-		() => (org ? events.filter((e) => e.org_id === org) : events),
-		[events, org],
+		() =>
+			events.filter((event) => {
+				if (org !== null && event.org_id !== org) return false;
+				if (!hidden.has(event.kind)) return true;
+				// A cascade is only legible whole. An event in the selected chain
+				// stays on screen even when its kind is switched off, or following
+				// what an outage caused would stop at the first encounter.
+				return chain?.has(event.seq) ?? false;
+			}),
+		[events, org, hidden, chain],
 	);
 
 	return (
@@ -140,7 +179,8 @@ export function Dashboard({
 			<div className="section-pad">
 				<section className="panel">
 					<h2>
-						Causal timeline — {visible.length} events
+						Causal timeline — {visible.length}
+						{visible.length !== events.length && <> of {events.length}</>} events
 						{selected !== null && (
 							<>
 								{" "}
@@ -151,6 +191,48 @@ export function Dashboard({
 							</>
 						)}
 					</h2>
+					{kinds.length > 0 && (
+						<div className="chips" data-testid="kind-filter">
+							{kinds.map(([kind, n]) => (
+								<button
+									key={kind}
+									type="button"
+									className="pill chip"
+									aria-pressed={!hidden.has(kind)}
+									data-testid={`kind-${kind}`}
+									onClick={() => toggleKind(kind)}
+								>
+									<span
+										className="swatch-sm"
+										style={{
+											background: `var(--${EVENT_TONE[kind] ?? "neutral"})`,
+										}}
+									/>
+									{kind} <span className="muted">{n}</span>
+								</button>
+							))}
+							{/* Not "clear": the cascade's clear button is found by name.
+							    These two carry testids because Playwright matches an
+							    accessible name as a substring, and "tallybird" contains
+							    "all" — every org row answers to that query too. */}
+							<button
+								type="button"
+								className="link"
+								data-testid="filter-all"
+								onClick={() => setHidden(new Set())}
+							>
+								all
+							</button>
+							<button
+								type="button"
+								className="link"
+								data-testid="filter-none"
+								onClick={() => setHidden(new Set(kinds.map(([kind]) => kind)))}
+							>
+								none
+							</button>
+						</div>
+					)}
 					<Timeline
 						events={visible}
 						selected={selected}
