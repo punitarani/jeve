@@ -87,7 +87,8 @@ PACED_FROM=$(( 4 * 86400 + 13 * 3600 ))
   --policy jev --calls "$CALLS" --stats "$LOGS/run-1.json" --verbose | tee "$LOGS/fixture.log"
 
 say "5/6  api + web + browser flow"
-uv run --directory py uvicorn jeve.api.app:app --host 127.0.0.1 --port "$API_PORT" \
+# Use the API application entry point
+"${UVRUN[@]}" uvicorn jeve.api.app:app --host 127.0.0.1 --port "$API_PORT" \
   > "$LOGS/api.log" 2>&1 &
 API_PID=$!
 for _ in $(seq 1 40); do

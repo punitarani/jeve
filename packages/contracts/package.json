@@ -1,9 +1,14 @@
 {
-  "name": "@jeve/contracts",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
-  "dependencies": { "zod": "^4.0.0" }
+	"name": "@jeve/contracts",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
+	"scripts": {
+		"generate": "cd ../../py && uv run python ../tools/contract-gen/generate_zod.py",
+		"check-drift": "cd ../../py && uv run python ../tools/contract-gen/generate_zod.py && cd .. && git diff --exit-code packages/contracts/src/index.ts",
+		"typecheck": "tsc --noEmit -p tsconfig.json"
+	},
+	"dependencies": { "zod": "^4.0.0" }
 }

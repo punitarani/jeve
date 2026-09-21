@@ -1,0 +1,28 @@
+{
+	"name": "api",
+	"$schema": "../../node_modules/nx/schemas/project-schema.json",
+	"projectType": "application",
+	"sourceRoot": "apps/api",
+	"implicitDependencies": ["py"],
+	"targets": {
+		"dev": {
+			"command": "uv run --directory py uvicorn jeve.api.app:app --host 127.0.0.1 --port 8000",
+			"continuous": true
+		},
+		"start": {
+			"command": "uv run --directory py uvicorn jeve.api.app:app --host 127.0.0.1 --port 8000"
+		},
+		"test": {
+			"command": "cd py && uv run pytest tests/test_api.py"
+		},
+		"lint": {
+			"command": "cd py && uv run ruff check src/jeve/api"
+		},
+		"typecheck": {
+			"command": "cd py && uv run mypy src/jeve/api"
+		},
+		"docker-build": {
+			"command": "docker build -f infra/docker/Dockerfile.api -t jeve-api ."
+		}
+	}
+}

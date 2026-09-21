@@ -20,9 +20,12 @@ simulation ever reads generated text.
 | `py/src/jeve/sim/` | `python -m jeve.sim`: the one run loop, for fixture, daemon and soak alike |
 | `py/src/jeve/gen/` | Prose rendered from typed state. **Nothing that computes the world may import it** |
 | `py/fixtures/cassettes/` | Recorded Jev responses, keyed by content hash of `(model, state, questions)`. What makes `make e2e` free |
-| `packages/world/` | The voxel town: a GL-free scene model with three.js as a view over it |
-| `packages/contracts/` | zod schemas for everything the API serves |
+| `apps/api/` | FastAPI application entry point (implementation in `py/src/jeve/api/`) |
+| `apps/sim/` | Simulation worker entry point (implementation in `py/src/jeve/sim/`) |
 | `apps/web/` | The hero on `/`, the explorer at `/world`, and the causal timeline |
+| `packages/world/` | The voxel town: a GL-free scene model with three.js as a view over it |
+| `packages/contracts/` | zod schemas for everything the API serves (generated from pydantic) |
+| `tools/contract-gen/` | pydantic → zod contract generation |
 | `decisions/` | Decision records and their generated index |
 | `docs/research/` | Ground truth on Jev, prior-art mapping, validation survey |
 | `docs/design/` | Long-form analysis behind the decision records |
@@ -68,6 +71,13 @@ This project uses nested AGENTS.md files for area-specific standards:
 * `apps/web/AGENTS.md` - Web development standards (TypeScript, React, Next.js)
 * `packages/AGENTS.md` - Shared packages standards (workspace management, Zod schemas)
 
+## Tooling
+
+* **Tool versions**: `mise.toml` manages Node.js, Python, uv, and pnpm versions
+* **Task runner**: Nx orchestrates TypeScript and Python tasks with caching
+* **Contract generation**: `make contracts` generates zod schemas from pydantic models
+* **Dependency management**: `pnpm` for TypeScript, `uv` for Python
+
 ## Money
 
 **Every model call goes through `jeve.llm`.** Nothing else may import `httpx`;
@@ -81,11 +91,34 @@ second path to a model, and do not reset the ledger.
 
 ```
 make check            # lint, types (mypy + tsc), tests, decision records
+make contracts        # generate zod schemas from pydantic models
+make contracts-check  # verify contracts are in sync (drift detection)
 make e2e              # the whole stack, strict replay: free, no key, ~5 min
 make soak             # 35 sim-days on rules, on its own database: invariants, ~1 min
 LIVE=1 make e2e       # hit-or-call; the only thing that rewrites ops/economics.md
 make smoke            # one real call, under a cent
 make sim              # the ever-running world. Spends money, slowly
+```
+
+### Deployment
+
+```
+make deploy-web       # Deploy web app to Cloudflare Workers
+make deploy-api       # Deploy API to Fly.io
+make deploy-sim       # Deploy simulation worker to Fly.io
+make deploy           # Deploy all services
+```
+
+### Nx Commands
+
+```
+npx nx show projects           # List all projects
+npx nx run py:lint             # Lint Python code
+npx nx run py:test             # Run Python tests
+npx nx run api:start           # Start API server
+npx nx run sim:run             # Run simulation
+npx nx run contracts:generate  # Generate contracts
+npx nx affected -t lint        # Lint only affected projects
 ```
 
 Four things that will otherwise cost you an evening:

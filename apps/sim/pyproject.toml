@@ -1,0 +1,9 @@
+[project]
+name = "jeve-sim"
+version = "0.1.0"
+description = "Simulation worker entry point for jeve"
+requires-python = ">=3.14"
+dependencies = []
+
+[project.scripts]
+jeve-sim = "jeve_sim:main"

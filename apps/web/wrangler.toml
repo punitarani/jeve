@@ -1,0 +1,40 @@
+# Cloudflare Workers configuration for jeve web app
+# Deploy with: wrangler deploy
+
+name = "jeve-web"
+compatibility_date = "2026-09-21"
+compatibility_flags = ["nodejs_compat"]
+
+# Static assets (Next.js build output)
+[assets]
+  directory = ".next"
+  binding = "ASSETS"
+
+# Environment variables
+[vars]
+  NEXT_PUBLIC_API_URL = "https://api.jeve.app"
+  NODE_ENV = "production"
+  NEXT_TELEMETRY_DISABLED = "1"
+
+# Routes for the application
+[[routes]]
+  pattern = "jeve.app/*"
+  zone_name = "jeve.app"
+
+# Custom domain
+[env.production]
+  name = "jeve-web-prod"
+  routes = [
+    { pattern = "jeve.app", custom_domain = true },
+    { pattern = "www.jeve.app", custom_domain = true }
+  ]
+
+[env.staging]
+  name = "jeve-web-staging"
+  routes = [
+    { pattern = "staging.jeve.app", custom_domain = true }
+  ]
+
+# Secrets (set with: wrangler secret put KEY)
+# wrangler secret put CLOUDFLARE_API_TOKEN
+# wrangler secret put NEXT_PUBLIC_ANALYTICS_ID

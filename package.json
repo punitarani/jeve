@@ -1,7 +1,7 @@
 {
   "name": "jeve",
   "private": true,
-  "packageManager": "pnpm@10.32.1",
+  "packageManager": "pnpm@12.5.1",
   "scripts": {
     "dev": "nx run web:dev",
     "build": "nx run-many -t build",
@@ -10,6 +10,7 @@
     "e2e": "nx run web:e2e"
   },
   "devDependencies": {
+    "@nxlv/python": "23.1.1",
     "nx": "23.2.1",
     "typescript": "^5.7.0"
   }

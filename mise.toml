@@ -1,0 +1,115 @@
+[tools]
+node = "24.15.0"
+python = "3.14.2"
+uv = "0.11.10"
+pnpm = "12.5.1"
+
+[env]
+JEVE_PYTHON = "${HOME}/.local/share/mise/installs/python/3.14.2/bin/python"
+
+[tasks.setup]
+description = "Set up the development environment"
+run = """
+  echo "Setting up development environment..."
+  uv sync --directory py
+  pnpm install --frozen-lockfile
+"""
+
+[tasks.dev]
+description = "Start development servers"
+run = """
+  echo "Starting development servers..."
+  echo "Run 'make api' in one terminal and 'make sim' in another"
+  nx run web:dev
+"""
+
+[tasks.build]
+description = "Build all projects"
+run = """
+  echo "Building all projects..."
+  nx run-many -t build
+"""
+
+[tasks.test]
+description = "Run all tests"
+run = """
+  echo "Running all tests..."
+  make test
+"""
+
+[tasks.lint]
+description = "Run all linters"
+run = """
+  echo "Running all linters..."
+  make lint
+"""
+
+[tasks.typecheck]
+description = "Run all type checkers"
+run = """
+  echo "Running all type checkers..."
+  make types
+"""
+
+[tasks.check]
+description = "Run all checks (lint, types, test)"
+run = """
+  echo "Running all checks..."
+  make check
+"""
+
+[tasks.contracts]
+description = "Generate contracts from pydantic models"
+run = """
+  echo "Generating contracts..."
+  make contracts
+"""
+
+[tasks.contracts-check]
+description = "Check contract drift"
+run = """
+  echo "Checking contract drift..."
+  make contracts-check
+"""
+
+[tasks.docker-build]
+description = "Build all Docker images"
+run = """
+  echo "Building Docker images..."
+  make docker-build
+"""
+
+[tasks.e2e]
+description = "Run end-to-end tests"
+run = """
+  echo "Running E2E tests..."
+  make e2e
+"""
+
+[tasks.deploy-web]
+description = "Deploy web app to Cloudflare Workers"
+run = """
+  echo "Deploying web app to Cloudflare Workers..."
+  make deploy-web
+"""
+
+[tasks.deploy-api]
+description = "Deploy API to Fly.io"
+run = """
+  echo "Deploying API to Fly.io..."
+  make deploy-api
+"""
+
+[tasks.deploy-sim]
+description = "Deploy simulation worker to Fly.io"
+run = """
+  echo "Deploying simulation worker to Fly.io..."
+  make deploy-sim
+"""
+
+[tasks.deploy]
+description = "Deploy all services"
+run = """
+  echo "Deploying all services..."
+  make deploy
+"""

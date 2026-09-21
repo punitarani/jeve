@@ -1,0 +1,67 @@
+# Dependencies
+node_modules
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Build outputs
+.next
+dist
+build
+*.tsbuildinfo
+
+# Development
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Testing
+coverage
+.nyc_output
+.pytest_cache
+
+# CI/CD
+.github/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Ops (runtime state)
+ops/ledger.jsonl
+ops/*.log
+
+# Generated files
+packages/contracts/src/generated/
+decisions/index.jsonl
+decisions/INDEX.md

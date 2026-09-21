@@ -1,19 +1,22 @@
 {
-  "name": "web",
-  "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "projectType": "application",
-  "sourceRoot": "apps/web/src",
-  "implicitDependencies": ["contracts"],
-  "targets": {
-    "dev": {
-      "command": "pnpm --filter @jeve/web dev",
-      "continuous": true
-    },
-    "build": { "command": "pnpm --filter @jeve/web build" },
-    "typecheck": { "command": "tsc --noEmit -p apps/web/tsconfig.json" },
-    "e2e": {
-      "command": "pnpm --filter @jeve/web exec playwright test",
-      "cache": false
-    }
-  }
+	"name": "web",
+	"$schema": "../../node_modules/nx/schemas/project-schema.json",
+	"projectType": "application",
+	"sourceRoot": "apps/web/src",
+	"implicitDependencies": ["contracts"],
+	"targets": {
+		"dev": {
+			"command": "pnpm --filter @jeve/web dev",
+			"continuous": true
+		},
+		"build": { "command": "pnpm --filter @jeve/web build" },
+		"typecheck": { "command": "tsc --noEmit -p apps/web/tsconfig.json" },
+		"e2e": {
+			"command": "pnpm --filter @jeve/web exec playwright test",
+			"cache": false
+		},
+		"docker-build": {
+			"command": "docker build -f infra/docker/Dockerfile.web -t jeve-web ."
+		}
+	}
 }

@@ -237,6 +237,7 @@ dependencies = [
 dev = [
     { name = "httpx" },
     { name = "mypy" },
+    { name = "pydantic-zod-codegen" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
@@ -256,6 +257,7 @@ requires-dist = [
 dev = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "mypy", specifier = ">=1.14" },
+    { name = "pydantic-zod-codegen", specifier = ">=1.0.0" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-asyncio", specifier = ">=0.25" },
     { name = "pytest-timeout", specifier = ">=2.3" },
@@ -510,6 +512,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5a/9f/5d685c2693b972d1a59c998586e8823712b66603aeff47ee60a4bdaafd37/pydantic_core-2.46.5-cp314-cp314t-win32.whl", hash = "sha256:97cf3eb53a8cccacf9d46686a0926186c9bfb5574f2ed66d3639d5fe117cd3a9", size = 1921180, upload-time = "2026-08-28T10:00:12.35Z" },
     { url = "https://files.pythonhosted.org/packages/70/12/5c94ee16d65a37a15f9e869f5e6256df111154491173801a4c5e800ab548/pydantic_core-2.46.5-cp314-cp314t-win_amd64.whl", hash = "sha256:d2f9fc07a8042a8f95925b35c4f04f469707c981fc33245b6ca187cf5d2dd290", size = 2020515, upload-time = "2026-08-28T10:00:14.774Z" },
     { url = "https://files.pythonhosted.org/packages/63/19/67830dda664e6bdf9285ee2e40f355d0d7d6b92aa0c42e8d217bb8d33d36/pydantic_core-2.46.5-cp314-cp314t-win_arm64.whl", hash = "sha256:acf8a67ba51f4ca9ddbd0e6b3000a65ac51ab734661778b3e7ba64d99a710f2f", size = 1989276, upload-time = "2026-08-28T10:00:16.984Z" },
+]
+
+[[package]]
+name = "pydantic-zod-codegen"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d8/25/3931ab4c295d0b4c35bbdde5b84d7b09f725ecbab0a9aead9735773d5086/pydantic_zod_codegen-1.0.0.tar.gz", hash = "sha256:d5500c1a87c56665cb05c9efff6e88fac4d27d37d3a3af1a47209bc4d9bc28a0", size = 27119, upload-time = "2026-06-24T21:49:17.889Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/06/b0/6f0177c2ca4cb9970dc2a1a24ddd9587be6974952f16e387526a9ff6c368/pydantic_zod_codegen-1.0.0-py3-none-any.whl", hash = "sha256:6c1432b3fe4d5b254d893434cc05f086e1fe32ee1bd402ba009ccb9f1185cede", size = 32950, upload-time = "2026-06-24T21:49:19.136Z" },
 ]
 
 [[package]]

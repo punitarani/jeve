@@ -1,0 +1,63 @@
+# Fly.io configuration for jeve backend services
+# Deploy with: fly deploy
+
+app = "jeve-backend"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "infra/docker/Dockerfile.api"
+
+[env]
+  NODE_ENV = "production"
+  PYTHONPATH = "/app/src"
+
+# API service
+[[services]]
+  http_checks = []
+  internal_port = 8000
+  processes = ["api"]
+  protocol = "tcp"
+  script_checks = []
+
+  [services.concurrency]
+    hard_limit = 250
+    soft_limit = 200
+    type = "connections"
+
+  [[services.ports]]
+    force_https = true
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [[services.tcp_checks]]
+    grace_period = "1s"
+    interval = "15s"
+    restart_limit = 0
+    timeout = "2s"
+
+  [[services.http_checks]]
+    interval = "10s"
+    grace_period = "5s"
+    method = "get"
+    path = "/health"
+    protocol = "http"
+    timeout = "2s"
+    tls_skip_verify = false
+    headers = {}
+
+# Simulation worker (separate process group)
+[processes]
+  api = "uvicorn jeve.api.app:app --host 0.0.0.0 --port 8000"
+  sim = "python -m jeve.sim"
+
+# Database connection (use Fly.io Postgres or external)
+[env]
+  JEVE_DATABASE_URL = "postgresql://jeve:jeve@jeve-db.internal:5432/jeve"
+
+# Secrets (set with: fly secrets set KEY=value)
+# fly secrets set OPENROUTER_API_KEY=your-key
+# fly secrets set JEVE_DATABASE_URL=your-db-url

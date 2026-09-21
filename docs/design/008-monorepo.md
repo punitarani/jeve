@@ -33,7 +33,7 @@ machine today; config snippets from the research are **untested**.
 | `@nx/python` | **404 — no first-party Python plugin exists** |
 | `@nx/next` / `next` | 23.2.1 / 16.3.5 |
 | `@hey-api/openapi-ts` | 0.99.0 (pre-1.0; pin exactly) |
-| This machine | uv 0.11.10 · Python 3.14 · node 24.15.0 · pnpm 10.32.1 · bun 1.3.0 |
+| This machine | uv 0.11.10 · Python 3.14 · node 24.15.0 · pnpm 12.5.1 · bun 1.3.0 |
 
 **A correction to the research.** The agent's sample `pyproject.toml` pins
 `required-version = ">=0.12,<0.13"` and `uv_build>=0.12,<0.13`. uv here is **0.11.10** — that
@@ -75,28 +75,32 @@ Named inputs make `nx affected` correct for Python: `{projectRoot}/**/*.py`, the
 `pyproject.toml`, and `{workspaceRoot}/uv.lock`. A lockfile change marks every Python project
 affected — coarse, correct.
 
-## Contracts
+## Contracts (Implemented)
 
 | Pipeline | Verdict |
 |---|---|
-| **pydantic → OpenAPI 3.1 → TS + zod** (hey-api or orval) | **Chosen.** pydantic emits discriminated unions as `oneOf` + `discriminator.mapping` and numeric constraints as min/max. Least lossy direction. |
-| pydantic → JSON Schema → zod via `json-schema-to-zod` | Dead: that package was archived in March 2026. |
-| zod → JSON Schema → pydantic | `z.toJSONSchema()` emits `oneOf` without a `discriminator`, so the tag is lost; refinements and transforms cannot cross; generated pydantic classes cannot carry validators, and DSPy wants real classes. |
-| TypeSpec / protobuf | A third language, and still needs a pydantic generator. |
+| **Custom pydantic → zod generation** | **Implemented.** Direct generation preserves semantic distinctions (optional vs nullable) and comments. Single source of truth with deterministic output. |
+| pydantic → OpenAPI 3.1 → TS + zod | Evaluated but rejected: requires running FastAPI server, complex multi-stage pipeline, less control over output. |
+| pydantic → JSON Schema → zod | Evaluated but rejected: `pydantic-zod-codegen` shells out to `bunx`, doesn't directly produce zod schemas. |
+| zod → JSON Schema → pydantic | Rejected: `z.toJSONSchema()` emits `oneOf` without `discriminator`, loses type information. |
 
-Wiring: `py-contracts:export-schema` writes a deterministic, sorted, components-only OpenAPI
-file → `contracts:codegen` depends on it with `dependentTasksOutputFiles` as input →
-generated files are committed → CI fails if `git status --porcelain` is non-empty for them.
-Keep contract models free of defaults, or set FastAPI's `separate_input_output_schemas=False`,
-to avoid split `X-Input`/`X-Output` schemas.
+**Implementation:**
+- `tools/contract-gen/models.py` - Pydantic contract models as source of truth
+- `tools/contract-gen/generate_zod.py` - Direct zod schema generation
+- `packages/contracts/src/index.ts` - Generated zod schemas (committed)
+- `make contracts` / `npx nx run contracts:generate` - Regeneration
+- `make contracts-check` / `npx nx run contracts:check-drift` - Drift detection
 
-**Unverified:** hey-api's zod output for pydantic's discriminated unions. jeve's event payload
-is exactly that shape. M1 includes a spike on one real union; orval, whose handling is
-documented, is the alternative.
+**Benefits of chosen approach:**
+- Single-step generation, no external dependencies
+- Preserves semantic richness (comments, field constraints)
+- Handles optional vs nullable fields correctly
+- Deterministic output for reliable drift detection
+- No running services required for generation
 
 ## pnpm, not bun
 
-pnpm 10.32.1 is already here. Bun 1.4's lockfile v2 made every Nx command fail until Nx
+pnpm 12.5.1 is already here. Bun 1.4's lockfile v2 made every Nx command fail until Nx
 23.1.2; Nx Agents' templates do not support bun; an issue with Next.js + TypeScript failing to
 start inside Bun workspaces is still open. pnpm 12 (2026-08-26) also broke Nx briefly — stay
 on 10.x via the `packageManager` field and move deliberately. For a project that values
@@ -112,25 +116,34 @@ uv workspace + a `justfile` would lose very little.** Nothing in the architectur
 Nx; if it costs more than an hour a month, drop it without ceremony. Turborepo's native uv
 workspace support is the thing to watch — currently flagged experimental.
 
-## Layout
+## Layout (Implemented)
 
 ```
 jeve/
-├─ nx.json · package.json · pnpm-workspace.yaml · pyproject.toml · uv.lock · .python-version · ruff.toml
+├─ nx.json · package.json · pnpm-workspace.yaml · mise.toml · .dockerignore
 ├─ apps/
-│  ├─ web/      Next.js 16 — dashboard only
-│  ├─ api/      FastAPI — read endpoints, SSE, control endpoints (localhost)
-│  └─ sim/      the long-running simulation process
+│  ├─ web/      Next.js 16 — dashboard and world explorer
+│  ├─ api/      FastAPI application entry point (implementation in py/src/jeve/api/)
+│  └─ sim/      Simulation worker entry point (implementation in py/src/jeve/sim/)
 ├─ packages/
-│  ├─ py-contracts/   pydantic models: events, decisions, API payloads → schema/*.json (committed)
-│  ├─ py-world/       ledger, domain rules, scheduler, tick transaction — NO model imports
-│  ├─ py-decide/      DecisionModel port, Jev/OpenRouter/replay adapters, question sets, sampling
-│  ├─ py-memory/      memories, retrieval, beliefs, compaction
-│  ├─ py-gen/         LLM port, DSPy signatures, rendering, ontology proposals, tier 1 adapter glue
-│  ├─ py-metrics/     invariants, detectors, canary, study runner
-│  └─ contracts/      generated TS + zod (committed)
-└─ tools/py-env/      sync + lock-check targets
+│  ├─ contracts/      generated zod schemas from pydantic models (committed)
+│  └─ world/          three.js voxel town (GL-free scene model)
+├─ py/
+│  ├─ src/jeve/       layered Python modules: core → llm → decide → world → sim
+│  └─ tests/          Python test suite
+├─ tools/
+│  └─ contract-gen/   pydantic → zod contract generation
+├─ infra/docker/      Dockerfiles for deployment
+└─ decisions/         immutable architecture decision records
 ```
+
+**Actual Implementation Notes:**
+
+* **@nxlv/python plugin**: Successfully integrated for Python project detection and caching
+* **Contract generation**: Custom pydantic → zod script (simpler than OpenAPI pipeline)
+* **Worker separation**: API and sim are Nx applications but share the same Python implementation
+* **Tool management**: mise.toml for centralized tool version management
+* **Deployment**: Docker configurations for all three applications
 
 **`api` and `sim` are separate processes.** A uvicorn reload or a second worker would kill or
 duplicate a simulation living in-process; the sim must hold a single-writer lease (ADR-009);
@@ -158,7 +171,7 @@ shipped.
 
 ## Reverse if
 
-- A new Nx major is > 4 weeks old with no compatible plugin release, or a plugin graph-time
+* A new Nx major is > 4 weeks old with no compatible plugin release, or a plugin graph-time
   exception blocks `nx` commands → take the fallback.
-- Nx ships first-party Python support (it is on the 2026 roadmap, undated) → adopt it.
-- The hey-api spike mangles discriminated unions → orval.
+* Nx ships first-party Python support (it is on the 2026 roadmap, undated) → adopt it.
+* The hey-api spike mangles discriminated unions → orval.

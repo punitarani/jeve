@@ -58,9 +58,6 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 12
     env:
       JEVE_DATABASE_URL: postgresql://jeve:jeve@127.0.0.1:5432/jeve
-    defaults:
-      run:
-        working-directory: py
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7
@@ -68,16 +65,21 @@ jobs:
           enable-cache: true
 
       - run: uv sync --frozen
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run mypy
-      - run: uv run pytest -ra
+      - run: npx nx run py:lint
+      - run: npx nx run py:typecheck
+      - run: npx nx run py:test
+      - run: npx nx run api:lint
+      - run: npx nx run sim:lint
+      - run: npx nx run api:typecheck
+      - run: npx nx run sim:typecheck
+      - run: npx nx run api:test
+      - run: npx nx run sim:test
 
       - name: The world's tests ran, not skipped
         # A service that failed to start would turn the job green again by
         # skipping. Fail instead.
         run: |
-          uv run python - <<'PY'
+          uv run --directory py python - <<'PY'
           from jeve import db
           with db.connect() as conn:
               print("postgres:", conn.execute("SHOW server_version").fetchone())
@@ -173,6 +175,24 @@ jobs:
           done < /tmp/confirmations.tsv
           exit $status
 
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: uv sync --frozen --directory py
+      - run: pnpm install --frozen-lockfile
+      - run: npx nx run contracts:typecheck
+      - name: Check contract drift
+        run: npx nx run contracts:check-drift
+
   web:
     runs-on: ubuntu-latest
     steps:
@@ -183,7 +203,56 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Nothing else compiles the TypeScript against the real page tree: the
-      # dev server type-strips, and a contract change that breaks a component
-      # would otherwise surface only in a browser.
-      - run: pnpm --filter @jeve/web exec tsc --noEmit
+      # Use Nx targets for consistent task execution
+      - run: npx nx run web:typecheck
+      - run: npx nx run web:lint
+      - run: npx nx run web:build
+      - run: npx nx run web:test
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build API image
+        run: docker build -f infra/docker/Dockerfile.api -t jeve-api-test .
+      - name: Build Sim image
+        run: docker build -f infra/docker/Dockerfile.sim -t jeve-sim-test .
+      - name: Build Web image
+        run: docker build -f infra/docker/Dockerfile.web -t jeve-web-test .
+
+  deploy-web:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: [web, contracts]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @jeve/web build
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/web
+          command: deploy
+
+  deploy-backend:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: [python, api, sim]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy API to Fly.io
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: fly deploy --config fly.toml --process-group api
+      - name: Deploy Sim to Fly.io
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: fly deploy --config fly.toml --process-group sim

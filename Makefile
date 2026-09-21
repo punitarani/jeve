@@ -8,6 +8,8 @@ ROOT := $(shell pwd)
 ENVFILE := $(if $(wildcard $(ROOT)/.env),--env-file $(ROOT)/.env,)
 UV := uv run --directory $(ROOT)/py $(ENVFILE)
 
+# Prefer Nx targets where they exist; fall back to direct commands for
+# operations that aren't yet in the Nx graph or need special handling.
 .PHONY: help
 help: ## Show this
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[1m%-12s\033[0m %s\n", $$1, $$2}'
@@ -17,17 +19,24 @@ check: lint types test decisions ## Everything that must pass, offline
 
 .PHONY: lint
 lint: ## ruff check + format check
-	cd py && uv run ruff check .
-	cd py && uv run ruff format --check .
+	@echo "Linting Python..."
+	npx nx run py:lint
+	@echo "Linting TypeScript..."
+	npx nx run-many -t lint --projects=api,sim,web
 
 .PHONY: types
 types: ## mypy --strict, and tsc over the web app
-	cd py && uv run mypy
-	pnpm --filter @jeve/web exec tsc --noEmit
+	@echo "Type checking Python..."
+	npx nx run py:typecheck
+	@echo "Type checking TypeScript..."
+	npx nx run-many -t typecheck --projects=api,sim,web
 
 .PHONY: test
 test: ## pytest, no network
-	cd py && uv run pytest
+	@echo "Testing Python..."
+	npx nx run py:test
+	@echo "Testing applications..."
+	npx nx run-many -t test --projects=api,sim,web
 
 .PHONY: decisions
 decisions: ## Validate records; fail if generated artifacts are stale
@@ -57,6 +66,7 @@ spend: ## What has been spent so far
 .PHONY: db-up
 db-up: ## Start Postgres and apply migrations
 	docker compose up -d --wait
+	npx nx run py:sync
 	cd py && uv run python -c "from jeve import db; print('applied:', db.migrate() or 'nothing')"
 
 .PHONY: db-down
@@ -65,7 +75,7 @@ db-down: ## Stop Postgres, keep the data
 
 .PHONY: fixture
 fixture: ## Run the golden fixture. POLICY=jev|rules CALLS=replay|record
-	$(UV) python scripts/run_fixture.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS))
+	npx nx run sim:fixture --args="$(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS))"
 
 .PHONY: soak
 soak: ## 35 sim-days on rules, on its own database; checks invariants, writes ops/soak.md. POLICY= CALLS= DAYS= COUNTERFACTUAL=1
@@ -73,7 +83,7 @@ soak: ## 35 sim-days on rules, on its own database; checks invariants, writes op
 
 .PHONY: sim
 sim: ## The ever-running world: Jev live, paced, budget-governed, restart-safe
-	$(UV) python -m jeve.sim --calls $(or $(CALLS),record) $(if $(POLICY),--policy $(POLICY)) --verbose
+	npx nx run sim:run --args="--calls $(or $(CALLS),record) $(if $(POLICY),--policy $(POLICY)) --verbose"
 
 .PHONY: sim-stop
 sim-stop: ## Ask the daemon to stop at the end of its current tick
@@ -81,7 +91,48 @@ sim-stop: ## Ask the daemon to stop at the end of its current tick
 
 .PHONY: api
 api: ## Run the API on :8000
-	cd py && uv run uvicorn jeve.api.app:app --host 127.0.0.1 --port 8000
+	npx nx run api:start
+
+.PHONY: contracts
+contracts: ## Generate zod contracts from pydantic models
+	npx nx run contracts:generate
+
+.PHONY: contracts-check
+contracts-check: ## Check if generated contracts are in sync with pydantic models
+	npx nx run contracts:check-drift
+
+.PHONY: docker-build
+docker-build: ## Build all Docker images
+	docker build -f infra/docker/Dockerfile.web -t jeve-web .
+	docker build -f infra/docker/Dockerfile.api -t jeve-api .
+	docker build -f infra/docker/Dockerfile.sim -t jeve-sim .
+
+.PHONY: docker-up
+docker-up: ## Start production stack with Docker Compose
+	docker-compose -f docker-compose.prod.yml up -d
+
+.PHONY: docker-down
+docker-down: ## Stop production stack
+	docker-compose -f docker-compose.prod.yml down
+
+.PHONY: docker-logs
+docker-logs: ## View production stack logs
+	docker-compose -f docker-compose.prod.yml logs -f
+
+.PHONY: deploy-web
+deploy-web: ## Deploy web app to Cloudflare Workers
+	cd apps/web && wrangler deploy
+
+.PHONY: deploy-api
+deploy-api: ## Deploy API to Fly.io
+	fly deploy --config fly.toml
+
+.PHONY: deploy-sim
+deploy-sim: ## Deploy simulation worker to Fly.io
+	fly deploy --config fly.toml --process-group sim
+
+.PHONY: deploy
+deploy: deploy-web deploy-api deploy-sim ## Deploy all services
 
 .PHONY: e2e
 e2e: ## Full stack from a clean checkout, plus the economics report

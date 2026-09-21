@@ -1,0 +1,43 @@
+# Build stage
+FROM python:3.14-alpine AS builder
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+
+# Copy workspace files
+COPY py/pyproject.toml py/uv.lock ./
+
+# Copy source code first (needed for package building)
+COPY py/src ./src
+
+# Install dependencies
+RUN uv sync --frozen --no-dev
+
+# Production stage
+FROM python:3.14-alpine
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+
+# Copy dependencies and source
+COPY --from=builder /app/.venv ./.venv
+COPY --from=builder /app/src ./src
+
+# Create non-root user
+RUN addgroup -g 1001 -S python
+RUN adduser -S python -u 1001
+USER python
+
+# Set Python path
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONPATH="/app/src"
+
+# Health check - check if the process is running
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD pgrep -f "python -m jeve.sim" || exit 1
+
+CMD ["python", "-m", "jeve.sim"]

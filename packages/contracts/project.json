@@ -1,11 +1,19 @@
 {
-  "name": "contracts",
-  "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "projectType": "library",
-  "sourceRoot": "packages/contracts/src",
-  "targets": {
-    "typecheck": {
-      "command": "tsc --noEmit -p packages/contracts/tsconfig.json"
-    }
-  }
+	"name": "contracts",
+	"$schema": "../../node_modules/nx/schemas/project-schema.json",
+	"projectType": "library",
+	"sourceRoot": "packages/contracts/src",
+	"targets": {
+		"typecheck": {
+			"command": "tsc --noEmit -p packages/contracts/tsconfig.json"
+		},
+		"generate": {
+			"command": "cd py && uv run python ../tools/contract-gen/generate_zod.py",
+			"cache": false
+		},
+		"check-drift": {
+			"command": "cd py && uv run python ../tools/contract-gen/generate_zod.py && cd .. && git diff --exit-code packages/contracts/src/index.ts",
+			"cache": false
+		}
+	}
 }

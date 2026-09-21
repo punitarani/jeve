@@ -1,0 +1,31 @@
+{
+	"name": "sim",
+	"$schema": "../../node_modules/nx/schemas/project-schema.json",
+	"projectType": "application",
+	"sourceRoot": "apps/sim",
+	"implicitDependencies": ["py"],
+	"targets": {
+		"dev": {
+			"command": "uv run --directory py python -m jeve.sim --seed-world --until-day 1 --day-minutes 0",
+			"continuous": true
+		},
+		"run": {
+			"command": "uv run --directory py python -m jeve.sim"
+		},
+		"fixture": {
+			"command": "uv run --directory py python scripts/run_fixture.py"
+		},
+		"test": {
+			"command": "cd py && uv run pytest tests/test_daemon.py tests/test_resume.py"
+		},
+		"lint": {
+			"command": "cd py && uv run ruff check src/jeve/sim"
+		},
+		"typecheck": {
+			"command": "cd py && uv run mypy src/jeve/sim"
+		},
+		"docker-build": {
+			"command": "docker build -f infra/docker/Dockerfile.sim -t jeve-sim ."
+		}
+	}
+}

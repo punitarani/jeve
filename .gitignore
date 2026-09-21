@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.*.example
 
 # Operational state written at runtime (spend ledger, night/gate state).
 # The repo-root ops/ is tracked so the directory exists on a clean clone; its

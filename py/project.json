@@ -1,0 +1,23 @@
+{
+  "name": "py",
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "projectType": "library",
+  "sourceRoot": "py/src",
+  "targets": {
+    "sync": {
+      "command": "uv sync --directory py"
+    },
+    "test": {
+      "command": "cd py && uv run pytest"
+    },
+    "lint": {
+      "command": "cd py && uv run ruff check . && uv run ruff format --check ."
+    },
+    "typecheck": {
+      "command": "cd py && uv run mypy"
+    },
+    "format": {
+      "command": "cd py && uv run ruff format ."
+    }
+  }
+}
