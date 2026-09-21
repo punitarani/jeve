@@ -21,9 +21,10 @@ export type CornerOcclusion = [number, number, number, number, number, number, n
 /**
  * What an unlit voxel is, which decides how it is coloured through the day:
  * glass by day and lit from inside at night, a lamp that is grey until dusk,
- * a screen that is always on, a pool of light on the ground under a lamp.
+ * a screen or a sign's lettering that is always on, a pool of light on the
+ * ground under a lamp.
  */
-export type Glow = "window" | "lamp" | "screen" | "pool";
+export type Glow = "window" | "lamp" | "screen" | "sign" | "pool";
 
 export type Voxel = {
   x: number;
@@ -177,6 +178,57 @@ function floorOf(zone: Zone, tx: number, ty: number, tint: string): string {
 const OPEN: CornerOcclusion = [1, 1, 1, 1, 1, 1, 1, 1];
 
 // -- colour -----------------------------------------------------------------
+
+/** Three by five: the smallest letters that are still letters. */
+const FONT: Record<string, string[]> = {
+  A: [".#.", "#.#", "###", "#.#", "#.#"],
+  B: ["##.", "#.#", "##.", "#.#", "##."],
+  C: [".##", "#..", "#..", "#..", ".##"],
+  D: ["##.", "#.#", "#.#", "#.#", "##."],
+  E: ["###", "#..", "##.", "#..", "###"],
+  F: ["###", "#..", "##.", "#..", "#.."],
+  G: [".##", "#..", "#.#", "#.#", ".##"],
+  H: ["#.#", "#.#", "###", "#.#", "#.#"],
+  I: ["###", ".#.", ".#.", ".#.", "###"],
+  J: ["..#", "..#", "..#", "#.#", ".#."],
+  K: ["#.#", "#.#", "##.", "#.#", "#.#"],
+  L: ["#..", "#..", "#..", "#..", "###"],
+  M: ["#.#", "###", "###", "#.#", "#.#"],
+  N: ["##.", "#.#", "#.#", "#.#", "#.#"],
+  O: [".#.", "#.#", "#.#", "#.#", ".#."],
+  P: ["##.", "#.#", "##.", "#..", "#.."],
+  Q: [".#.", "#.#", "#.#", "###", ".##"],
+  R: ["##.", "#.#", "##.", "#.#", "#.#"],
+  S: [".##", "#..", ".#.", "..#", "##."],
+  T: ["###", ".#.", ".#.", ".#.", ".#."],
+  U: ["#.#", "#.#", "#.#", "#.#", "###"],
+  V: ["#.#", "#.#", "#.#", "#.#", ".#."],
+  W: ["#.#", "#.#", "###", "###", "#.#"],
+  X: ["#.#", "#.#", ".#.", "#.#", "#.#"],
+  Y: ["#.#", "#.#", ".#.", ".#.", ".#."],
+  Z: ["###", "..#", ".#.", "#..", "###"],
+  "0": ["###", "#.#", "#.#", "#.#", "###"],
+  "1": [".#.", "##.", ".#.", ".#.", "###"],
+  "2": ["##.", "..#", ".#.", "#..", "###"],
+  "3": ["##.", "..#", ".#.", "..#", "##."],
+  "4": ["#.#", "#.#", "###", "..#", "..#"],
+  "5": ["###", "#..", "##.", "..#", "##."],
+  "6": [".##", "#..", "###", "#.#", "###"],
+  "7": ["###", "..#", ".#.", ".#.", ".#."],
+  "8": ["###", "#.#", "###", "#.#", "###"],
+  "9": ["###", "#.#", "###", "..#", "##."],
+  "&": [".#.", "#.#", ".#.", "#.#", ".##"],
+};
+
+/** The first letter of each of a name's first three words, if the font has it. */
+export function monogram(name: string): string {
+  return name
+    .split(/\s+/)
+    .slice(0, 3)
+    .map((word) => word.charAt(0).toUpperCase())
+    .filter((letter) => FONT[letter] !== undefined)
+    .join("");
+}
 
 /** A stable number in 0..1 from tile coordinates. Never `Math.random`. */
 export function hash2(x: number, y: number, salt = 0): number {
@@ -628,8 +680,15 @@ export function buildVoxels(map: TownMap): Voxel[] {
     if ((alongX ? tx : ty) % 3 !== 1) return;
     const y = tall * 0.56;
     const high = tall * 0.36;
-    if (alongX) glow("window", tx, y, ty, 0.62, high, 1.04, "#bfe0f5");
-    else glow("window", tx, y, ty, 1.04, high, 0.62, "#bfe0f5");
+    // A painted frame a little proud of the wall, and the glass proud of that.
+    const trim = "#f1ede4";
+    if (alongX) {
+      voxels.push({ x: tx, y, z: ty, sx: 0.76, sy: high + 0.14, sz: 1.02, color: trim, ao: OPEN });
+      glow("window", tx, y, ty, 0.62, high, 1.04, "#bfe0f5");
+    } else {
+      voxels.push({ x: tx, y, z: ty, sx: 1.02, sy: high + 0.14, sz: 0.76, color: trim, ao: OPEN });
+      glow("window", tx, y, ty, 1.04, high, 0.62, "#bfe0f5");
+    }
     // What a lit window throws on the ground, inside and out.
     glow("pool", tx, 0.03, ty, 4.2, 0, 4.2, "#ffc774");
   }
@@ -643,8 +702,10 @@ export function buildVoxels(map: TownMap): Voxel[] {
     }
   }
 
-  // A name board over each door, in the firm's colour, with a pale strip where
-  // the lettering would be. HTML labels carry the actual name (D5).
+  // A name board over each door, in the firm's colour, with the firm's
+  // monogram on it in lit blocks: "Halloran & Pike LLP" is H&P. The camera
+  // sees south faces, so that is the face that reads left to right; the north
+  // face carries it too, the other way round, for whoever walks behind it.
   for (const building of map.buildings) {
     const palette = ORG_PALETTE[building.org_id];
     const [dx, dz] = building.door;
@@ -662,8 +723,23 @@ export function buildVoxels(map: TownMap): Voxel[] {
       color: palette?.body ?? "#999999",
       ao: OPEN,
     });
-    const [lx, lz] = alongX ? [long - 0.5, 0.4] : [0.4, long - 0.5];
-    glow("lamp", dx, tall + 0.62, dz, lx, 0.3, lz, "#fff4d6");
+    if (alongX) {
+      const text = monogram(building.name);
+      const px = 0.115;
+      const wide = (text.length * 4 - 1) * px;
+      for (const face of [1, -1]) {
+        [...text].forEach((letter, i) => {
+          const rows = FONT[letter] ?? [];
+          rows.forEach((row, r) => {
+            for (let c = 0; c < 3; c++) {
+              if (row[c] !== "#") continue;
+              const along = -wide / 2 + (i * 4 + c + 0.5) * px;
+              glow("sign", dx + face * along, tall + 0.62 + (2 - r) * px, dz + face * 0.175, px, px, 0.02, "#fff6dc");
+            }
+          });
+        });
+      }
+    }
     // The lintel the board hangs from, so the doorway is a doorway.
     voxels.push({
       x: dx,

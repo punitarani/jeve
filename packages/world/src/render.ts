@@ -32,6 +32,7 @@ import {
   buildVoxels,
   facingAt,
   fountainOf,
+  hash2,
   lookFor,
   shade,
   type Glow,
@@ -75,6 +76,8 @@ function softwareRenderer(): string | null {
 }
 
 const SOFTWARE_FRAME_MS = 1000 / 15;
+const CROWD_SKIN = ["#d2cec8", "#bdb9b3", "#a9a5a0"];
+const CROWD_HAIR = ["#8a8782", "#6f6c68", "#a19e99"];
 
 function pick<T>(palette: readonly T[], key: string, fallback: T): T {
   let h = 0;
@@ -158,6 +161,8 @@ export class WorldView {
   private drawnMinute = -1;
 
   private looks = new Map<string, Look>();
+  private slots: string[] = [];
+  private repainted = false;
   private drawn = new Map<string, Drawn>();
   private seatYaw = new Map<number, number>();
   private faceYaw = new Map<number, number>();
@@ -169,6 +174,7 @@ export class WorldView {
   private color = new THREE.Color();
   private colorB = new THREE.Color();
   private vector = new THREE.Vector3();
+  private projected = new THREE.Vector3();
   private basis = new THREE.Matrix4();
   private hidden = new THREE.Matrix4().makeScale(0, 0, 0);
 
@@ -262,8 +268,12 @@ export class WorldView {
    * whole texels, so the sun's own movement cannot either.
    */
   private castShadows(sun: THREE.DirectionalLight): void {
+    // 4096 is 64 MB of depth and sixteen million texels to filter against. A
+    // desktop GPU does not notice; a phone draws the town a few hundred pixels
+    // across, where half the resolution is already more than it can show.
     const max = this.renderer?.capabilities.maxTextureSize ?? 2048;
-    const size = max >= 8192 ? 4096 : 2048;
+    const small = Math.max(this.width, this.height) < 900;
+    const size = max >= 8192 && !small ? 4096 : 2048;
     sun.castShadow = true;
     sun.shadow.mapSize.set(size, size);
     const r = this.townRadius;
@@ -489,6 +499,23 @@ export class WorldView {
         this.model.clockOverride = minute;
         this.litMinute = null;
       },
+      // Fill the town with `count` standing figures, to measure a crowd the
+      // fixture does not have yet. The next frame from the server undoes it.
+      debugCrowd: (count: number) => {
+        const map = this.model.map;
+        if (map === null) return 0;
+        const open: [number, number][] = [];
+        map.tiles.forEach((row, ty) =>
+          row.forEach((kind, tx) => {
+            if (kind === "plaza" || kind === "path" || kind === "floor") open.push([tx, ty]);
+          }),
+        );
+        this.model.crowd = Array.from({ length: Math.min(count, open.length) }, (_, i) => {
+          const [x, y] = open[Math.floor(hash2(i, count, 7) * open.length)] ?? [0, 0];
+          return { x, y, phase: hash2(i, 1, 8) * Math.PI * 2, tint: hash2(i, 2, 9) };
+        });
+        return this.model.crowd.length;
+      },
     });
   }
 
@@ -580,7 +607,9 @@ export class WorldView {
           ? glass.clone().lerp(warm, lit)
           : kind === "lamp"
             ? lampOff.clone().lerp(lampOn, lit)
-            : base.clone().multiplyScalar(0.75 + 0.25 * lit);
+            : kind === "sign"
+              ? base
+              : base.clone().multiplyScalar(0.75 + 0.25 * lit);
       mesh.setColorAt(i, colour);
     });
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -634,7 +663,8 @@ export class WorldView {
 
   /** World (tile x, height, tile y) to CSS pixels inside the container. */
   project = (x: number, height: number, y: number): { x: number; y: number } => {
-    const v = new THREE.Vector3(x, height, y).project(this.camera);
+    // One scratch vector: this runs per bubble per frame, and per person per click.
+    const v = this.projected.set(x, height, y).project(this.camera);
     return { x: ((v.x + 1) / 2) * this.width, y: ((1 - v.y) / 2) * this.height };
   };
 
@@ -654,9 +684,13 @@ export class WorldView {
   private lookOf(key: string, role: string | null, body: string, accent: string): Look {
     const cached = this.looks.get(key);
     if (cached !== undefined) return cached;
-    const skin = pick(SKIN_TONES, key, "#d9a57c");
-    const hair = pick(HAIR_TONES, `${key}h`, "#2b1d14");
-    const trousers = pick(TROUSER_TONES, `${key}t`, "#2f3542");
+    // The crowd is demand, not people (WEB-0002), and the page says "grey
+    // figures are customers": with a head this size, a grey jumper under brown
+    // hair is not a grey figure. So the crowd is grey all through.
+    const crowd = role === null;
+    const skin = crowd ? pick(CROWD_SKIN, key, "#c9c5bf") : pick(SKIN_TONES, key, "#d9a57c");
+    const hair = crowd ? pick(CROWD_HAIR, `${key}h`, "#8a8782") : pick(HAIR_TONES, `${key}h`, "#2b1d14");
+    const trousers = crowd ? "#6d6f76" : pick(TROUSER_TONES, `${key}t`, "#2f3542");
     const wear = role === null ? null : lookFor(role);
     const named = (c: string) => (c === "org" ? accent : c === "hair" ? hair : c);
     const hat = HATS[wear?.hat ?? "none"];
@@ -706,6 +740,7 @@ export class WorldView {
   private pose(
     slot: number,
     look: Look,
+    repaint: boolean,
     x: number,
     z: number,
     yaw: number,
@@ -752,8 +787,23 @@ export class WorldView {
       this.out.multiplyMatrices(this.root, this.local);
       people.setMatrixAt(base + i, this.out);
       const color = look.colors[i];
-      if (color !== undefined) people.setColorAt(base + i, color);
+      if (repaint && color !== undefined) people.setColorAt(base + i, color);
     }
+  }
+
+  /**
+   * Whether a slot in the instance buffer has changed hands since last frame.
+   *
+   * Matrices change every frame; colours only when somebody comes onto the map
+   * or leaves it and everyone behind them moves up one. Uploading 3,000
+   * colours sixty times a second to say the same thing was the larger half of
+   * the per-frame traffic.
+   */
+  private claims(slot: number, key: string): boolean {
+    if (this.slots[slot] === key) return false;
+    this.slots[slot] = key;
+    this.repainted = true;
+    return true;
   }
 
   private drawPeople(now: number, dt: number): void {
@@ -809,7 +859,8 @@ export class WorldView {
       const breath = Math.sin(now / 900 + walker.phase) * 0.012;
       // Seated people have their hands on the desk; talkers gesture.
       const reach = state.sit * 1.05 + (talking ? 0.35 + Math.sin(now / 230 + walker.phase) * 0.3 : 0);
-      this.pose(count, look, walker.x, walker.y, state.yaw, state.swing, state.sit, reach, bounce + breath);
+      const repaint = this.claims(count, walker.id);
+      this.pose(count, look, repaint, walker.x, walker.y, state.yaw, state.swing, state.sit, reach, bounce + breath);
       this.blob(count, walker.x, walker.y);
       if (walker.selected === true && selected < MAX_SELECTED) {
         this.select(selected++, walker, now, state.sit);
@@ -836,7 +887,7 @@ export class WorldView {
       const yaw = seat ?? this.faceYaw.get(tile) ?? dot.phase;
       const breath = Math.sin(now / 900 + dot.phase) * 0.012;
       const sit = seat === undefined ? 0 : 1;
-      this.pose(count, look, x, y, yaw, 0, sit, sit * 0.6, breath);
+      this.pose(count, look, this.claims(count, key), x, y, yaw, 0, sit, sit * 0.6, breath);
       this.blob(count, x, y);
       count++;
     }
@@ -844,7 +895,10 @@ export class WorldView {
     if (this.people !== null) {
       this.people.count = count * PERSON_BOXES;
       this.people.instanceMatrix.needsUpdate = true;
-      if (this.people.instanceColor) this.people.instanceColor.needsUpdate = true;
+      if (this.repainted && this.people.instanceColor) {
+        this.people.instanceColor.needsUpdate = true;
+        this.repainted = false;
+      }
     }
     if (this.blobs !== null) {
       this.blobs.count = count;

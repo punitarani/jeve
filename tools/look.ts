@@ -1,6 +1,6 @@
 // A quick look at the town, between full sets from `tools/shots.sh`.
 //
-//   node tools/look.ts [what ...]      what: times | buildings | poses | hero (default: all)
+//   node tools/look.ts [what ...]      what: times | buildings | poses | walk | load | hero (default: all)
 //
 //   WEB        a dev server            (default http://localhost:3030)
 //   API        the API behind it       (default http://127.0.0.1:8030)
@@ -153,6 +153,55 @@ if (wants("poses")) {
     await call(page, "explore", "debugPose", b, { talkingTo: undefined, seated: true });
     await page.waitForTimeout(700);
     await snap(page, "pose-seated-selected");
+  }
+  await page.close();
+}
+
+// A burst of frames while people are walking: a walk cycle cannot be judged
+// from one. With no daemon ticking, the model replays the last recorded hour
+// of movement within three seconds, which is walking enough.
+if (wants("walk")) {
+  const page = await open("/world", "explore");
+  await zoomTo(page, town.width / 2, town.height / 2 + 1, 8);
+  const box = await page.getByTestId("world-canvas").boundingBox();
+  // Somebody whose position is changing and who is well inside the picture.
+  const mover = () =>
+    page.evaluate(async () => {
+      const h = (window as any).__jeveWorld.explore;
+      const before = new Map(h.status().agents.map((a: any) => [a.id, a]));
+      await new Promise((r) => setTimeout(r, 70));
+      for (const a of h.status().agents) {
+        const was: any = before.get(a.id);
+        const p = a.visible ? h.screenPositionOf(a.id) : null;
+        if (!was || !p || (was.x === a.x && was.y === a.y)) continue;
+        if (p.x > 280 && p.x < 780 && p.y > 320 && p.y < 560) return { id: a.id, ...p };
+      }
+      return null;
+    });
+  let shots = 0;
+  for (let tries = 0; tries < 400 && shots < 8; tries++) {
+    const at = await mover();
+    if (!at) continue;
+    await page.screenshot({
+      path: `${OUT}/walk-${shots}.png`,
+      clip: { x: box.x + at.x - 260, y: box.y + at.y - 300, width: 520, height: 520 },
+    });
+    console.log(`walk-${shots}.png  ${at.id}`);
+    shots++;
+  }
+  await page.close();
+}
+
+// The town is growing to 104 staff and a crowd; the fixture has 24. Fill it to
+// the renderer's capacity and see what the frame rate does.
+if (wants("load")) {
+  const page = await open("/world", "explore");
+  for (const count of [0, 100, 232]) {
+    const timer = setInterval(() => void call(page, "explore", "debugCrowd", count).catch(() => {}), 400);
+    await page.waitForTimeout(1200);
+    const drawn = await call(page, "explore", "debugCrowd", count);
+    await snap(page, `load-${drawn}-extra`);
+    clearInterval(timer);
   }
   await page.close();
 }

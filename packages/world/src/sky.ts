@@ -73,7 +73,7 @@ const NIGHT: Omit<Key, "at"> = {
   hemiSky: "#6f86d8",
   hemiGround: "#6a5238",
   hemiIntensity: 1.0,
-  fill: 0.55,
+  fill: 0.85,
   lamps: 1,
   exposure: 1.0,
 };
