@@ -6,7 +6,7 @@ description: Find why this codebase is the way it is, and record new architectur
 # Decision records
 
 Architecture decisions live in this repo as MADR 4.0 records, one per file.
-Markdown is canonical; the index and the Cursor rules are generated.
+Markdown is canonical; the index and the AGENTS.md decision section are generated.
 
 ## Answering "why is it like this?"
 
@@ -30,6 +30,9 @@ absence of a record is itself information: the choice was not contested.
   that area's prefix (`LLM`, `WORLD`, `DECIDE`, `MEM`, `GEN`, `SIM`, `API`,
   `WEB`).
 
+Note: Some area records currently live in `decisions/core/` due to legacy
+scaffolding. They should be moved next to their code when the code exists.
+
 ## Writing one
 
 Only when the choice was contested, the obvious answer was wrong for a
@@ -39,7 +42,7 @@ comment in the code.
 ```bash
 python3 scripts/gen-decisions.py --new DECIDE "Sample propensities, never argmax"
 # fill in the four sections, set scope to globs that match real files
-python3 scripts/gen-decisions.py        # regenerate index + rules
+python3 scripts/gen-decisions.py        # regenerate index + AGENTS.md section
 ```
 
 Then cite the ID at the point in code that enforces it.

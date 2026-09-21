@@ -95,14 +95,18 @@ class Validation(unittest.TestCase):
     def test_unknown_key_is_rejected(self) -> None:
         text = record().replace("tags:", 'flavour: ["x"]\ntags:')
         meta, _ = gen.parse_front_matter(text, "t.md")
-        self.assertTrue(any("unknown key" in p for p in gen.validate_meta(meta, "t.md")))
+        self.assertTrue(
+            any("unknown key" in p for p in gen.validate_meta(meta, "t.md"))
+        )
 
     def test_missing_key_is_reported(self) -> None:
         text = "\n".join(
             line for line in record().splitlines() if not line.startswith("tags:")
         )
         meta, _ = gen.parse_front_matter(text, "t.md")
-        self.assertTrue(any("missing required" in p for p in gen.validate_meta(meta, "t.md")))
+        self.assertTrue(
+            any("missing required" in p for p in gen.validate_meta(meta, "t.md"))
+        )
 
     def test_schema_matches_the_field_spec(self) -> None:
         schema = gen.json_schema()
@@ -146,9 +150,7 @@ class Graph(unittest.TestCase):
             parsed, body = gen.parse_front_matter(text, "t.md")
             name = f"{parsed['id']}-x.md"
             out.append(
-                gen.Record(
-                    path=gen.DECISIONS / "core" / name, meta=parsed, body=body
-                )
+                gen.Record(path=gen.DECISIONS / "core" / name, meta=parsed, body=body)
             )
         return out
 
@@ -210,7 +212,7 @@ class Rules(unittest.TestCase):
                 path=gen.DECISIONS / "core" / "t.md", meta=meta, body=body
             )
 
-        targets = gen.rule_targets(
+        targets = gen.agents_md_targets(
             [
                 make("accepted", ["py/**"]),
                 make("proposed", ["py/**"]),
@@ -219,16 +221,17 @@ class Rules(unittest.TestCase):
             ]
         )
         self.assertEqual(len(targets), 1)
+        self.assertIn(gen.AGENTS_MD, targets)
 
     def test_the_rule_carries_retrieval_vocabulary(self) -> None:
         meta, body = gen.parse_front_matter(record(scope=["py/**"]), "t.md")
-        text = gen.render_rule(
+        text = gen.render_agents_md_section(
             gen.Record(path=gen.DECISIONS / "core" / "t.md", meta=meta, body=body)
         )
-        self.assertIn("globs: py/**", text)
-        self.assertIn("alwaysApply: false", text)
-        for phrase in ("why", "what was decided", "changed"):
-            self.assertIn(phrase, text)
+        self.assertIn("**Scope**: `py/**`", text)
+        self.assertIn("This decision is immutable", text)
+        self.assertIn("**Status**", text)
+        self.assertIn("**Tags**", text)
 
 
 class RealRepo(unittest.TestCase):

@@ -34,7 +34,7 @@ the session ends. Prose docs rot silently because nothing checks them.
 
 Decisions are MADR 4.0 records, one per file, named `<PREFIX>-NNNN-kebab.md`,
 with machine-readable front matter; `INDEX.md`, `index.jsonl`, `schema.json`
-and the Cursor rules are generated from them and never hand-edited.
+and the AGENTS.md decision section are generated from them and never hand-edited.
 
 Records live by blast radius: cross-cutting ones in `decisions/core/`,
 area-specific ones next to the code they govern, so a package can be read
@@ -44,7 +44,8 @@ unique and greppable — `grep -r CORE-0005` finds every mention.
 ### Consequences
 
 - Good: an agent reads one index, then only the records whose `scope` matches
-  the files it is about to touch. Cursor loads the matching rule by itself.
+  the files it is about to touch. AGENTS.md loads the matching section by itself.
+- Good: agent-agnostic format works across Cursor, Devin, Claude Code, and other tools.
 - Good: `scope` globs are checked against real files, so a restructure that
   orphans a decision fails CI instead of rotting. This is the top silent
   failure mode of scoped docs.
@@ -63,6 +64,6 @@ unique and greppable — `grep -r CORE-0005` finds every mention.
 2. **Write one only when it was contested**, the obvious answer was wrong for a
    non-obvious reason, or someone would plausibly undo it.
 3. **Cite the ID at the enforcement point** in code (`# CORE-0005: seeds are
-   path-derived`), so the graph runs both ways.
+  path-derived`), so the graph runs both ways.
 4. **Agent-written records** carry `deciders: ["claude"]` and the tag
-   `agent-decided` until a human reviews them. That is the morning audit list.
+  `agent-decided` until a human reviews them. That is the morning audit list.
