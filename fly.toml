@@ -18,10 +18,11 @@ primary_region = "iad"  # Washington D.C. — closest to us-east-1
   dockerfile = "infra/docker/Dockerfile.api"
 
 # Migrations run in a release machine before the new version takes traffic.
-# The machine gets the app's secrets, so JEVE_DATABASE_URL is the direct DSN —
-# migration must never go through the transaction pooler.
+# The machine gets the app's secrets; MIGRATIONS_DB_URL is the DDL-capable
+# role (the app's JEVE_DATABASE_URL role is denied CREATE on public), direct
+# rather than pooled — a transaction pooler drops session state mid-script.
 [deploy]
-  release_command = "python -c 'from jeve import db; print(db.migrate())'"
+  release_command = "sh -c 'JEVE_DATABASE_URL=${MIGRATIONS_DB_URL:-$JEVE_DATABASE_URL} python -c \"from jeve import db; print(db.migrate())\"'"
 
 [env]
   PYTHONPATH = "/app/src"

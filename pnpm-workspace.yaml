@@ -6,5 +6,7 @@ packages:
 # without an interactive approval prompt that would hang unattended. pnpm 11+
 # reads `allowBuilds` — the old `onlyBuiltDependencies` list is dead config.
 allowBuilds:
+  esbuild: true
   nx: true
   sharp: true
+  workerd: true
