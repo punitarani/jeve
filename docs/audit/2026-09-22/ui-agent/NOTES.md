@@ -45,3 +45,52 @@ shots, including the four building zooms and 1920×1080.
 
 **Next**: the four layouts + new tile kinds + plaza furniture + `seats`, then
 exteriors (awning, pillars, lettered signs), then a poses look with `debugPose`.
+
+## 20:08 — set 2 (51 minutes in; the four buildings, seats, the plaza)
+
+**Changed since 19:42**
+
+- One layout function per building in `map.py`, in the building's own (u, v)
+  frame, published as `LAYOUTS`; `tests/test_layouts.py` furnishes each at
+  today's bounds and at the coming ones (44/24/20/16 on 64×44) and walks from
+  the door to every seat and spot. Plaza: benches facing the fountain,
+  planters, lamps round the fountain and either side of every door.
+- 13 new tile kinds in `TILE_KINDS`, each with a case in `voxels.ts`; furniture
+  is drawn in its own frame and turned by its neighbours (chair → desk, screen
+  → chair, shelf → wall, bench → fountain). `facingAt` is shared with the
+  renderer so the chair and the person on it agree.
+- `seats` on `GET /world/map` and in the zod `TownMap` = sittable tiles. Staff
+  at their desks are now drawn seated through the renderer's one inference;
+  the grey crowd sits when its spot is a chair.
+- Exteriors: cafe awning + parasols on a terrace, law portico, software mast
+  with a night light and bamboo, accounting window boxes. No roofs.
+- Harness: added `14-people-seated-close`, `14-plaza-close` and an
+  `08-world-<hour>-close` per time of day; `shots.jsonl` now logs
+  `minute/sky/sunIntensity/lamps`. Nothing removed.
+- `packages/world/test/sky.test.ts` (node's own runner, no dependency):
+  `node --test packages/world/test/sky.test.ts`, 7 pass.
+
+**Open these**: `05-world-zoom-*` (the four, tellable apart), `14-people-seated-close`,
+`08-world-0200-night-close`, `08-world-1830-close`, `04-world-default`.
+
+**What I judge still wrong**
+
+- The cafe faces north, so its kitchen is against the wall nearest the camera
+  and the baristas have their backs to us. True of any north-facing building;
+  the offices were laid out to face the camera, the counter cannot be.
+- The terrace is half hidden by the cafe's own wall and awning (it is on the
+  far side). Parasols show; the people under them mostly do not.
+- Selection and talking poses only show with `debugPose` (dev build); in the
+  production harness nothing sets them yet, by design. `tools/look.ts poses`.
+- Signs are still blank boards. Windows still unframed.
+- At night outside walls are very dark and saturated.
+- Not yet looked at under SwiftShader since the rewrite.
+
+**fps**: 61 in all 35 shots (min 61, max 61), real GPU.
+
+**Tests run**: `uv run pytest -q` 228 passed; ruff, ruff format, mypy clean;
+tsc clean for @jeve/world, @jeve/contracts, @jeve/web; strict replay to
+d1 12:30 served 1543/1543 calls from the cassette with the new layouts.
+
+**Next**: SwiftShader check, a walking shot, lettered signs, window frames,
+a browser spec for `status().sky`, then whatever the pictures say.

@@ -101,6 +101,7 @@ async function shot(page: any, name: string, vp: string, route: string, note: st
       file, route, vp, phase, fps, note,
       label: st?.label, seq: st?.seq, people: st?.people, walking: st?.walking, visible: st?.visible,
       live: st?.live, replaying: st?.replaying, software: st?.software ?? null,
+      minute: st?.minute, sky: st?.sky, sunIntensity: st?.sunIntensity, lamps: st?.lamps,
     }) + "\n",
   );
   console.log(file, fps, "fps", st?.label ?? "");
@@ -112,6 +113,11 @@ const H = (page: any, fn: string, ...args: any[]) =>
 async function focusBuilding(page: any, org: string) {
   const centre = centreOf(org);
   if (!centre) return;
+  await focusTile(page, centre, 7);
+}
+
+// Drag a tile to the middle of the canvas and zoom in on it, `wheel` notches.
+async function focusTile(page: any, centre: [number, number], wheel: number) {
   const box = await page.getByTestId("world-canvas").boundingBox();
   const c = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
   for (let i = 0; i < 3; i++) {
@@ -123,7 +129,7 @@ async function focusBuilding(page: any, org: string) {
     await page.waitForTimeout(500);
     if (i === 0) {
       await page.mouse.move(c.x, c.y);
-      for (let k = 0; k < 7; k++) {
+      for (let k = 0; k < wheel; k++) {
         await page.mouse.wheel(0, -240);
         await page.waitForTimeout(60);
       }
@@ -159,6 +165,9 @@ if (phase === "time") {
   await ready(page, "explore");
   await page.waitForTimeout(2500);
   await shot(page, `08-world-${tag}`, "d1440", "/world", `sim-time ${tag}`);
+  // The same hour from close to: the plaza, its lamps, and a building's windows.
+  await focusTile(page, [(town as any).width / 2, (town as any).height / 2], 5);
+  await shot(page, `08-world-${tag}-close`, "d1440", "/world", `sim-time ${tag}, the plaza from close to`);
 }
 
 if (phase === "main") {
@@ -228,6 +237,33 @@ if (phase === "main") {
     await page.waitForTimeout(1500);
     await focusBuilding(page, org);
     await shot(page, `05-world-zoom-${org}`, "d1440", "/world", `zoomed to ${org}`);
+    await page.context().close();
+  }
+  // People from close to (WEB-0004): somebody sitting at their desk, and
+  // whoever is about in the plaza. Seats come from the map, not from here.
+  {
+    const page = await open("d1440");
+    await page.goto(`${WEB}/world`);
+    await ready(page, "explore");
+    await page.waitForTimeout(1500);
+    const seats: [number, number][] = Object.values((town as any).seats ?? {}).flat() as any;
+    const sitter = await page.evaluate((tiles: [number, number][]) => {
+      const a = (window as any).__jeveWorld.explore.status().agents.filter((x: any) => x.visible);
+      return a.find((x: any) => tiles.some(([tx, ty]) => tx === x.x && ty === x.y)) ?? null;
+    }, seats);
+    if (sitter) {
+      await focusTile(page, [sitter.x, sitter.y], 10);
+      await shot(page, "14-people-seated-close", "d1440", "/world", `${sitter.id} at their desk, from close to`);
+    }
+    await page.context().close();
+  }
+  {
+    const page = await open("d1440");
+    await page.goto(`${WEB}/world`);
+    await ready(page, "explore");
+    await page.waitForTimeout(1500);
+    await focusTile(page, [(town as any).width / 2, (town as any).height / 2], 8);
+    await shot(page, "14-plaza-close", "d1440", "/world", "the fountain, benches and lamps, from close to");
     await page.context().close();
   }
 }
