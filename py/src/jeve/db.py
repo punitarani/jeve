@@ -105,14 +105,23 @@ def migration_files() -> list[Path]:
 
 
 def applied(conn: Connection[DictRow]) -> set[str]:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-            name       text PRIMARY KEY,
-            applied_at timestamptz NOT NULL DEFAULT now()
+    # CREATE ... IF NOT EXISTS still demands CREATE privilege on the schema —
+    # Postgres checks the right before it checks existence. On PlanetScale the
+    # app role is deliberately denied it (DDL goes through the migrations role),
+    # so "are we migrated?" has to be a read first and a create only when the
+    # table is genuinely absent, which only a DDL-capable role may reach anyway.
+    found = conn.execute(
+        "SELECT to_regclass('public.schema_migrations') AS t"
+    ).fetchone()
+    if found is None or found["t"] is None:
+        conn.execute(
+            """
+            CREATE TABLE schema_migrations (
+                name       text PRIMARY KEY,
+                applied_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
         )
-        """
-    )
     rows = conn.execute("SELECT name FROM schema_migrations").fetchall()
     return {row["name"] for row in rows}
 
