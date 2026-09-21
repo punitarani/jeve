@@ -56,6 +56,10 @@ gen: ## Regenerate the decision index and Cursor rules
 smoke: ## One real call through the gateway, under a cent
 	$(UV) python scripts/smoke.py
 
+.PHONY: obs-probe
+obs-probe: ## Telemetry end to end against a local OTLP sink (OBS-0001)
+	$(UV) python scripts/obs_probe.py
+
 .PHONY: providers
 providers: ## One tiny real call per model: reachable, not merely resolvable
 	$(UV) python scripts/probe_providers.py

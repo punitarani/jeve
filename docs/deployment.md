@@ -102,6 +102,13 @@ $16 cumulative, so `fly.toml` sets `JEVE_{EXPLORE,HALT,HARD}_CEILING_USD` to
 $10k — high enough never to bind in a real run, still a backstop if the
 account cap were ever unset. OpenRouter's own cap is the real ceiling.
 
+**Telemetry (OBS-0001)** is off until `AXIOM_TOKEN` is set. `fly.toml`
+carries the three non-secret settings (`AXIOM_DOMAIN`, `AXIOM_DATASET`,
+`AXIOM_METRICS_DATASET`); the token is a secret. With it unset the processes
+run exactly as they did before — no exporter, no thread, no socket — so
+turning it on and off is a `fly secrets` call, not a redeploy of different
+code.
+
 ## Statuses worth knowing
 
 `sim_meta.status`, surfaced by `GET /state` as `clock.status` + `health`:
@@ -152,6 +159,47 @@ JEVE_DATABASE_URL=...`.
 **Spend**: `make spend` reads the `spend_entries` table directly (the
 `ops/spend.json` checkpoint is a local convenience). The same table backs
 `/economics`, so the daemon and the API never disagree.
+
+### Telemetry (OBS-0001)
+
+Turning it on, once:
+
+```bash
+# Two datasets in Axiom: `jeve` (an events dataset — traces and logs) and
+# `jeve-metrics`, which must be created as a *metrics* dataset. Metrics route
+# through X-Axiom-Metrics-Dataset, a different header from the other two.
+doppler secrets set AXIOM_TOKEN --project worker --config prd
+fly secrets set AXIOM_TOKEN=xaat-... -a jeve-backend   # restarts both groups
+```
+
+Then, within a minute:
+
+```kusto
+['jeve']         | where ['service.name'] == "jeve-sim" and name == "sim.tick"
+['jeve']         | where ['service.name'] == "jeve-api"
+['jeve-metrics'] | where name in ("jeve.sim.tick.lag", "jeve.sim.heartbeat.age")
+```
+
+`fly logs` is unchanged by design: `obs.log` writes the same line to the same
+stream it always did and sends the structured fields only to Axiom, so every
+grep in this document still works.
+
+Worth alerting on: `jeve.sim.heartbeat.age` climbing past 30s (the daemon is
+gone — the API publishes this, so a dead sim is a *rising* number rather than
+a series that stops), `jeve.sim.status.transitions` into `halted`,
+`jeve.spend.effective` slope, and `jeve.api.stream.poll.errors` above zero.
+
+Verifying without Axiom — point it at any OTLP collector:
+
+```bash
+AXIOM_DOMAIN=http://127.0.0.1:4318 AXIOM_TOKEN=local make obs-probe
+```
+
+**Cloudflare**: `apps/web/wrangler.toml` already enables Workers observability
+at full sampling. Getting those logs into Axiom is a **Logpush** connection
+set up in the Cloudflare and Axiom dashboards — there is no code for it, and
+there must not be: the Worker is assets-only (`directory = "out"`, no `main`),
+and adding a script would contradict WEB-0005.
 
 ## Data growth (measured)
 

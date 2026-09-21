@@ -518,9 +518,7 @@ class Gateway:
                             )
                         else:
                             response = await self._client.post(path, json=body)
-                        attempt.set(
-                            {"http.response.status_code": response.status_code}
-                        )
+                        attempt.set({"http.response.status_code": response.status_code})
             except httpx.HTTPError as error:
                 # Unknown whether it was billed. Keep the reservation as spend.
                 self._ledger.settle(

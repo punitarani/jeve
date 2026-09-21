@@ -107,6 +107,7 @@ class _Tracing:
             f"{method} {scope.get('path', '')}",
             {"http.request.method": method, "url.path": scope.get("path", "")},
         ) as span:
+
             async def watched(message: Any) -> None:
                 nonlocal status
                 if message["type"] == "http.response.start":
@@ -121,9 +122,7 @@ class _Tracing:
                 # be one span name and one metric series per event id.
                 route = getattr(scope.get("route"), "path", None) or "/{unmatched}"
                 span.update_name(f"{method} {route}")
-                span.set(
-                    {"http.route": route, "http.response.status_code": status}
-                )
+                span.set({"http.route": route, "http.response.status_code": status})
                 attrs: obs.Attrs = {
                     "http.request.method": method,
                     "http.route": route,
@@ -156,11 +155,15 @@ def _register_gauges() -> None:
         return float(row[column])
 
     obs.register_gauge(
-        "jeve.sim.heartbeat.age", "s", "Seconds since the daemon last beat.",
+        "jeve.sim.heartbeat.age",
+        "s",
+        "Seconds since the daemon last beat.",
         lambda: _meta("age"),
     )
     obs.register_gauge(
-        "jeve.sim.lag", "s", "How far behind its pace the last tick ran.",
+        "jeve.sim.lag",
+        "s",
+        "How far behind its pace the last tick ran.",
         lambda: _meta("lag_s"),
     )
 
@@ -1103,9 +1106,7 @@ class _StreamHub:
                 # still just waits for it to come back — but this used to
                 # swallow the error whole, so a wedged pool looked exactly
                 # like an idle world. Counted now, and named (OBS-0001).
-                meters.STREAM_POLL_ERRORS.add(
-                    1, {"error.type": type(error).__name__}
-                )
+                meters.STREAM_POLL_ERRORS.add(1, {"error.type": type(error).__name__})
                 with obs.span("stream.poll") as failed:
                     failed.fail(error)
                 await asyncio.sleep(_POLL_S)

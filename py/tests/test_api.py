@@ -452,9 +452,7 @@ def test_a_parameterised_route_is_one_span_name_not_one_per_event(
         assert {s.name for s in causal} == {"GET /causal/{seq}"}
         assert len(causal) == len(seqs)
         # The concrete path is still there to read, just not as the name.
-        assert {(s.attributes or {})["http.route"] for s in causal} == {
-            "/causal/{seq}"
-        }
+        assert {(s.attributes or {})["http.route"] for s in causal} == {"/causal/{seq}"}
         assert len({(s.attributes or {})["url.path"] for s in causal}) == len(seqs)
 
         # Every request holds a pooled connection, and that is a span, so a

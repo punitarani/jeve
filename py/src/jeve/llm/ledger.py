@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,14 +38,23 @@ def _publish(spend: Spend) -> None:
     _LATEST["reserved"] = spend.reserved_usd
 
 
+def _reader(key: str) -> Callable[[], float | None]:
+    """A gauge callback for one cached figure.
+
+    A factory rather than `lambda key=key:` — the default-argument trick for
+    late binding is a puzzle at the point of use, and this is read by whoever
+    is trying to work out where a number on a chart came from.
+    """
+
+    return lambda: _LATEST.get(key)
+
+
 for _name, _key, _description in (
     ("jeve.spend.effective", "effective", "Settled plus unsettled reservations."),
     ("jeve.spend.settled", "settled", "Cost of calls that have come back."),
     ("jeve.spend.reserved", "reserved", "Worst-case cost of calls in flight."),
 ):
-    obs.register_gauge(
-        _name, "USD", _description, lambda key=_key: _LATEST.get(key)  # type: ignore[misc]
-    )
+    obs.register_gauge(_name, "USD", _description, _reader(_key))
 
 
 @dataclass(frozen=True, slots=True)
