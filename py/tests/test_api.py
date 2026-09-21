@@ -205,6 +205,38 @@ def test_an_unknown_person_is_404(client: TestClient) -> None:
     assert client.get("/persons/nobody/decisions").status_code == 404
 
 
+def test_responses_match_the_pydantic_contract(client: TestClient) -> None:
+    """`jeve.api.contracts` is the source of truth for the zod schemas the
+    browser parses with. Without this, the models could drift from the SQL
+    and nobody would know until a page broke — validation here keeps the
+    contract honest."""
+
+    from jeve.api import contracts
+
+    contracts.WorldState.model_validate(client.get("/state").json())
+    contracts.EventPage.model_validate(client.get("/events").json())
+    contracts.EventPage.model_validate(
+        client.get("/events", params={"background": True, "limit": 500}).json()
+    )
+
+    event = client.get("/events", params={"limit": 1}).json()["events"][0]
+    contracts.CausalChain.model_validate(client.get(f"/causal/{event['seq']}").json())
+    contracts.CausalChain.model_validate(
+        client.get(f"/causal/{event['seq']}", params={"direction": "up"}).json()
+    )
+
+    persons = contracts.PersonsResponse.model_validate(client.get("/persons").json())
+    assert persons.persons
+    contracts.PersonsResponse.model_validate(
+        client.get("/persons", params={"kind": "all", "limit": 500}).json()
+    )
+    contracts.PersonDecisions.model_validate(
+        client.get(f"/persons/{persons.persons[0].id}/decisions").json()
+    )
+
+    contracts.Economics.model_validate(client.get("/economics").json())
+
+
 def test_economics_reports_measured_spend(client: TestClient) -> None:
     body = client.get("/economics").json()
     assert body["sim_days"] >= 1

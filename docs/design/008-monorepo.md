@@ -85,18 +85,21 @@ affected — coarse, correct.
 | zod → JSON Schema → pydantic | Rejected: `z.toJSONSchema()` emits `oneOf` without `discriminator`, loses type information. |
 
 **Implementation:**
-- `tools/contract-gen/models.py` - Pydantic contract models as source of truth
-- `tools/contract-gen/generate_zod.py` - Direct zod schema generation
-- `packages/contracts/src/index.ts` - Generated zod schemas (committed)
-- `make contracts` / `npx nx run contracts:generate` - Regeneration
-- `make contracts-check` / `npx nx run contracts:check-drift` - Drift detection
+
+* `py/src/jeve/api/contracts.py` - Pydantic contract models as source of truth
+* `tools/contract-gen/generate_zod.py` - Direct zod schema generation
+* `packages/contracts/src/index.ts` - Generated zod schemas (committed)
+* `py/tests/test_api.py` - Validates live responses against the models
+* `make contracts` / `npx nx run contracts:generate` - Regeneration
+* `make contracts-check` / `npx nx run contracts:check-drift` - Drift detection
 
 **Benefits of chosen approach:**
-- Single-step generation, no external dependencies
-- Preserves semantic richness (comments, field constraints)
-- Handles optional vs nullable fields correctly
-- Deterministic output for reliable drift detection
-- No running services required for generation
+
+* Single-step generation, no external dependencies
+* Preserves semantic richness (comments, field constraints)
+* Handles optional vs nullable fields correctly
+* Deterministic output for reliable drift detection
+* No running services required for generation
 
 ## pnpm, not bun
 

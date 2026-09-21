@@ -21,8 +21,10 @@ check: lint types test decisions ## Everything that must pass, offline
 lint: ## ruff check + format check
 	@echo "Linting Python..."
 	npx nx run py:lint
-	@echo "Linting TypeScript..."
-	npx nx run-many -t lint --projects=api,sim,web
+	# api/sim lint are per-app ruff views of the same package. Web has no
+	# eslint config — its static gate is tsc strict under `make types`.
+	@echo "Linting app views..."
+	npx nx run-many -t lint --projects=api,sim
 
 .PHONY: types
 types: ## mypy --strict, and tsc over the web app

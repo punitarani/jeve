@@ -1,0 +1,228 @@
+"""The API contract, as pydantic models — the one source of truth.
+
+These describe what `app.py` actually puts on the wire. They are not attached
+to the endpoints as `response_model` (FastAPI would then *strip* any field it
+did not know, hiding additions instead of surfacing them); they are enforced
+two ways instead:
+
+* `tools/contract-gen/generate_zod.py` renders the zod schemas the browser
+  parses every response with — drift fails loudly at the client boundary.
+* `test_api.py` validates real endpoint responses against these models — a
+  shape the model forgot is a failing test, not a runtime surprise.
+
+Field descriptions become comments in the generated TypeScript.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+class Clock(BaseModel):
+    sim_time: int
+    label: str
+    day: int
+    weekday: int
+    in_office_hours: bool
+    tick_seq: int
+    status: Literal[
+        "running",
+        "paused",
+        "paused_budget",
+        "waiting_on_model",
+        "waiting_on_budget",
+        "halted",
+    ] = Field(
+        description="Every value the database's CHECK allows. `paused_budget` "
+        "was missing, so the day the governor paused the world the page would "
+        "have failed to parse."
+    )
+    speed: float
+    run_id: str
+
+
+class Org(BaseModel):
+    id: str
+    name: str
+    kind: Literal["software", "law", "accounting", "cafe"]
+    cash_cents: int
+    receivable_cents: int
+
+
+class Module(BaseModel):
+    id: str
+    name: str
+    status: Literal["up", "down"]
+
+
+class Health(BaseModel):
+    """Is anybody driving? `clock.status` is the daemon's word; this is the
+    evidence (SIM-0002)."""
+
+    heartbeat_age_s: float | None = Field(
+        description="Seconds since the daemon last proved it was alive. "
+        "Null before its first beat."
+    )
+    lag_s: float = Field(description="How far the last tick ran over its pacing.")
+    last_error: str | None
+    stale: bool = Field(
+        description="The status says a process should be alive and the "
+        "heartbeat says none is."
+    )
+
+
+class TicketCounts(BaseModel):
+    untriaged: int
+    open: int
+
+
+class UnpaidInvoices(BaseModel):
+    n: int
+    cents: int
+
+
+class WorldState(BaseModel):
+    seq: int
+    clock: Clock
+    health: Health
+    orgs: list[Org]
+    modules: list[Module]
+    tickets: TicketCounts
+    unpaid_invoices: UnpaidInvoices
+    persons: dict[str, int]
+
+
+class SimEvent(BaseModel):
+    seq: int
+    sim_time: int
+    # /causal walks a CTE that does not select tick_seq — absent, not null.
+    tick_seq: int | None = None
+    kind: str
+    actor_id: str | None
+    org_id: str | None
+    payload: dict[str, Any]
+    causes: list[int]
+    label: str
+    depth: int | None = None
+
+
+class EventPage(BaseModel):
+    events: list[SimEvent]
+    seq: int
+
+
+class CausalChain(BaseModel):
+    root: int
+    direction: Literal["up", "down"]
+    events: list[SimEvent]
+
+
+class Person(BaseModel):
+    id: str
+    org_id: str | None
+    name: str
+    role: str
+    kind: Literal["staff", "counterparty"]
+    traits: dict[str, float]
+    # /persons/{id}/decisions does not select these — absent, not null.
+    decision_seq: int | None = None
+    status: str | None = None
+
+
+class Decision(BaseModel):
+    id: int
+    decision_seq: int
+    sim_time: int
+    tick_seq: int
+    label: str
+    question_set: str
+    source: Literal["rules", "jev", "llm"] = Field(
+        description="Which kind of decider answered — the research question, per row."
+    )
+    distributions: dict[str, dict[str, float]] = Field(
+        description="Empty for a rules decision; the full distribution when a "
+        "model answered."
+    )
+    prng_path: str
+    draws: dict[str, float]
+    chosen: dict[str, Any]
+    model_call: str | None
+
+
+class PersonsResponse(BaseModel):
+    persons: list[Person]
+
+
+class PersonDecisions(BaseModel):
+    person: Person
+    decisions: list[Decision]
+
+
+class PerSimDay(BaseModel):
+    usd: float
+    usd_per_100_persons: float
+    usd_per_10_orgs: float
+    usd_per_1000_events: float
+
+
+class SpendWithoutDedup(BaseModel):
+    spend_usd: float
+    per_sim_day: PerSimDay
+
+
+class DecisionsByModel(BaseModel):
+    model: str
+    decisions: int
+    calls: int
+
+
+class DecisionsByKind(BaseModel):
+    kind: str
+    source: str
+    decisions: int
+    calls: int
+    usd: float
+
+
+class Economics(BaseModel):
+    spend_usd: float
+    spend_is_estimated_calls: int
+    model_calls: int
+    input_tokens: int
+    sim_days: float
+    counts: dict[str, int]
+    per_sim_day: PerSimDay
+    without_dedup: SpendWithoutDedup
+    dedup_rate: float
+    unpriced_decisions: int
+    decisions_by_model: list[DecisionsByModel]
+    by_kind: list[DecisionsByKind]
+    note: str
+
+
+# Emission order for the generated file: a schema is written only after the
+# schemas it references, because `z.object({ x: Foo })` reads Foo at module
+# load.
+MODELS: list[type[BaseModel]] = [
+    Clock,
+    Org,
+    Module,
+    Health,
+    TicketCounts,
+    UnpaidInvoices,
+    WorldState,
+    SimEvent,
+    EventPage,
+    CausalChain,
+    Person,
+    Decision,
+    PersonsResponse,
+    PersonDecisions,
+    PerSimDay,
+    SpendWithoutDedup,
+    DecisionsByModel,
+    DecisionsByKind,
+    Economics,
+]

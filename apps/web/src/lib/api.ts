@@ -10,6 +10,7 @@ import {
   Economics,
   EventPage,
   PersonDecisions,
+  PersonsResponse,
   WorldState,
   type SimEvent,
 } from "@jeve/contracts";
@@ -44,10 +45,6 @@ export const fetchPersons = (org?: string) =>
 export const fetchDecisions = (personId: string) =>
   get(`/persons/${encodeURIComponent(personId)}/decisions`, PersonDecisions);
 export const fetchEconomics = () => get("/economics", Economics);
-
-import { Person } from "@jeve/contracts";
-import { z } from "zod";
-const PersonsResponse = z.object({ persons: z.array(Person) });
 
 export type { SimEvent };
 

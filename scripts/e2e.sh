@@ -71,9 +71,11 @@ echo "postgres on ${PG_PORT}"
 
 say "2/6  install"
 uv sync --directory py --quiet
+# `corepack pnpm` resolves the packageManager pin (pnpm 12): the lockfile is
+# written in its two-document format, which pnpm 9 misreads as corrupt.
 # CI=true: a modules-dir mismatch must fail, never prompt — the script is
 # meant to run unattended.
-CI=true pnpm install --frozen-lockfile --silent
+CI=true corepack pnpm install --frozen-lockfile --silent
 
 say "3/6  offline checks"
 make lint types test decisions
@@ -103,7 +105,7 @@ curl -sf "http://127.0.0.1:${API_PORT}/health" >/dev/null || { cat "$LOGS/api.lo
 # the only place the TypeScript is compiled against the real page tree.
 export NEXT_PUBLIC_JEVE_API="http://127.0.0.1:${API_PORT}"
 export JEVE_NEXT_DIST=".next-e2e"
-pnpm --filter @jeve/web exec next build > "$LOGS/web-build.log" 2>&1 \
+corepack pnpm --filter @jeve/web exec next build > "$LOGS/web-build.log" 2>&1 \
   || { tail -40 "$LOGS/web-build.log"; exit 1; }
 # WEB-0005: `output: "export"` emits plain files into the dist dir — with
 # JEVE_NEXT_DIST that is apps/web/.next-e2e, not out/ — and there is no
@@ -121,7 +123,7 @@ curl -sf "http://localhost:${WEB_PORT}/" >/dev/null || { tail -30 "$LOGS/web.log
   > "$LOGS/daemon.log" 2>&1 &
 SIM_PID=$!
 
-JEVE_WEB_URL="http://localhost:${WEB_PORT}" pnpm --filter @jeve/web exec playwright test
+JEVE_WEB_URL="http://localhost:${WEB_PORT}" corepack pnpm --filter @jeve/web exec playwright test
 
 # The report is about the whole fixture, so let the daemon reach its horizon.
 for _ in $(seq 1 180); do kill -0 "$SIM_PID" 2>/dev/null || break; sleep 1; done

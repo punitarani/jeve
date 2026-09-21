@@ -205,6 +205,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### CORE-0011: The API contract is pydantic in the package, generated to zod, and tested against the wire
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `py/src/jeve/api/contracts.py`, `tools/contract-gen/**`, `packages/contracts/src/index.ts`, `py/tests/test_api.py`  
+**Tags**: contracts, tooling, agent-decided
+
+`py/src/jeve/api/contracts.py` is the one source of truth for what the API serves: real pydantic models inside the `jeve` package, where `mypy --strict` and the layering test see them. `tools/contract-gen/generate_zod.py` renders `packages/contracts/src/index.ts` from them; `test_api.py` validates live endpoint responses against the same models, so the models cannot drift from the SQL without a failing test. Field descriptions and docstrings carry the comments into the generated file — no override table. A field the API omits rather than sends as JSON null is `X | None` with a default (`.optional()`); a key that is present and null is required `X | None` (`.nullable()`).
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### DECIDE-0004: The cache key is the bytes that were sent and the model version that answered
 
 **Status**: accepted (2026-09-20)  

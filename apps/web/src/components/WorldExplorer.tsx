@@ -12,6 +12,7 @@ import {
 import { mountWorld, type WorldStatus } from "@jeve/world";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import type { ZodType } from "zod";
 
 import { API, money } from "@/lib/api";
 
@@ -97,14 +98,14 @@ export function WorldExplorer() {
 	);
 }
 
-function useDetail<T>(path: string, parse: (raw: unknown) => T, tick: number) {
+function useDetail<T>(path: string, schema: ZodType<T>, tick: number) {
 	const [data, setData] = useState<T | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	useEffect(() => {
 		let live = true;
 		fetch(`${API}${path}`, { cache: "no-store" })
 			.then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-			.then((raw) => live && (setData(parse(raw)), setError(null)))
+			.then((raw) => live && (setData(schema.parse(raw)), setError(null)))
 			.catch((e: unknown) => live && setError(String(e)));
 		return () => {
 			live = false;
@@ -152,7 +153,7 @@ function Bars({
 function AgentPanel({ id, tick }: { id: string; tick: number }) {
 	const { data, error } = useDetail<Agent>(
 		`/world/agents/${encodeURIComponent(id)}`,
-		(raw) => AgentDetail.parse(raw),
+		AgentDetail,
 		tick,
 	);
 	if (error !== null)
@@ -331,7 +332,7 @@ function Imagined({ seq }: { seq: number }) {
 function OrgPanel({ id, tick }: { id: string; tick: number }) {
 	const { data, error } = useDetail<Org>(
 		`/orgs/${encodeURIComponent(id)}`,
-		(raw) => OrgDetail.parse(raw),
+		OrgDetail,
 		tick,
 	);
 	if (error !== null)

@@ -1,63 +1,44 @@
 # Contract Generation
 
-Automated generation of TypeScript zod schemas from pydantic models.
-
-## Overview
-
-This tool ensures that TypeScript contracts stay synchronized with Python backend models by generating zod schemas directly from pydantic definitions.
-
-## Structure
-
-- `models.py` - Pydantic models defining API contracts
-- `generate_zod.py` - Script that generates zod schemas from pydantic models
+Generates the TypeScript zod schemas in `packages/contracts/src/index.ts` from
+the pydantic models in `py/src/jeve/api/contracts.py` — the single source of
+truth for what the API serves.
 
 ## Usage
 
 ```bash
-# Generate contracts
-cd py && uv run python ../tools/contract-gen/generate_zod.py
-
-# Or use the Nx target
-npx nx run contracts:generate
-
-# Or use Make
-make contracts
+make contracts            # regenerate (nx run contracts:generate)
+make contracts-check      # regenerate and fail if the committed file differs
 ```
 
-## Features
+## How drift is caught
 
-- **Type Safety**: Generates zod schemas with proper TypeScript types
-- **Semantic Preservation**: Maintains optional vs nullable field distinctions
-- **Documentation**: Preserves comments and explanations from original schemas
-- **Deterministic**: Reproducible output for drift detection
+Two directions, both failing checks:
 
-## Integration
+* **models → schema**: `contracts:check-drift` regenerates `index.ts` and
+  fails CI if the committed file differs from what the models produce.
+* **schema → reality**: `py/tests/test_api.py` validates live endpoint
+  responses against the same pydantic models, so a shape the model forgot is
+  a failing test. The browser also parses every response with the generated
+  zod schemas, so drift that reaches it fails at the boundary.
 
-The generated schemas are used by:
-- Frontend applications for API response validation
-- Type checking to ensure type safety
-- CI to detect drift between Python and TypeScript contracts
+## Conventions
+
+* Field-level `Field(description=...)` and model docstrings become `/** */`
+  comments in the generated file.
+* A required `X | None` field generates `.nullable()`; a field with a default
+  generates `.optional()` — matching the wire, where the API omits keys rather
+  than sending JSON null.
+* `MODELS` in `contracts.py` is the emission order: dependencies come before
+  the schemas that reference them (zod consts read their references at module
+  load).
+* `ORG_COLORS` is emitted as a constant, not a schema.
 
 ## Maintenance
 
 When API contracts change:
-1. Update the pydantic models in `models.py`
-2. Run `make contracts` to regenerate schemas
-3. Commit both the model changes and generated schemas
-4. CI will validate that schemas are in sync
 
-## Drift Detection
-
-The system includes drift detection to ensure contracts stay synchronized:
-
-```bash
-# Check if contracts are up to date
-make contracts-check
-
-# This will fail if the generated schemas differ from what's committed
-```
-
-This ensures that:
-- Pydantic models are the single source of truth
-- TypeScript schemas never drift from Python definitions
-- Contract changes are explicit and reviewed
+1. Update the models in `py/src/jeve/api/contracts.py`.
+2. Run `make contracts` and commit the regenerated `index.ts`.
+3. The contract test in `test_api.py` will fail if the wire shape and the
+   model disagree.

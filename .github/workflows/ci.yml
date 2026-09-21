@@ -64,7 +64,9 @@ jobs:
         with:
           enable-cache: true
 
-      - run: uv sync --frozen
+      # The Python project lives in py/ — there is no root pyproject.toml, so a
+      # bare `uv sync` fails before any check runs.
+      - run: uv sync --frozen --directory py
       - run: npx nx run py:lint
       - run: npx nx run py:typecheck
       - run: npx nx run py:test

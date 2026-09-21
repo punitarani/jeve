@@ -1,13 +1,15 @@
 /**
- * The API contract, as zod schemas.
+ * The API contract, as zod schemas — generated. Do not edit by hand.
+ *
+ * Source of truth: the pydantic models in `jeve.api.contracts`
+ * (py/src/jeve/api/contracts.py). `nx run contracts:generate` rewrites this
+ * file and `contracts:check-drift` fails on the diff; `test_api.py` validates
+ * real responses against the same models, so drift is a failing check rather
+ * than a runtime surprise.
  *
  * Every response is parsed at the boundary rather than cast. An endpoint that
  * changes shape then fails loudly in one place instead of becoming `undefined`
  * three components deep.
- *
- * pydantic is the source of truth (CORE-0006); `pnpm contracts:check` compares
- * these against the live OpenAPI document, so drift is a failing check rather
- * than a runtime surprise.
  */
 import { z } from "zod";
 
@@ -18,8 +20,7 @@ export const Clock = z.object({
   weekday: z.number().int(),
   in_office_hours: z.boolean(),
   tick_seq: z.number().int(),
-  // Every value the database's CHECK allows. `paused_budget` was missing, so
-  // the day the governor paused the world the page would have failed to parse.
+  /** Every value the database's CHECK allows. `paused_budget` was missing, so the day the governor paused the world the page would have failed to parse. */
   status: z.enum(["running", "paused", "paused_budget", "waiting_on_model", "waiting_on_budget", "halted"]),
   speed: z.number(),
   run_id: z.string(),
@@ -54,14 +55,26 @@ export const Health = z.object({
 });
 export type Health = z.infer<typeof Health>;
 
+export const TicketCounts = z.object({
+  untriaged: z.number().int(),
+  open: z.number().int(),
+});
+export type TicketCounts = z.infer<typeof TicketCounts>;
+
+export const UnpaidInvoices = z.object({
+  n: z.number().int(),
+  cents: z.number().int(),
+});
+export type UnpaidInvoices = z.infer<typeof UnpaidInvoices>;
+
 export const WorldState = z.object({
   seq: z.number().int(),
   clock: Clock,
   health: Health,
   orgs: z.array(Org),
   modules: z.array(Module),
-  tickets: z.object({ untriaged: z.number().int(), open: z.number().int() }),
-  unpaid_invoices: z.object({ n: z.number().int(), cents: z.number().int() }),
+  tickets: TicketCounts,
+  unpaid_invoices: UnpaidInvoices,
   persons: z.record(z.string(), z.number().int()),
 });
 export type WorldState = z.infer<typeof WorldState>;
@@ -75,7 +88,7 @@ export const SimEvent = z.object({
   org_id: z.string().nullable(),
   payload: z.record(z.string(), z.unknown()),
   causes: z.array(z.number().int()),
-  label: z.string().optional(),
+  label: z.string(),
   depth: z.number().int().optional(),
 });
 export type SimEvent = z.infer<typeof SimEvent>;
@@ -99,7 +112,7 @@ export const Person = z.object({
   name: z.string(),
   role: z.string(),
   kind: z.enum(["staff", "counterparty"]),
-  traits: z.record(z.string(), z.number()).nullable(),
+  traits: z.record(z.string(), z.number()),
   decision_seq: z.number().int().optional(),
   status: z.string().optional(),
 });
@@ -109,11 +122,12 @@ export const Decision = z.object({
   id: z.number().int(),
   decision_seq: z.number().int(),
   sim_time: z.number().int(),
-  label: z.string().optional(),
+  tick_seq: z.number().int(),
+  label: z.string(),
   question_set: z.string(),
   /** Which kind of decider answered — the research question, per row. */
   source: z.enum(["rules", "jev", "llm"]),
-  /** Empty for a rules decision; a real distribution once Jev is wired in. */
+  /** Empty for a rules decision; the full distribution when a model answered. */
   distributions: z.record(z.string(), z.record(z.string(), z.number())),
   prng_path: z.string(),
   draws: z.record(z.string(), z.number()),
@@ -121,6 +135,11 @@ export const Decision = z.object({
   model_call: z.string().nullable(),
 });
 export type Decision = z.infer<typeof Decision>;
+
+export const PersonsResponse = z.object({
+  persons: z.array(Person),
+});
+export type PersonsResponse = z.infer<typeof PersonsResponse>;
 
 export const PersonDecisions = z.object({
   person: Person,
@@ -136,6 +155,28 @@ export const PerSimDay = z.object({
 });
 export type PerSimDay = z.infer<typeof PerSimDay>;
 
+export const SpendWithoutDedup = z.object({
+  spend_usd: z.number(),
+  per_sim_day: PerSimDay,
+});
+export type SpendWithoutDedup = z.infer<typeof SpendWithoutDedup>;
+
+export const DecisionsByModel = z.object({
+  model: z.string(),
+  decisions: z.number().int(),
+  calls: z.number().int(),
+});
+export type DecisionsByModel = z.infer<typeof DecisionsByModel>;
+
+export const DecisionsByKind = z.object({
+  kind: z.string(),
+  source: z.string(),
+  decisions: z.number().int(),
+  calls: z.number().int(),
+  usd: z.number(),
+});
+export type DecisionsByKind = z.infer<typeof DecisionsByKind>;
+
 export const Economics = z.object({
   spend_usd: z.number(),
   spend_is_estimated_calls: z.number().int(),
@@ -144,25 +185,11 @@ export const Economics = z.object({
   sim_days: z.number(),
   counts: z.record(z.string(), z.number().int()),
   per_sim_day: PerSimDay,
-  without_dedup: z.object({ spend_usd: z.number(), per_sim_day: PerSimDay }),
+  without_dedup: SpendWithoutDedup,
   dedup_rate: z.number(),
   unpriced_decisions: z.number().int(),
-  decisions_by_model: z.array(
-    z.object({
-      model: z.string(),
-      decisions: z.number().int(),
-      calls: z.number().int(),
-    }),
-  ),
-  by_kind: z.array(
-    z.object({
-      kind: z.string(),
-      source: z.string(),
-      decisions: z.number().int(),
-      calls: z.number().int(),
-      usd: z.number(),
-    }),
-  ),
+  decisions_by_model: z.array(DecisionsByModel),
+  by_kind: z.array(DecisionsByKind),
   note: z.string(),
 });
 export type Economics = z.infer<typeof Economics>;

@@ -1,9 +1,9 @@
+# Not a package: an nx anchor so the api process has targets (dev/start/test/
+# lint/typecheck) in the workspace graph. The code lives in py/src/jeve/api and
+# ships inside the single `jeve` distribution.
 [project]
 name = "jeve-api"
 version = "0.1.0"
 description = "FastAPI application entry point for jeve"
 requires-python = ">=3.14"
 dependencies = []
-
-[project.scripts]
-jeve-api = "jeve_api:main"

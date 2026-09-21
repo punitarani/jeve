@@ -2,11 +2,9 @@ packages:
   - apps/*
   - packages/*
 
-# Build scripts run on install; naming them is how a fresh clone installs
-# without an interactive approval prompt that would hang unattended.
-onlyBuiltDependencies:
-  - "@tailwindcss/oxide"
-  - esbuild
-  - nx
-  - sharp
-  - unrs-resolver
+# Build scripts run on install; ruling on each is how a fresh clone installs
+# without an interactive approval prompt that would hang unattended. pnpm 11+
+# reads `allowBuilds` — the old `onlyBuiltDependencies` list is dead config.
+allowBuilds:
+  nx: true
+  sharp: true

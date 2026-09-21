@@ -1,9 +1,9 @@
+# Not a package: an nx anchor so the sim process has targets (dev/run/fixture/
+# test/lint/typecheck) in the workspace graph. The code lives in
+# py/src/jeve/sim and ships inside the single `jeve` distribution.
 [project]
 name = "jeve-sim"
 version = "0.1.0"
 description = "Simulation worker entry point for jeve"
 requires-python = ">=3.14"
 dependencies = []
-
-[project.scripts]
-jeve-sim = "jeve_sim:main"

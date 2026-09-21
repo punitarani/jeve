@@ -9,8 +9,8 @@ Cloudflare site.
 
 ## Verified state (local `main`, not pushed)
 
-* `make check` — ruff, `mypy --strict` (61 files), 258 tests, contracts in
-  sync, 38 decision records. `make e2e` — full stack on cassette replay,
+* `make check` — ruff, `mypy --strict` (62 files), 259 tests, contracts in
+  sync, 39 decision records. `make e2e` — full stack on cassette replay,
   14/14 Playwright, $0.00 spend. `make soak` — 35 sim-days on rules, all
   invariants, counterfactual arms diverge.
 * Production topology runs locally: `docker compose -f docker-compose.prod.yml
@@ -32,8 +32,8 @@ Cloudflare site.
 * `JEVE_POLICY=jev` in production spends real money continuously. The
   guardrail ladder is env-tunable (`JEVE_*_CEILING_USD`, `JEVE_RUN_CAP_USD=0`
   in prod); the hard stop is the OpenRouter account cap — set it.
-* The store is Postgres. PlanetScale is not compatible (advisory locks,
-  `FILTER`, psycopg) — see `docs/deployment.md`.
+* The store must be Postgres (advisory locks, `FILTER`, psycopg) — the
+  engine is the constraint, not the host; see `docs/deployment.md`.
 
 ## Where things live
 
