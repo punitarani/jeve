@@ -17,10 +17,19 @@ routes = [
 [assets]
 directory = "out"
 
-# Workers Logs + traces + real-time Issues, all persisted and queryable in
-# the Cloudflare dashboard. 100% sampling — a static site at this volume
-# costs nothing to observe. Request/error/latency metrics are always
-# collected; there is no metrics toggle.
+# Workers Logs + traces, persisted and queryable in the Cloudflare
+# dashboard. 100% sampling — a static site at this volume costs nothing to
+# observe. Request/error/latency metrics are always collected; there is no
+# metrics toggle.
+#
+# Two things the config file cannot say:
+# * wrangler does not upload observability for a script-less (assets-only)
+#   Worker — the matching script-settings were PATCHed in once via the API
+#   (2026-09-21) and wrangler deploys leave them alone; verified after
+#   deploy a4f4108d.
+# * observability.issues requires the account-level real-time issue
+#   detection feature; this account does not have it and the settings API
+#   rejects the upload over it, so the key stays out.
 [observability]
 enabled = true
 head_sampling_rate = 1
@@ -35,6 +44,3 @@ persist = true
 enabled = true
 head_sampling_rate = 1
 persist = true
-
-[observability.issues]
-enabled = true
