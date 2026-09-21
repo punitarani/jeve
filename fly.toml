@@ -1,8 +1,9 @@
 # Fly.io configuration for jeve backend services
 # Deploy with: fly deploy
+# Database region: us-east-1 (closest Fly.io region: iad - Washington D.C.)
 
 app = "jeve-backend"
-primary_region = "sjc"
+primary_region = "iad"  # Washington D.C. - closest to us-east-1 database
 
 [build]
   dockerfile = "infra/docker/Dockerfile.api"
@@ -10,6 +11,7 @@ primary_region = "sjc"
 [env]
   NODE_ENV = "production"
   PYTHONPATH = "/app/src"
+  JEVE_DATABASE_URL = "postgresql://jeve:jeve@jeve-db.internal:5432/jeve"
 
 # API service
 [[services]]
@@ -53,10 +55,6 @@ primary_region = "sjc"
 [processes]
   api = "uvicorn jeve.api.app:app --host 0.0.0.0 --port 8000"
   sim = "python -m jeve.sim"
-
-# Database connection (use Fly.io Postgres or external)
-[env]
-  JEVE_DATABASE_URL = "postgresql://jeve:jeve@jeve-db.internal:5432/jeve"
 
 # Secrets (set with: fly secrets set KEY=value)
 # fly secrets set OPENROUTER_API_KEY=your-key

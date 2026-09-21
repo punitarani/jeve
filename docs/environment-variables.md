@@ -43,7 +43,7 @@ The monorepo uses three Doppler projects to organize environment variables by de
 | `API_PORT` | API bind port | `8000` |
 | `PYTHONPATH` | Python module path | `/app/src` |
 | `FLY_APP_NAME` | Fly.io app name | `jeve-backend` |
-| `FLY_REGION` | Fly.io region | `sjc` |
+| `FLY_REGION` | Fly.io region | `iad` |
 | `JEVE_DATABASE_URL` | Primary database URL | `postgresql://...` |
 | `JEVE_DATABASE_POOLED_URL` | Pooled database URL | `postgresql://...` |
 | `JEVE_CORS_ORIGINS` | Allowed CORS origins | `https://jeve.punitarani.com` |
@@ -93,11 +93,11 @@ GitHub Actions uses the `infra` project for deployment credentials:
 
 ## Security Notes
 
-- All sensitive values are stored in Doppler, not in code
-- Use different configs for dev/stg/prd environments
-- Rotate API keys regularly
-- Monitor usage and spending limits
-- Use least-privilege access for service accounts
+* All sensitive values are stored in Doppler, not in code
+* Use different configs for dev/stg/prd environments
+* Rotate API keys regularly
+* Monitor usage and spending limits
+* Use least-privilege access for service accounts
 
 ## Adding New Variables
 
@@ -114,16 +114,16 @@ GitHub Actions uses the `infra` project for deployment credentials:
 ### Common Issues
 
 1. **Missing environment variable**
-   - Check if the variable exists in the correct Doppler project
-   - Verify the config (dev/stg/prd) is correct
-   - Ensure the application is using `doppler run`
+   * Check if the variable exists in the correct Doppler project
+   * Verify the config (dev/stg/prd) is correct
+   * Ensure the application is using `doppler run`
 
 2. **Permission denied**
-   - Verify you have access to the Doppler project
-   - Check if the token is valid
-   - Ensure the correct scope is being used
+   * Verify you have access to the Doppler project
+   * Check if the token is valid
+   * Ensure the correct scope is being used
 
 3. **Wrong value in production**
-   - Check if the variable is set in the `prd` config
-   - Verify the deployment is using the correct project
-   - Check for typos in variable names
+   * Check if the variable is set in the `prd` config
+   * Verify the deployment is using the correct project
+   * Check for typos in variable names
