@@ -1,3 +1,44 @@
+# Session 3 — in progress (status log; the handoff proper is written at the end)
+
+Plan: build session 3, approved 2026-09-20 19:10 PDT. Input: `docs/audit/2026-09-21/README.md`.
+Record numbers follow the scaffolder, not the plan's labels: the plan's "CORE-0010 layering"
+is **CORE-0008**, "DECIDE-0005 cache key" is **DECIDE-0004**, "WORLD-0006 economy" is **WORLD-0005**.
+
+## Status — 19:35 PDT, Phase 0 gate
+
+| | |
+|---|---|
+| Phase | **P0 done** (25 min; budget 60). Entering P1, the economy |
+| Spend | $0.2069 total, $0.0002 this session (`make smoke`) |
+| Green | `make check` 218 passed (was 211) · `make e2e` ALL GATES PASSED at `6b31ada`, strict replay, $0 · `tools/shots.sh` self-test 30 shots, 61 fps |
+| Blocked | nothing |
+| Pushed | `main` and `feat/mvp-overnight`; draft PR opened (first push of this repo) |
+
+**Done.** Audit committed with its screenshot harness moved to tracked `tools/` (ports, database
+and output from the environment; geometry read from `GET /world/map`). SIM-0002: the daemon
+waits for its model (`waiting_on_model`, capped backoff, same tick retried; test asserts the event
+log is byte-identical to an untroubled run), beats a heartbeat from its sleep loop, `/state` gains
+`health` with a `stale` judgement, `--max-wait` for gate runs. LLM-0006: dialogue order by
+measured reliability; 520-529 retryable. CORE-0008 supersedes CORE-0006. CI: Postgres 18 service
+on the python job, record confirmations moved to a job that has uv, pnpm and a database.
+UI agent launched 19:17 in `.claude/worktrees/`, branch `ui/look`; first screenshot set due ~20:20.
+
+**Found on the way.** The zod `status` enum lacked `paused_budget`: the first time the governor
+paused the world, the page would have failed to parse. Next rewrites the tracked `tsconfig.json`
+for any `distDir` it has not seen; the harness uses one fixed name that the file already lists.
+
+**Decisions made alone.** (1) All 15 prior commits carry the owner's gmail address and the repo is
+public; pushed as is, because rewriting history was ruled out and it is the owner's repo — flagged
+at plan approval. (2) `main` is created at `6b31ada`, not at session 2's last commit: that older
+commit's CI would fail on first run (its `decisions` job had neither uv nor pnpm). (3) `make e2e`
+and `make soak` are verified by fresh clone, not in CI: software GL on a hosted runner is an
+unmeasured source of flakes. (4) The pre-push scan found nothing to scrub: 0 absolute paths,
+hostnames, emails or key-shaped strings in the tree or in any commit.
+
+**Cut.** Nothing yet.
+
+---
+
 # Handoff — overnight session 2, 2026-09-20
 
 Branch `feat/mvp-overnight`, 15 commits, nothing pushed. `main` still
