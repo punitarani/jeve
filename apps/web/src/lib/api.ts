@@ -33,9 +33,16 @@ async function get<T>(path: string, schema: ZodType<T>): Promise<T> {
 
 export const fetchState = () => get("/state", WorldState);
 
-/** The newest `limit` events, oldest first: where a page should open. */
-export const fetchLatestEvents = (limit = 300) =>
-  get(`/events?latest=true&limit=${limit}`, EventPage);
+const leaving = (kinds: readonly string[]) =>
+  kinds.length > 0 ? `&exclude=${kinds.join(",")}` : "";
+
+/**
+ * The newest `limit` events, oldest first: where a page should open. Kinds
+ * in `exclude` are left out server-side, so a window of six hundred reaches
+ * the newest outage instead of filling with the district's small-talk.
+ */
+export const fetchLatestEvents = (limit = 300, exclude: readonly string[] = []) =>
+  get(`/events?latest=true&limit=${limit}${leaving(exclude)}`, EventPage);
 
 /**
  * The page immediately older than `before`, oldest first.
@@ -43,8 +50,26 @@ export const fetchLatestEvents = (limit = 300) =>
  * `before` is the `oldest` of the page you already hold, so scrollback is the
  * same one-integer cursor that walks forwards (API-0002).
  */
-export const fetchOlderEvents = (before: number, limit = 200) =>
-  get(`/events?before=${before}&limit=${limit}`, EventPage);
+export const fetchOlderEvents = (
+  before: number,
+  limit = 200,
+  exclude: readonly string[] = [],
+) => get(`/events?before=${before}&limit=${limit}${leaving(exclude)}`, EventPage);
+
+/**
+ * Every event of the given kinds strictly between two cursors, oldest first:
+ * what a kind left out of the pages so far looks like inside the window the
+ * reader already holds.
+ */
+export const fetchKindsBetween = (
+  after: number,
+  before: number,
+  kinds: readonly string[],
+) =>
+  get(
+    `/events?after=${after}&before=${before}&kinds=${kinds.join(",")}&limit=1000`,
+    EventPage,
+  );
 export const fetchCausal = (seq: number, direction: "up" | "down" = "down") =>
   get(`/causal/${seq}?direction=${direction}`, CausalChain);
 /**

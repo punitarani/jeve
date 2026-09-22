@@ -11,8 +11,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ListFilter } from "lucide-react";
 import { toast } from "sonner";
-import type { EventPage, WorldState } from "@jeve/contracts";
-import { fetchCausal, fetchOlderEvents, fetchState, money } from "@/lib/api";
+import type { EventPage, SimEvent, WorldState } from "@jeve/contracts";
+import {
+	fetchCausal,
+	fetchKindsBetween,
+	fetchOlderEvents,
+	fetchState,
+	money,
+} from "@/lib/api";
 import { EVENT_TONE } from "@/lib/tone";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,11 +51,21 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Timeline } from "./Timeline";
 import { PersonPanel } from "./PersonPanel";
 
-// `encounter` is ~67% of everything the timeline loads (ops/soak.md: 2,072 of
-// the 3,097 events that survive the API's own BACKGROUND_EVENTS cut) — staff
-// small-talk that buries the outage this panel exists to show. Same reasoning
-// as that server-side cut, but one click away from coming back.
-const HIDDEN_BY_DEFAULT = ["encounter"];
+// `encounter` is most of everything the timeline could load — six hundred a
+// day across the district — staff small-talk that buries the outage this
+// panel exists to show. Same reasoning as the API's own background cut, but
+// one click away from coming back: the pages leave these kinds out, and the
+// first time a chip switches one on it is fetched into the loaded window.
+export const HIDDEN_BY_DEFAULT = ["encounter"];
+
+/** Ascending by seq, each event once: two pages of the log, merged. */
+function merge(prev: SimEvent[], incoming: SimEvent[]): SimEvent[] {
+	if (incoming.length === 0) return prev;
+	const seen = new Map<number, SimEvent>();
+	for (const event of prev) seen.set(event.seq, event);
+	for (const event of incoming) seen.set(event.seq, event);
+	return [...seen.values()].sort((a, b) => a.seq - b.seq);
+}
 
 // One screenful is about thirty rows, so a page is deep enough that reaching
 // the end of one is a deliberate scroll rather than a flick, and small enough
@@ -80,6 +96,12 @@ export function Dashboard({
 	const [hidden, setHidden] = useState<ReadonlySet<string>>(
 		() => new Set(HIDDEN_BY_DEFAULT),
 	);
+	// Kinds the pages have left out so far. A kind leaves this set the first
+	// time it is switched on, once its events are in the window.
+	const [unfetched, setUnfetched] = useState<ReadonlySet<string>>(
+		() => new Set(HIDDEN_BY_DEFAULT),
+	);
+	const fetching = useRef<Set<string>>(new Set());
 
 	// Refresh the header rather than the whole page: the timeline is a record
 	// of what happened, so it does not need to move under the reader.
@@ -115,7 +137,7 @@ export function Dashboard({
 	const loadOlder = useCallback(async () => {
 		setLoading(true);
 		try {
-			const page = await fetchOlderEvents(cursor, PAGE);
+			const page = await fetchOlderEvents(cursor, PAGE, [...unfetched]);
 			// Older events go at the front of the ascending array, which is the
 			// end of the rendered list — below the fold, so nothing the reader
 			// is looking at moves.
@@ -130,7 +152,36 @@ export function Dashboard({
 		} finally {
 			setLoading(false);
 		}
-	}, [cursor]);
+	}, [cursor, unfetched]);
+
+	// A kind switched on that the pages left out is fetched into the window
+	// the reader holds — from the oldest loaded event to the newest — and
+	// from then on the pages carry it too.
+	useEffect(() => {
+		const wanted = [...unfetched].filter(
+			(kind) => !hidden.has(kind) && !fetching.current.has(kind),
+		);
+		if (wanted.length === 0 || events.length === 0) return;
+		for (const kind of wanted) fetching.current.add(kind);
+		const newest = events[events.length - 1]?.seq ?? cursor;
+		fetchKindsBetween(cursor - 1, newest + 1, wanted)
+			.then((page) => {
+				setEvents((prev) => merge(prev, page.events));
+				setUnfetched((prev) => {
+					const next = new Set(prev);
+					for (const kind of wanted) next.delete(kind);
+					return next;
+				});
+			})
+			.catch((reason: unknown) => {
+				toast.error("Could not load those events.", {
+					description: reason instanceof Error ? reason.message : String(reason),
+				});
+			})
+			.finally(() => {
+				for (const kind of wanted) fetching.current.delete(kind);
+			});
+	}, [hidden, unfetched, events, cursor]);
 
 	const select = useCallback(
 		async (seq: number) => {
@@ -151,6 +202,9 @@ export function Dashboard({
 				for (const event of down.events)
 					depths.set(event.seq, event.depth ?? 0);
 				setChain(depths);
+				// A cascade is only legible whole: whatever it reaches that the
+				// pages left out — an encounter, an older cause — joins the window.
+				setEvents((prev) => merge(prev, [...up.events, ...down.events]));
 			} catch {
 				setChain(null);
 				toast.error("Could not load the causal chain.", {
@@ -168,6 +222,8 @@ export function Dashboard({
 	// kind worth switching off is the one you reach for.
 	const kinds = useMemo(() => {
 		const counts = new Map<string, number>();
+		// A kind the pages leave out still gets its chip: it is how it comes back.
+		for (const kind of HIDDEN_BY_DEFAULT) counts.set(kind, 0);
 		for (const event of events)
 			counts.set(event.kind, (counts.get(event.kind) ?? 0) + 1);
 		return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));

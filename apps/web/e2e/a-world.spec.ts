@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
+/** What decided the world under test: `jev` for the fixture, else the rules twin. */
+const POLICY = process.env.JEVE_E2E_POLICY ?? "jev";
+
 /**
  * The voxel world (WEB-0002): the hero advances on its own, and clicking a
  * person shows the distribution Jev returned for their last decision.
@@ -223,9 +226,13 @@ test("clicking a person shows the distribution behind their last decision", asyn
   await expect(panel).toBeVisible();
   // Picking is nearest-person: whoever was clicked, a person came up.
   await expect(panel).toHaveAttribute("data-person", /\w+\.\w+\.\d+/);
-  await expect(panel.getByTestId("decided-by")).toHaveText("jev");
-  await expect(panel).toContainText("typesafe/jev");
+  // Whichever policy decided this run: Jev in the recorded fixture, the rules
+  // twin when the stack runs free between recordings (JEVE_E2E_POLICY).
+  await expect(panel.getByTestId("decided-by")).toHaveText(POLICY);
+  if (POLICY === "jev") await expect(panel).toContainText("typesafe/jev");
 
+  // Only a model returns a distribution; the rules twin returns a verdict.
+  if (POLICY !== "jev") return;
   const bars = panel.getByTestId("distribution-bar");
   expect(await bars.count()).toBeGreaterThanOrEqual(4);
   // A distribution, not a verdict: the probabilities of one question sum to one.

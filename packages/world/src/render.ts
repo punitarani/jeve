@@ -349,7 +349,9 @@ export class WorldView {
 
     // Each storey gets meshes of its own, so a level cut can hide the floors
     // above one without touching the rest.
-    const voxels = buildVoxels(map);
+    // A software rasteriser pays per box, and the meadow past the map is a
+    // third of them: it draws the town and not the country (WEB-0003).
+    const voxels = buildVoxels(map, { outskirts: this.software === null });
     const floors = [...new Set(voxels.map((v) => v.floor))].sort((a, b) => a - b);
     this.falloff = this.falloffTexture();
     for (const floor of floors) {

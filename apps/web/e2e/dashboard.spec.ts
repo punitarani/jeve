@@ -47,10 +47,13 @@ test("the world is on screen: clock, every org, modules, people", async ({
 
   const { orgs, persons } = await state(page);
   expect(orgs.length).toBeGreaterThan(0);
+  // Every firm, in one read: a dozen rows probed one expectation at a time
+  // is two dozen round trips to a page that is also drawing the town.
+  const rows = await orgRows(page);
   for (const org of orgs) {
-    await expect(page.getByTestId(`org-${org.id}`)).toBeVisible();
+    expect(rows[org.id], org.id).toBeDefined();
     // Money is rendered from integer cents, so it must look like money.
-    await expect(page.getByTestId(`org-${org.id}`)).toContainText(/\$[\d,]+/);
+    expect(rows[org.id]).toMatch(/\$[\d,]+/);
   }
 
   await expect(page.getByTestId("status-strip")).toContainText(`${persons.staff} staff`);
@@ -62,10 +65,22 @@ test("the world is on screen: clock, every org, modules, people", async ({
 test("no org is owed a negative amount", async ({ page }) => {
   // A receivable that went negative is money arriving that was never owed —
   // a balance sheet that lies while the ledger still sums to zero.
+  const rows = await orgRows(page);
   for (const org of (await state(page)).orgs) {
-    await expect(page.getByTestId(`org-${org.id}`)).not.toContainText("-$");
+    expect(rows[org.id], org.id).toBeDefined();
+    expect(rows[org.id]).not.toContain("-$");
   }
 });
+
+/** The text of every firm's row, by id, once the table has rendered. */
+async function orgRows(page: Page): Promise<Record<string, string>> {
+  await expect(page.locator('[data-testid^="org-"]').first()).toBeVisible();
+  return page.locator('[data-testid^="org-"]').evaluateAll((els) =>
+    Object.fromEntries(
+      els.map((el) => [el.getAttribute("data-testid")!.slice(4), el.textContent ?? ""]),
+    ),
+  );
+}
 
 test("the primary flow: click an outage and follow what it caused", async ({
   page,

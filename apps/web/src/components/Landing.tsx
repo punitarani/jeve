@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 import type { EventPage, WorldState } from "@jeve/contracts";
 import { fetchLatestEvents, fetchState } from "@/lib/api";
+import { HIDDEN_BY_DEFAULT } from "./Dashboard";
 import { JellyLoader } from "@/components/block/jelly-loader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dashboard } from "./Dashboard";
@@ -35,13 +36,13 @@ export function Landing() {
 
 	useEffect(() => {
 		let cancelled = false;
-		// Six hundred, not a scroll page's two hundred. `encounter` is most of
-		// the log and the dashboard hides it by default, so 200 raw events is
-		// about 50 rows on screen — and in a ten-day fixture the newest outage
-		// sits some 900 events back. A first paint that reaches no incident is
-		// a dashboard opening on nothing worth reading. Scrollback pages in
-		// smaller steps from here.
-		Promise.all([fetchState(), fetchLatestEvents(600)])
+		// Three hundred, without the kinds the dashboard hides by default:
+		// `encounter` is most of the log — six hundred a day across the
+		// district — and a window that loaded them only to hide them opened
+		// on nothing worth reading; it used to be six hundred for that reason
+		// and still missed the newest outage. Small-talk is fetched into the
+		// window when the reader asks for it. Scrollback pages from here.
+		Promise.all([fetchState(), fetchLatestEvents(300, HIDDEN_BY_DEFAULT)])
 			.then(([state, page]) => {
 				if (!cancelled) setData({ state, page });
 			})

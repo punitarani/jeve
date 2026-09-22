@@ -297,6 +297,11 @@ def events(
     kind: str | None = None,
     org: str | None = None,
     kinds: str | None = Query(None, description="comma-separated; overrides `kind`"),
+    exclude: str | None = Query(
+        None,
+        description="comma-separated kinds to leave out, on top of the background "
+        "cut: the dashboard opens without staff small-talk and fetches it on request",
+    ),
     background: bool = Query(False, description="include movement and retail"),
     latest: bool = Query(False, description="the newest `limit` instead of the oldest"),
 ) -> dict[str, object]:
@@ -320,6 +325,10 @@ def events(
     elif not background:
         clauses.append("kind <> ALL(%s)")
         params.append(list(BACKGROUND_EVENTS))
+    left_out = [k for k in (exclude or "").split(",") if k]
+    if left_out and not wanted:
+        clauses.append("kind <> ALL(%s)")
+        params.append(left_out)
     if org:
         clauses.append("org_id = %s")
         params.append(org)

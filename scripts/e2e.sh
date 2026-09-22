@@ -127,7 +127,8 @@ curl -sf "http://localhost:${WEB_PORT}/" >/dev/null || { tail -30 "$LOGS/web.log
   > "$LOGS/daemon.log" 2>&1 &
 SIM_PID=$!
 
-JEVE_WEB_URL="http://localhost:${WEB_PORT}" corepack pnpm --filter @jeve/web exec playwright test
+JEVE_WEB_URL="http://localhost:${WEB_PORT}" JEVE_E2E_POLICY="$POLICY" \
+  corepack pnpm --filter @jeve/web exec playwright test
 
 # The report is about the whole fixture, so let the daemon reach its horizon.
 for _ in $(seq 1 180); do kill -0 "$SIM_PID" 2>/dev/null || break; sleep 1; done

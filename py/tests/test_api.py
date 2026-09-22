@@ -169,6 +169,23 @@ def test_events_paginate_by_seq(client: TestClient) -> None:
     seqs = [e["seq"] for e in foreground]
     assert seqs == sorted(seqs)
 
+    # The dashboard opens without small-talk and fetches it on request: a
+    # window that leaves encounters out, then the same window's encounters.
+    quiet = client.get(
+        "/events", params={"latest": True, "limit": 300, "exclude": "encounter"}
+    ).json()
+    assert quiet["events"] and "encounter" not in {e["kind"] for e in quiet["events"]}
+    talk = client.get(
+        "/events",
+        params={
+            "after": quiet["oldest"] - 1,
+            "before": quiet["seq"] + 1,
+            "kinds": "encounter",
+        },
+    ).json()["events"]
+    assert talk and {e["kind"] for e in talk} == {"encounter"}
+    assert all(quiet["oldest"] <= e["seq"] <= quiet["seq"] for e in talk)
+
 
 def _first_seq(client: TestClient) -> int:
     """The smallest seq in the table. Not 1: another test may have reseeded."""

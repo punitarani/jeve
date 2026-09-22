@@ -496,8 +496,13 @@ function occlusion(
 
 // -- the town ---------------------------------------------------------------
 
-/** Every static box in the town, every storey of it. y is up; x and z are the tile grid. */
-export function buildVoxels(map: TownMap): Voxel[] {
+/**
+ * Every static box in the town, every storey of it. y is up; x and z are the
+ * tile grid. `outskirts` is the country past the last tile: a third of all the
+ * boxes and nothing anyone walks on, so a CPU rasteriser is spared it
+ * (WEB-0003) and draws the district a third faster.
+ */
+export function buildVoxels(map: TownMap, { outskirts = true } = {}): Voxel[] {
   const voxels: Voxel[] = [];
   const byZone = new Map<string, Building>(map.buildings.map((b) => [b.zone, b]));
   const ground = groundKinds(map);
@@ -1129,6 +1134,7 @@ export function buildVoxels(map: TownMap): Voxel[] {
   // edge. None of this is in `map.tiles` — nobody walks out there; it only
   // has to look like somewhere. How far it runs is a fraction of the map's
   // longer side, so a wider district gets a wider country.
+  if (!outskirts) return voxels;
   const OUTSKIRTS = Math.round(0.7 * Math.max(map.width, map.height));
   const grass = GROUND.grass ?? "#6fae58";
   const HAZE = "#9db49b";
