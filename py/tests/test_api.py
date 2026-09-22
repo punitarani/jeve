@@ -78,6 +78,23 @@ def test_state_is_one_read_with_a_cursor(client: TestClient) -> None:
     assert len(body["modules"]) == 3
 
 
+def test_state_says_whether_this_deployment_traces(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LLM-0008: the flag that would have answered this in a minute.
+
+    Tracing off is silent by design — no key, no import, no socket, no log
+    line. The key sat in Doppler and never reached Fly, and nothing anywhere
+    said so. `/state` does now.
+    """
+
+    monkeypatch.delenv("BRAINTRUST_API_KEY", raising=False)
+    assert client.get("/state").json()["health"]["tracing"] is False
+
+    monkeypatch.setenv("BRAINTRUST_API_KEY", "sk-test")
+    assert client.get("/state").json()["health"]["tracing"] is True
+
+
 def test_state_tells_a_dead_daemon_from_a_sleeping_one(client: TestClient) -> None:
     """SIM-0002: `status` is what the daemon last said; a killed process goes on
     saying `running` for ever. The heartbeat is the evidence."""
