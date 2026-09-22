@@ -113,6 +113,11 @@ class Health(BaseModel):
         "spans — the SDK reports a rejected key or project only on the "
         "daemon's stderr."
     )
+    sentry: bool = Field(
+        description="Whether this deployment carries a Sentry DSN for the API "
+        "(CORE-0012): SENTRY_DSN_API, or the shared SENTRY_DSN. The same "
+        "caveat as `tracing` — the key is present, not proven accepted."
+    )
 
 
 class TicketCounts(BaseModel):

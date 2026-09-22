@@ -5,7 +5,7 @@
 #
 # Deploy with: fly deploy            (both groups, one image, one release)
 # Secrets:     fly secrets set OPENROUTER_API_KEY=... JEVE_DATABASE_URL=... \
-#                JEVE_DATABASE_POOLED_URL=...
+#                JEVE_DATABASE_POOLED_URL=... SENTRY_DSN_API=... SENTRY_DSN_SIM=...
 # Database region: us-east-1 (closest Fly region: iad).
 
 app = "jeve-backend"
@@ -44,6 +44,10 @@ primary_region = "iad"  # Washington D.C. — closest to us-east-1
   # the runtime user can't write. /tmp is tmpfs and writable — the Postgres
   # ledger remains authoritative regardless (LLM-0007).
   JEVE_OPS_DIR = "/tmp/ops"
+  # CORE-0012: what both process groups report to Sentry as. The DSNs are
+  # secrets (SENTRY_DSN_API, SENTRY_DSN_SIM — one project per process); the
+  # environment is not, and the release is read from FLY_IMAGE_REF.
+  SENTRY_ENVIRONMENT = "production"
   # stdout is block-buffered under init; without this `fly logs` shows the
   # daemon's tick output only on exit, which is ops blindness for a
   # forever-running process.

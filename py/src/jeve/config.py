@@ -48,6 +48,19 @@ class Settings(BaseModel):
     braintrust_project_id: str | None = None
     """An id, not a name: a project that gets renamed keeps its spans."""
 
+    # CORE-0012: errors, traces, metrics and logs. A DSN per service, because
+    # `api` and `sim` are one Fly app with one secret set and one `[env]`, and
+    # the alternative — wrapping each process command in `sh -c` to rename a
+    # variable — would sit in front of `sim-entrypoint.sh`'s signal handling.
+    # `SENTRY_DSN` is the shared fallback for a compose stack or a one-project
+    # setup. Like the Braintrust key, the DSN is the only switch.
+    sentry_dsn_api: str | None = None
+    sentry_dsn_sim: str | None = None
+    sentry_dsn: str | None = None
+    sentry_environment: str = "development"
+    sentry_release: str | None = None
+    """Unset: `FLY_IMAGE_REF`, which names the deploy that is running."""
+
     @property
     def spend_path(self) -> Path:
         return self.ops_dir / "spend.json"
@@ -111,4 +124,11 @@ def load_settings(*, ops_dir: Path | None = None) -> Settings:
         not in ("off", "0", "false"),
         braintrust_api_key=os.environ.get("BRAINTRUST_API_KEY") or None,
         braintrust_project_id=os.environ.get("BRAINTRUST_PROJECT_ID") or None,
+        sentry_dsn_api=os.environ.get("SENTRY_DSN_API") or None,
+        sentry_dsn_sim=os.environ.get("SENTRY_DSN_SIM") or None,
+        sentry_dsn=os.environ.get("SENTRY_DSN") or None,
+        sentry_environment=os.environ.get("SENTRY_ENVIRONMENT") or "development",
+        sentry_release=(
+            os.environ.get("SENTRY_RELEASE") or os.environ.get("FLY_IMAGE_REF") or None
+        ),
     )

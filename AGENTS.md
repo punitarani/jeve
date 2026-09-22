@@ -230,6 +230,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### CORE-0012: Errors, traces, metrics and logs go to Sentry from one guarded module; the DSN is the only switch
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/telemetry.py`, `py/src/jeve/sim/daemon.py`, `py/src/jeve/api/app.py`, `py/src/jeve/llm/gateway.py`, `py/src/jeve/decide/jev_policy.py`, `py/scripts/sentry_probe.py`, `py/tests/test_telemetry.py`, `apps/web/next.config.ts`, `apps/web/src/instrumentation-client.ts`, `apps/web/src/app/global-error.tsx`, `apps/web/src/lib/api.ts`  
+**Tags**: observability, sentry, agent-decided
+
+Errors, traces, metrics and structured logs go to Sentry through `jeve.telemetry`, a second guarded module beside `jeve.tracing`, with three projects (api, sim, web), the DSN as the only switch, and no telemetry failure able to reach a tick or a request.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### DECIDE-0004: The cache key is the bytes that were sent and the model version that answered
 
 **Status**: accepted (2026-09-20)  

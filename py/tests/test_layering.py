@@ -77,6 +77,38 @@ def test_every_package_is_covered() -> None:
     assert packages - {"api"} == set(FORBIDDEN)
 
 
+def external_imports_of(path: Path) -> set[str]:
+    """The top-level name of every import in a module, at any depth."""
+
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        names: list[str] = []
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names = [node.module]
+        found.update(name.split(".")[0] for name in names)
+    return found
+
+
+def test_only_telemetry_talks_to_sentry() -> None:
+    """CORE-0012: one guarded module, like `jeve.llm` for httpx.
+
+    `jeve.telemetry` is the only place that may import `sentry_sdk`: it is
+    what keeps "no DSN, no import, no socket" true, and what keeps a telemetry
+    failure from reaching a tick — every call into the SDK is wrapped there,
+    and a call made anywhere else would not be.
+    """
+
+    scripts = SRC.parent.parent / "scripts"
+    offenders = [
+        str(path.relative_to(SRC.parent.parent))
+        for path in sorted([*SRC.rglob("*.py"), *scripts.rglob("*.py")])
+        if "sentry_sdk" in external_imports_of(path) and path != SRC / "telemetry.py"
+    ]
+    assert offenders == [], "\n".join(offenders)
+
+
 def test_the_walker_sees_a_lazy_import(tmp_path: Path) -> None:
     sneaky = tmp_path / "sneaky.py"
     sneaky.write_text(

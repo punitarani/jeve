@@ -54,6 +54,8 @@ export const Health = z.object({
   stale: z.boolean(),
   /** Whether this deployment carries a BRAINTRUST_API_KEY (LLM-0008). False means nothing is traced, silently and by design. True means the key is present, not that Braintrust is accepting the spans — the SDK reports a rejected key or project only on the daemon's stderr. */
   tracing: z.boolean(),
+  /** Whether this deployment carries a Sentry DSN for the API (CORE-0012): SENTRY_DSN_API, or the shared SENTRY_DSN. The same caveat as `tracing` — the key is present, not proven accepted. */
+  sentry: z.boolean(),
 });
 export type Health = z.infer<typeof Health>;
 

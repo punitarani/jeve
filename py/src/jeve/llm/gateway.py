@@ -22,7 +22,7 @@ from typing import Any, Self
 
 import httpx
 
-from jeve import tracing
+from jeve import telemetry, tracing
 from jeve.config import Settings, load_settings
 from jeve.errors import (
     BudgetExceededError,
@@ -120,6 +120,73 @@ def _served(payload: dict[str, Any], usage: Usage) -> dict[str, Any]:
     }
 
 
+def _attributes(
+    payload: dict[str, Any], usage: Usage, latency: float
+) -> dict[str, Any]:
+    """What a Sentry span carries once the answer is in: who served it and the
+    bill. Never the prompt or the answers — that is Braintrust's job (LLM-0008)."""
+
+    return {
+        "llm.served_model": payload.get("model"),
+        "llm.provider": payload.get("provider"),
+        "llm.request_id": payload.get("id"),
+        "llm.cost_usd": usage.cost_usd,
+        "llm.cost_estimated": usage.cost_is_estimated,
+        "llm.tokens_in": usage.input_tokens,
+        "llm.tokens_out": usage.output_tokens,
+        "llm.latency_s": latency,
+    }
+
+
+def _meter(
+    endpoint: str,
+    model: str,
+    outcome: str,
+    *,
+    status: int | None = None,
+    latency: float | None = None,
+    usage: Usage | None = None,
+    cost: float | None = None,
+    estimated: bool | None = None,
+) -> None:
+    """One HTTP try, as numbers (CORE-0012): what was asked, what came back,
+    what it cost.
+
+    Per attempt rather than per call, so a retry storm shows as a count of
+    `http-52x` outcomes and not as one slow `ok`. Cost is only ever what the
+    ledger booked for the same attempt; a metric that disagreed with the
+    ledger would be worse than none (LLM-0007).
+    """
+
+    where = {"endpoint": endpoint, "model": model}
+    telemetry.count(
+        "jeve.llm.calls",
+        1,
+        attributes={**where, "outcome": outcome, "http_status": status},
+    )
+    if latency is not None:
+        telemetry.distribution(
+            "jeve.llm.latency",
+            latency,
+            unit="second",
+            attributes={**where, "outcome": outcome},
+        )
+    if cost is not None:
+        telemetry.distribution(
+            "jeve.llm.cost_usd",
+            cost,
+            attributes={**where, "estimated": bool(estimated)},
+        )
+    if usage is not None:
+        for direction, tokens in (
+            ("in", usage.input_tokens),
+            ("out", usage.output_tokens),
+        ):
+            telemetry.distribution(
+                "jeve.llm.tokens", tokens, attributes={**where, "direction": direction}
+            )
+
+
 def _approx_tokens(payload: object) -> int:
     if isinstance(payload, bytes):
         payload = payload.decode()
@@ -193,12 +260,16 @@ class Gateway:
         decision path down with it.
         """
 
-        catalog = await ModelCatalog.fetch(self._client)
-        catalog.resolve_all(DECISION_PREFERENCE)
-        self._generative = tuple(s for s in GENERATIVE_PREFERENCE if s in catalog)
-        self._catalog = catalog
-        await self._sync_remote(force=True)
-        return catalog
+        # A root of its own: this runs on the gateway's thread, where no tick
+        # span is active, and the two httpx calls below would otherwise each
+        # become a trace of their own (CORE-0012).
+        with telemetry.span("gateway.start", {"sentry.op": "gateway.start"}, root=True):
+            catalog = await ModelCatalog.fetch(self._client)
+            catalog.resolve_all(DECISION_PREFERENCE)
+            self._generative = tuple(s for s in GENERATIVE_PREFERENCE if s in catalog)
+            self._catalog = catalog
+            await self._sync_remote(force=True)
+            return catalog
 
     @property
     def generative_models(self) -> tuple[str, ...]:
@@ -450,6 +521,7 @@ class Gateway:
             call_id, worst_case_usd=worst_case_usd, purpose=purpose, model=model
         )
         self._run_reserved_usd += worst_case_usd
+        endpoint = "chat" if path == CHAT_PATH else "decisions"
 
         started = time.perf_counter()
         try:
@@ -488,6 +560,13 @@ class Gateway:
                     )
                     self._run_spent_usd += worst_case_usd
                     attempt.log(metadata={"outcome": outcome})
+                    _meter(
+                        endpoint,
+                        model,
+                        "transport-error",
+                        cost=worst_case_usd,
+                        estimated=True,
+                    )
                     raise _Retryable(
                         TransportError(f"{path} failed: {error}"), None
                     ) from error
@@ -504,6 +583,13 @@ class Gateway:
                     )
                     if status in UNBILLED_STATUSES:
                         self._ledger.release(call_id, reason=f"http-{status}-unbilled")
+                        _meter(
+                            endpoint,
+                            model,
+                            f"http-{status}",
+                            status=status,
+                            latency=latency,
+                        )
                     else:
                         self._ledger.settle(
                             call_id,
@@ -514,6 +600,15 @@ class Gateway:
                             latency_s=latency,
                         )
                         self._run_spent_usd += worst_case_usd
+                        _meter(
+                            endpoint,
+                            model,
+                            f"http-{status}",
+                            status=status,
+                            latency=latency,
+                            cost=worst_case_usd,
+                            estimated=True,
+                        )
                     if status == 402:
                         # LLM-0007: the account cap is spent. Retrying inside
                         # the gateway is pointless — the daemon waits out the
@@ -547,6 +642,16 @@ class Gateway:
                     | _served(payload, usage),
                     metrics=_metrics(usage, latency),
                 )
+                _meter(
+                    endpoint,
+                    model,
+                    "ok",
+                    status=200,
+                    latency=latency,
+                    usage=usage,
+                    cost=usage.cost_usd,
+                    estimated=usage.cost_is_estimated,
+                )
                 payload["__usage"] = usage
                 payload["__latency"] = latency
                 return payload, latency
@@ -559,12 +664,17 @@ class Gateway:
         *,
         purpose: Purpose = "gate",
         parent: str | None = None,
+        sentry_parent: telemetry.Parent | None = None,
     ) -> RawDecision:
         """Issue a decision request and return the response *unparsed*.
 
         The recorder stores this before anyone interprets it. A response we
         paid for and then failed to parse must not be paid for again on retry,
         and the stored bytes are what a replay reads back.
+
+        `parent` and `sentry_parent` are the two backends' handles to the tick
+        that asked, passed rather than inherited because this runs on the
+        gateway's own thread (LLM-0008, CORE-0012).
         """
 
         card = self.catalog.get(request.model)
@@ -600,22 +710,35 @@ class Gateway:
                 "questions": list(request.questions),
             },
         ) as span:
-            payload, latency = await self._post(
-                self._decisions_url,
-                body,
-                call_id=call_id,
-                model=request.model,
-                worst_case_usd=worst_case,
-                purpose=purpose,
-            )
-            usage: Usage = payload.pop("__usage")
-            payload.pop("__latency", None)
-            span.log(
-                output=payload.get("answers"),
-                metrics=_metrics(usage, latency),
-                metadata=_served(payload, usage),
-            )
-            return RawDecision(payload=payload, usage=usage, latency_s=latency)
+            with telemetry.span(
+                "jev.decide",
+                {
+                    "sentry.op": "llm.decide",
+                    "llm.endpoint": "decisions",
+                    "llm.model": request.model,
+                    "llm.purpose": purpose,
+                    "llm.call_id": call_id,
+                    "llm.questions": len(request.questions),
+                },
+                parent=sentry_parent,
+            ) as timed:
+                payload, latency = await self._post(
+                    self._decisions_url,
+                    body,
+                    call_id=call_id,
+                    model=request.model,
+                    worst_case_usd=worst_case,
+                    purpose=purpose,
+                )
+                usage: Usage = payload.pop("__usage")
+                payload.pop("__latency", None)
+                span.log(
+                    output=payload.get("answers"),
+                    metrics=_metrics(usage, latency),
+                    metadata=_served(payload, usage),
+                )
+                timed.set(_attributes(payload, usage, latency))
+                return RawDecision(payload=payload, usage=usage, latency_s=latency)
 
     async def decide(
         self,
@@ -623,10 +746,13 @@ class Gateway:
         *,
         purpose: Purpose = "gate",
         parent: str | None = None,
+        sentry_parent: telemetry.Parent | None = None,
     ) -> DecisionResponse:
         """Ask Jev a set of typed questions about one state."""
 
-        raw = await self.decide_raw(request, purpose=purpose, parent=parent)
+        raw = await self.decide_raw(
+            request, purpose=purpose, parent=parent, sentry_parent=sentry_parent
+        )
         return parse_decision(
             raw.payload,
             expected=set(request.questions),
@@ -689,16 +815,31 @@ class Gateway:
                 "max_tokens": request.max_tokens,
             },
         ) as span:
-            payload, latency = await self._post(
-                CHAT_PATH,
-                body,
-                call_id=call_id,
-                model=request.model,
-                worst_case_usd=worst_case,
-                purpose=purpose,
-            )
+            # No explicit parent: the one caller runs on the request task, where
+            # the service span is ambient. The gateway thread is the decision
+            # path's problem, not this one's.
+            with telemetry.span(
+                "chat.completion",
+                {
+                    "sentry.op": "llm.chat",
+                    "llm.endpoint": "chat",
+                    "llm.model": request.model,
+                    "llm.purpose": purpose,
+                    "llm.call_id": call_id,
+                    "llm.max_tokens": request.max_tokens,
+                },
+            ) as timed:
+                payload, latency = await self._post(
+                    CHAT_PATH,
+                    body,
+                    call_id=call_id,
+                    model=request.model,
+                    worst_case_usd=worst_case,
+                    purpose=purpose,
+                )
+                usage: Usage = payload["__usage"]
+                timed.set(_attributes(payload, usage, latency))
 
-            usage: Usage = payload["__usage"]
             # Logged before the shape is checked: a reply we paid for and could
             # not read is exactly the one worth looking at afterwards.
             span.log(metrics=_metrics(usage, latency), metadata=_served(payload, usage))

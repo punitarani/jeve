@@ -31,7 +31,7 @@ from types import FrameType
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-from jeve import db
+from jeve import db, telemetry
 from jeve.core.clock import DAY, TICK, SimTime
 from jeve.decide.jev_policy import JevPolicy
 from jeve.decide.recorder import ReplayMissError, finalize_cassette, load_cassette
@@ -120,6 +120,33 @@ def _status(conn: Connection[DictRow], status: str, error: str | None = None) ->
         (status, error),
     )
     conn.commit()
+    # The one funnel every state change passes through, so it is also where
+    # the structured record is made: a tag on whatever issue comes next, a
+    # count to alert on, a line to read back (CORE-0012). The prints stay:
+    # they are the human stream, and `fly logs` is where a person looks first.
+    telemetry.status("sim.status", status)
+    telemetry.count("jeve.sim.status", 1, attributes={"status": status})
+    telemetry.log(
+        "info" if error is None else "warning",
+        f"sim status: {status}",
+        attributes={"sim.status": status, "sim.error": error},
+    )
+
+
+def _halt(
+    conn: Connection[DictRow], error: BaseException, code: int, message: str
+) -> int:
+    """A deliberate stop: in the table, on stderr, and as an issue.
+
+    The entrypoint maps exits 4-7 to a clean exit so the machine stays down
+    (SIM-0003), which makes this issue — tagged with the code — the one place
+    that says why it is down without a shell.
+    """
+
+    _status(conn, "halted", _describe(error))
+    print(message, file=sys.stderr)
+    telemetry.capture(error, tags={"sim.exit_code": code})
+    return code
 
 
 def _heartbeat(conn: Connection[DictRow], lag_s: float | None = None) -> None:
@@ -222,9 +249,11 @@ def _loop(
     _status(conn, "running")
 
     while not stop.requested():
-        row = conn.execute("SELECT sim_time FROM sim_meta").fetchone()
+        row = conn.execute("SELECT sim_time, tick_seq FROM sim_meta").fetchone()
         assert row is not None
         now = SimTime(int(row["sim_time"]))
+        # The tick about to run — the same arithmetic `engine.tick()` uses.
+        tick_seq = int(row["tick_seq"]) + 1
 
         if args.until is not None and now.seconds >= args.until:
             _status(conn, "paused")
@@ -270,21 +299,34 @@ def _loop(
 
         started = time.monotonic()
         try:
-            report = engine.tick()
+            # One root span per tick (CORE-0012): the unit of work, the unit
+            # of cost, and what every model call is nested under.
+            with telemetry.span(
+                "sim.tick",
+                {
+                    "sentry.op": "sim.tick",
+                    "sim.tick_seq": tick_seq,
+                    "sim.time": now.seconds,
+                    "sim.policy": args.policy,
+                    "sim.calls": args.calls,
+                },
+                root=True,
+            ) as tick:
+                report = engine.tick()
+                tick.set(
+                    {
+                        "sim.decisions": report.decisions,
+                        "sim.events": len(report.events),
+                    }
+                )
         except BudgetExceededError as error:
-            _status(conn, "halted", _describe(error))
-            print(f"HALTED: {error}", file=sys.stderr)
-            return 4
+            return _halt(conn, error, 4, f"HALTED: {error}")
         except ReplayMissError as error:
-            _status(conn, "halted", _describe(error))
-            print(f"HALTED: {error}", file=sys.stderr)
-            return 5
+            return _halt(conn, error, 5, f"HALTED: {error}")
         except ModelVersionDriftError as error:
             # DECIDE-0004: not weather. Waiting cannot fix it and carrying on
             # would mix two models' answers in one world.
-            _status(conn, "halted", _describe(error))
-            print(f"HALTED: {error}", file=sys.stderr)
-            return 7
+            return _halt(conn, error, 7, f"HALTED: {error}")
         except ProviderBudgetError as error:
             # SIM-0003: the upstream cap is spent. Not weather — a two-minute
             # backoff refills nothing — and not a halt, because the window
@@ -296,12 +338,12 @@ def _loop(
             waited = time.monotonic() - budget_since
             delay = args.budget_wait
             if args.max_wait is not None and waited + delay > args.max_wait:
-                _status(conn, "halted", _describe(error))
-                print(
+                return _halt(
+                    conn,
+                    error,
+                    6,
                     f"HALTED: upstream budget has been out for {waited:.0f}s: {error}",
-                    file=sys.stderr,
                 )
-                return 6
             _status(conn, "waiting_on_budget", _describe(error))
             print(
                 f"waiting on the upstream budget: {_describe(error)}; "
@@ -322,17 +364,23 @@ def _loop(
             delay = _backoff(failures)
             waited = time.monotonic() - waiting_since
             if args.max_wait is not None and waited + delay > args.max_wait:
-                _status(conn, "halted", _describe(error))
-                print(
+                return _halt(
+                    conn,
+                    error,
+                    6,
                     f"HALTED: the model has not answered for {waited:.0f}s: {error}",
-                    file=sys.stderr,
                 )
-                return 6
             _status(conn, "waiting_on_model", _describe(error))
             print(
                 f"waiting on the model (failure {failures}): {_describe(error)}; "
                 f"trying this tick again in {delay:.0f}s",
                 file=sys.stderr,
+            )
+            # A count, never an issue: a 520 is what the retry exists for
+            # (SIM-0002), and an issue per one would bury the halts that need
+            # a person. `_status` above already wrote the warning line.
+            telemetry.count(
+                "jeve.sim.weather", 1, attributes={"error": type(error).__name__}
             )
             _sleep(delay, stop, conn)
             continue
@@ -346,7 +394,13 @@ def _loop(
         totals.decisions += report.decisions
         totals.events.update(report.events)
         spent = time.monotonic() - started
-        _heartbeat(conn, lag_s=max(0.0, spent - pace.seconds_per_tick))
+        lag = max(0.0, spent - pace.seconds_per_tick)
+        _heartbeat(conn, lag_s=lag)
+        telemetry.distribution("jeve.sim.tick.duration", spent, unit="second")
+        telemetry.distribution("jeve.sim.tick.decisions", report.decisions)
+        telemetry.distribution("jeve.sim.tick.events", len(report.events))
+        telemetry.gauge("jeve.sim.tick.lag", lag, unit="second")
+        telemetry.gauge("jeve.sim.spend.run_usd", _live_spend(policy))
         _sleep(pace.seconds_per_tick - spent, stop, conn)
 
     _status(conn, "paused")
@@ -475,8 +529,17 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Bound here, not in `run`: this is the entry every caller shares —
+    # `python -m jeve.sim`, the fixture script, the soak, the tests. No DSN,
+    # no SDK, and the rest of this function behaves as it always did.
+    telemetry.init("sim")
     try:
         return run(parse(argv))
     except db.WriterBusyError as error:
         print(f"refusing to start: {error}", file=sys.stderr)
+        # The one start-up failure that restart-loops on Fly: a stale lock
+        # after a crash, held until Postgres notices the socket is gone.
+        telemetry.capture(error, tags={"sim.exit_code": 3})
         return 3
+    finally:
+        telemetry.flush()

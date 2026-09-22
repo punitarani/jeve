@@ -16,6 +16,7 @@ from jeve.sim import daemon
 from jeve.sim.daemon import Pace
 from jeve.world.engine import Engine
 from jeve.world.seed_world import ROOT_SEED, seed
+from tests.conftest import Captured
 from tests.test_world import event_log_hash
 
 pytestmark = pytest.mark.timeout(300)
@@ -378,3 +379,86 @@ def test_a_sleeping_daemon_still_has_a_pulse(conn: Connection[DictRow]) -> None:
         "AS alive FROM sim_meta"
     ).fetchone()
     assert row is not None and row["alive"]
+
+
+# -- CORE-0012: what Sentry sees of the daemon ---------------------------------
+
+
+def test_a_halt_is_an_issue_tagged_with_its_exit_code(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch, sentry: Captured
+) -> None:
+    """The entrypoint maps a halt to exit 0 and the machine stays down
+    (SIM-0003); the issue is what says why, without a shell."""
+
+    from jeve.errors import TransportError
+
+    always = {n: TransportError("/decisions returned 503") for n in range(1, 500)}
+    _weather(monkeypatch, always)
+    code = daemon.main(
+        ["--seed-world", "--until", str(at(0, 12)), "--max-wait", "0.2", *FLAT_OUT]
+    )
+    assert code == 6
+
+    (event,) = sentry.events()
+    assert event["exception"]["values"][0]["type"] == "TransportError"
+    assert event["tags"]["sim.exit_code"] == "6"
+    assert event["tags"]["sim.status"] == "halted"
+    assert event["tags"]["service"] == "sim"
+
+    statuses = [
+        m["attributes"]["status"] for m in sentry.metrics_named("jeve.sim.status")
+    ]
+    assert statuses[0] == "running" and statuses[-1] == "halted"
+    assert "waiting_on_model" in statuses
+    assert {
+        m["attributes"]["error"] for m in sentry.metrics_named("jeve.sim.weather")
+    } == {"TransportError"}
+
+    ticks = sentry.spans_named("sim.tick")
+    assert ticks and all(t["is_segment"] for t in ticks)
+    assert all(t["status"] == "error" for t in ticks)
+    assert ticks[0]["attributes"]["sim.tick_seq"] >= 1
+    assert ticks[0]["attributes"]["sim.policy"] == "rules"
+
+
+def test_weather_is_a_count_and_a_warning_not_an_issue(
+    conn: Connection[DictRow],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    sentry: Captured,
+) -> None:
+    """SIM-0002: a 520 is what the retry exists for. An issue per one would
+    bury the halts that need a person; a count is what an alert wants."""
+
+    from jeve.errors import ResponseShapeError, TransportError
+
+    _weather(
+        monkeypatch,
+        {
+            5: TransportError("/decisions returned 520: origin error"),
+            6: TimeoutError(),
+            40: ResponseShapeError("answers missing"),
+        },
+    )
+    assert daemon.main(["--seed-world", "--until", str(at(0, 12)), *FLAT_OUT]) == 0
+
+    assert sentry.events() == []
+    weather = sorted(
+        m["attributes"]["error"] for m in sentry.metrics_named("jeve.sim.weather")
+    )
+    assert weather == ["ResponseShapeError", "TimeoutError", "TransportError"]
+    waits = [
+        line for line in sentry.logs() if line["body"] == "sim status: waiting_on_model"
+    ]
+    assert len(waits) == 3 and all(w["level"] == "warn" for w in waits)
+    assert waits[0]["attributes"]["sim.error"].startswith("TransportError")
+
+    # A tick that raised and was retried is two spans: one in error, one ok.
+    ticks = sentry.spans_named("sim.tick")
+    assert {t["status"] for t in ticks} == {"ok", "error"}
+    good = [t for t in ticks if t["status"] == "ok"]
+    assert all("sim.decisions" in t["attributes"] for t in good)
+    assert len(sentry.metrics_named("jeve.sim.tick.duration")) == len(good)
+    assert len(sentry.metrics_named("jeve.sim.tick.lag")) == len(good)
+    # The human stream is untouched.
+    assert "the model is back" in capsys.readouterr().out

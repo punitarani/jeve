@@ -23,7 +23,7 @@ import threading
 from collections.abc import Coroutine, Sequence
 from typing import Any
 
-from jeve import tracing
+from jeve import telemetry, tracing
 from jeve.config import Settings, load_settings
 from jeve.core.seed import derive_rng, path_of
 from jeve.decide import gates
@@ -71,25 +71,40 @@ class _Bridge:
             raise
 
     async def _fetch(
-        self, requests: Sequence[DecisionRequest], parent: str | None
+        self,
+        requests: Sequence[DecisionRequest],
+        parent: str | None,
+        sentry_parent: telemetry.Parent | None,
     ) -> list[RawDecision | BaseException]:
         return await asyncio.gather(
-            *(self._gateway.decide_raw(request, parent=parent) for request in requests),
+            *(
+                self._gateway.decide_raw(
+                    request, parent=parent, sentry_parent=sentry_parent
+                )
+                for request in requests
+            ),
             return_exceptions=True,
         )
 
     def fetch(
-        self, requests: Sequence[DecisionRequest], *, parent: str | None = None
+        self,
+        requests: Sequence[DecisionRequest],
+        *,
+        parent: str | None = None,
+        sentry_parent: telemetry.Parent | None = None,
     ) -> list[RawDecision | BaseException]:
-        """`parent` is passed, not inherited.
+        """The parents are passed, not inherited.
 
         `run_coroutine_threadsafe` schedules onto this loop, which copies the
         context on *this* thread — so the batch span open on the caller's
         thread is not the current span here, and a call would otherwise land
-        at the root of its own trace (LLM-0008).
+        at the root of its own trace (LLM-0008). The same for the tick span,
+        on the second backend (CORE-0012).
         """
 
-        return self.run(self._fetch(requests, parent), timeout=CALL_TIMEOUT_S)
+        return self.run(
+            self._fetch(requests, parent, sentry_parent), timeout=CALL_TIMEOUT_S
+        )
 
     @property
     def run_spent_usd(self) -> float:
@@ -195,9 +210,27 @@ class JevPolicy:
                     "live_calls": len(missing),
                 }
             )
+            # The batch is the only place that sees both the hits and the
+            # distinct live requests, so the cache rate is counted here and the
+            # recorder stays a cache, not a meter (CORE-0012).
+            mode = {"mode": self._recorder.mode}
+            if hits:
+                telemetry.count(
+                    "jeve.llm.cache", hits, attributes={**mode, "result": "hit"}
+                )
             if missing:
+                telemetry.count(
+                    "jeve.llm.cache",
+                    len(missing),
+                    attributes={**mode, "result": "live"},
+                )
                 # Exported on this thread, because the gateway is not on it.
-                stored |= self._fill(missing, requests, parent=span.export() or None)
+                stored |= self._fill(
+                    missing,
+                    requests,
+                    parent=span.export() or None,
+                    sentry_parent=telemetry.current(),
+                )
 
             return [
                 self._decide_one(ctx, item, stored[maybe] if maybe else None)
@@ -227,6 +260,7 @@ class JevPolicy:
         requests: dict[str, tuple[Prepared, DecisionRequest]],
         *,
         parent: str | None = None,
+        sentry_parent: telemetry.Parent | None = None,
     ) -> dict[str, StoredCall]:
         if self._recorder.mode == "replay":
             kinds = sorted({requests[digest][0].kind for digest in missing})
@@ -238,7 +272,9 @@ class JevPolicy:
             )
 
         results = self._live().fetch(
-            [requests[digest][1] for digest in missing], parent=parent
+            [requests[digest][1] for digest in missing],
+            parent=parent,
+            sentry_parent=sentry_parent,
         )
         failure: BaseException | None = None
         drifted: set[str] = set()

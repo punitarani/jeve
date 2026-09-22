@@ -17,6 +17,10 @@ services:
         # Browser-side URL: the container's own hostname means nothing to a
         # visitor's browser. Published port 8000 on the host is the default.
         NEXT_PUBLIC_JEVE_API: ${NEXT_PUBLIC_JEVE_API:-http://127.0.0.1:8000}
+        # CORE-0012: the browser's Sentry project, baked in the same way. Empty
+        # means the SDK is a no-op and nothing leaves the page.
+        NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
+        NEXT_PUBLIC_SENTRY_ENVIRONMENT: ${NEXT_PUBLIC_SENTRY_ENVIRONMENT:-production}
     ports:
       - "3000:8080"
     restart: unless-stopped
@@ -41,6 +45,10 @@ services:
       - JEVE_CORS_ORIGINS=${JEVE_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       # The dialogue endpoint can spend; self-hosters may want it on.
       - JEVE_DIALOGUE_GENERATE=${JEVE_DIALOGUE_GENERATE:-on}
+      # CORE-0012: the API's own Sentry project. Unset means telemetry is
+      # simply off — no import, no socket — which is the default here.
+      - SENTRY_DSN_API=${SENTRY_DSN_API:-}
+      - SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT:-production}
       - PYTHONPATH=/app/src
     restart: unless-stopped
     depends_on:
@@ -81,6 +89,9 @@ services:
       # here — the daemon behaves exactly as it did before either way.
       - BRAINTRUST_API_KEY=${BRAINTRUST_API_KEY:-}
       - BRAINTRUST_PROJECT_ID=${BRAINTRUST_PROJECT_ID:-}
+      # CORE-0012: the daemon's own Sentry project, same rule as the key above.
+      - SENTRY_DSN_SIM=${SENTRY_DSN_SIM:-}
+      - SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT:-production}
       - PYTHONPATH=/app/src
     # Deliberate halts arrive as exit 0 through the entrypoint, so on-failure
     # restarts crashes only — never a world that asked to stop.

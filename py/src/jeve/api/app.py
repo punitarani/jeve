@@ -11,6 +11,7 @@ duplicate. That is the whole reason `seq` is a bigserial and not a timestamp.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
@@ -23,9 +24,14 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
 
-from jeve import db, tracing
+from jeve import db, telemetry, tracing
 from jeve.config import load_settings
 from jeve.core.clock import SimTime
+
+# CORE-0012: bound before the app is built. The FastAPI integration names a
+# service span by its route template at *decoration* time; bound any later,
+# every `/causal/{seq}` is a raw URL for the life of the process.
+telemetry.init("api")
 
 _pool: ConnectionPool[Connection[DictRow]] | None = None
 
@@ -49,6 +55,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         _pool = None
         await asyncio.to_thread(pool.close)
         tracing.flush()
+        telemetry.flush()
 
 
 app = FastAPI(
@@ -83,13 +90,17 @@ def _db() -> Iterator[Connection[DictRow]]:
     slot nobody else can use.
     """
 
-    if _pool is not None:
-        with _pool.connection() as conn:
-            yield conn
-    else:
-        # Tests without a lifespan, and one-off scripts, still work.
-        with db.connect(autocommit=True) as conn:
-            yield conn
+    # Child-only: under a request this is the span that says how much of it
+    # was the database; under the stream hub's poll, where nothing is active,
+    # it is nothing at all (CORE-0012).
+    with telemetry.span("db", {"sentry.op": "db", "db.system": "postgresql"}):
+        if _pool is not None:
+            with _pool.connection() as conn:
+                yield conn
+        else:
+            # Tests without a lifespan, and one-off scripts, still work.
+            with db.connect(autocommit=True) as conn:
+                yield conn
 
 
 def _conn() -> Iterator[Connection[DictRow]]:
@@ -129,6 +140,9 @@ def health() -> JSONResponse:
             conn.execute("SELECT 1")
         return JSONResponse({"ok": True})
     except Exception as error:  # reporting any failure is this endpoint's job
+        telemetry.count(
+            "jeve.api.health.failed", 1, attributes={"error": type(error).__name__}
+        )
         # Public endpoint: the class names the failure without echoing a DSN
         # or internal hostname the way str(error) would.
         return JSONResponse(
@@ -245,6 +259,7 @@ def _health(meta: dict[str, Any]) -> dict[str, object]:
     """
 
     age = meta["heartbeat_age_s"]
+    settings = load_settings()
     expected_alive = meta["status"] in (
         "running",
         "waiting_on_model",
@@ -262,7 +277,10 @@ def _health(meta: dict[str, Any]) -> dict[str, object]:
         # its secrets, so this answers "does the deployment have the key"
         # honestly, which is the question that went unanswered for an hour
         # when the key sat in Doppler and never reached Fly (LLM-0008).
-        "tracing": bool(load_settings().braintrust_api_key),
+        "tracing": bool(settings.braintrust_api_key),
+        # CORE-0012: the same question of the second backend — the API's own
+        # DSN, or the shared one it would fall back to.
+        "sentry": bool(settings.sentry_dsn_api or settings.sentry_dsn),
     }
 
 
@@ -998,13 +1016,21 @@ class _StreamHub:
             # subscriber catches up itself, and two live pollers could push
             # the same events out of order — a gap dedup cannot fix.
             self._high = max(self._high, after)
-            self._task = asyncio.create_task(self._poll())
+            # A fresh context: `create_task` would copy this request's, and the
+            # poller would carry the `/stream` service span — long finished —
+            # for the rest of the process, with every `db` span under it.
+            self._task = asyncio.create_task(
+                self._poll(), context=contextvars.Context()
+            )
+        telemetry.gauge("jeve.api.stream.subscribers", len(self._subs))
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue[dict[str, Any] | None]) -> None:
         self._subs.discard(queue)
+        telemetry.gauge("jeve.api.stream.subscribers", len(self._subs))
 
     async def _poll(self) -> None:
+        failing = 0
         while self._subs:
             try:
                 rows = await asyncio.to_thread(
@@ -1014,11 +1040,29 @@ class _StreamHub:
                     "WHERE seq > %s ORDER BY seq LIMIT %s",
                     (self._high, _BATCH),
                 )
-            except Exception:
+            except Exception as error:
                 # A dead database is /health's story to tell; the stream just
-                # waits for it to come back.
+                # waits for it to come back. But a wedged *pool* looked exactly
+                # like an idle world, for the life of the process — so the
+                # first failure of a streak is an issue and every one is a
+                # count (CORE-0012).
+                failing += 1
+                telemetry.count(
+                    "jeve.api.stream.poll_errors",
+                    1,
+                    attributes={"error": type(error).__name__},
+                )
+                if failing == 1:
+                    telemetry.capture(error, tags={"stream.high": self._high})
                 await asyncio.sleep(_POLL_S)
                 continue
+            if failing:
+                telemetry.log(
+                    "info",
+                    "stream poll recovered",
+                    attributes={"stream.failures": failing},
+                )
+                failing = 0
             for row in rows:
                 row["label"] = SimTime(int(row["sim_time"])).label()
                 self._high = int(row["seq"])
