@@ -29,7 +29,7 @@ from psycopg.rows import DictRow
 
 from jeve import db, memory
 from jeve.core.clock import DAY, TICK, SimTime, at
-from jeve.decide.policy import Decision, DecisionContext, Policy, RulesPolicy
+from jeve.decide.policy import Decision, DecisionContext, Policy, RulesPolicy, Source
 from jeve.sim import advance
 from jeve.world import episodes, space
 from jeve.world.engine import Engine, Made, TickReport
@@ -80,7 +80,7 @@ class Scripted:
     assertions are about what the world did with it.
     """
 
-    source = "rules"
+    source: Source = "rules"
 
     def __init__(self, root_seed: int, script: dict[str, list[dict[str, object]]]):
         self._rules = RulesPolicy(root_seed)
