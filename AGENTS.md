@@ -157,6 +157,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### API-0002: Page the seq cursor both ways, and read the timeline newest first
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `py/src/jeve/api/app.py`, `py/src/jeve/api/contracts.py`, `apps/web/src/lib/api.ts`, `apps/web/src/components/Dashboard.tsx`  
+**Tags**: api, web, pagination, agent-decided
+
+`/events` takes `before=<seq>` as well as `after=<seq>`, and every page carries a cursor at each end — `seq` (newest) and `oldest` — plus `more`, which says whether another page exists in the direction this one travelled. Rows come back ascending whichever way the window was taken; the timeline reverses once, where it renders.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### CORE-0001: Record architecture decisions as immutable per-file records
 
 **Status**: accepted (2026-09-20)  

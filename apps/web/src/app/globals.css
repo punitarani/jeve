@@ -113,6 +113,16 @@ select.pick {
 
 .lane { display: flex; flex-direction: column; gap: 2px; max-height: 60vh; overflow-y: auto; }
 
+/* The foot of the lane: what scrollback is doing, and the node the
+   IntersectionObserver watches. Always rendered, so it needs a height even
+   when it has little to say. */
+.lane-end {
+  padding: 10px 6px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .ev {
   display: grid;
   grid-template-columns: 96px 118px 1fr auto;

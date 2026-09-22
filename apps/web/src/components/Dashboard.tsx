@@ -8,10 +8,10 @@
  * history. "Legible at a glance" therefore means legible in retrospect, which
  * is what selecting an event and seeing what it caused provides.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { SimEvent, WorldState } from "@jeve/contracts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { EventPage, WorldState } from "@jeve/contracts";
 import { ORG_COLORS } from "@jeve/contracts";
-import { fetchCausal, fetchState, money } from "@/lib/api";
+import { fetchCausal, fetchOlderEvents, fetchState, money } from "@/lib/api";
 import { EVENT_TONE } from "@/lib/tone";
 import { Timeline } from "./Timeline";
 import { PersonPanel } from "./PersonPanel";
@@ -22,15 +22,26 @@ import { PersonPanel } from "./PersonPanel";
 // as that server-side cut, but one click away from coming back.
 const HIDDEN_BY_DEFAULT = ["encounter"];
 
+// One screenful is about thirty rows, so a page is deep enough that reaching
+// the end of one is a deliberate scroll rather than a flick, and small enough
+// that the filters below can discard most of it without a visible stall.
+const PAGE = 200;
+
 export function Dashboard({
 	initialState,
-	initialEvents,
+	initialPage,
 }: {
 	initialState: WorldState;
-	initialEvents: SimEvent[];
+	initialPage: EventPage;
 }) {
 	const [state, setState] = useState(initialState);
-	const [events] = useState(initialEvents);
+	// Held ascending, always. Every memo below is order-independent, so one
+	// canonical order means only the render has to know it reads backwards.
+	const [events, setEvents] = useState(initialPage.events);
+	const [cursor, setCursor] = useState(initialPage.oldest);
+	const [more, setMore] = useState(initialPage.more);
+	const [loading, setLoading] = useState(false);
+	const [failed, setFailed] = useState<string | null>(null);
 	const [selected, setSelected] = useState<number | null>(null);
 	const [chain, setChain] = useState<Map<number, number> | null>(null);
 	const [org, setOrg] = useState<string | null>(null);
@@ -51,6 +62,54 @@ export function Dashboard({
 		}, 5000);
 		return () => clearInterval(timer);
 	}, []);
+
+	const laneRef = useRef<HTMLDivElement | null>(null);
+	const sentinelRef = useRef<HTMLDivElement | null>(null);
+	const [atOldest, setAtOldest] = useState(false);
+
+	// The lane is its own scroll container (globals.css `.lane`), so the
+	// default viewport root is wrong: a sentinel below the lane's fold is
+	// still on screen as far as the document is concerned, and every page
+	// would load at once on first paint.
+	useEffect(() => {
+		const lane = laneRef.current;
+		const sentinel = sentinelRef.current;
+		if (lane === null || sentinel === null) return;
+		const watcher = new IntersectionObserver(
+			(entries) => setAtOldest(entries.some((entry) => entry.isIntersecting)),
+			{ root: lane, rootMargin: "200px" },
+		);
+		watcher.observe(sentinel);
+		return () => watcher.disconnect();
+	}, []);
+
+	const loadOlder = useCallback(async () => {
+		setLoading(true);
+		try {
+			const page = await fetchOlderEvents(cursor, PAGE);
+			// Older events go at the front of the ascending array, which is the
+			// end of the rendered list — below the fold, so nothing the reader
+			// is looking at moves.
+			setEvents((prev) => [...page.events, ...prev]);
+			setCursor(page.oldest);
+			setMore(page.more);
+		} catch (reason: unknown) {
+			setFailed(reason instanceof Error ? reason.message : String(reason));
+		} finally {
+			setLoading(false);
+		}
+	}, [cursor]);
+
+	// The trigger is an effect rather than the observer callback, because the
+	// kind and org filters are applied client-side: a page can arrive and leave
+	// nothing new on screen, and an IntersectionObserver does not fire again
+	// while its target stays intersecting. `loading` flipping back and
+	// `loadOlder` changing with the cursor re-run this, so the lane keeps
+	// pulling until it fills or the log runs out. `failed` stops the loop
+	// rather than hammering an API that is already answering with an error.
+	useEffect(() => {
+		if (atOldest && more && !loading && failed === null) void loadOlder();
+	}, [atOldest, more, loading, failed, loadOlder]);
 
 	const select = useCallback(
 		async (seq: number) => {
@@ -80,7 +139,9 @@ export function Dashboard({
 
 	// Counted over everything loaded rather than over `visible`: chip counts
 	// that moved when you picked an org would reflow the row under the cursor.
-	// Loudest first, so the kind worth switching off is the one you reach for.
+	// They do grow as scrollback pulls more history in, which is the same
+	// promise — the number is what this page has seen. Loudest first, so the
+	// kind worth switching off is the one you reach for.
 	const kinds = useMemo(() => {
 		const counts = new Map<string, number>();
 		for (const event of events)
@@ -97,16 +158,22 @@ export function Dashboard({
 	}, []);
 
 	const down = state.modules.filter((m) => m.status === "down");
+	// Reversed here, at the one boundary where reading order matters. The clock
+	// runs far faster than real time, so a reader arrives to history and wants
+	// the most recent thing first; scrolling down then walks into the past,
+	// which is also the direction the pages load.
 	const visible = useMemo(
 		() =>
-			events.filter((event) => {
-				if (org !== null && event.org_id !== org) return false;
-				if (!hidden.has(event.kind)) return true;
-				// A cascade is only legible whole. An event in the selected chain
-				// stays on screen even when its kind is switched off, or following
-				// what an outage caused would stop at the first encounter.
-				return chain?.has(event.seq) ?? false;
-			}),
+			events
+				.filter((event) => {
+					if (org !== null && event.org_id !== org) return false;
+					if (!hidden.has(event.kind)) return true;
+					// A cascade is only legible whole. An event in the selected chain
+					// stays on screen even when its kind is switched off, or following
+					// what an outage caused would stop at the first encounter.
+					return chain?.has(event.seq) ?? false;
+				})
+				.reverse(),
 		[events, org, hidden, chain],
 	);
 
@@ -238,6 +305,32 @@ export function Dashboard({
 						selected={selected}
 						chain={chain}
 						onSelect={select}
+						laneRef={laneRef}
+						footer={
+							// Always mounted, whatever it says: the observer attaches to
+							// this node once and must not have it swapped out from under it.
+							<div className="lane-end" ref={sentinelRef} data-testid="lane-end">
+								{failed !== null ? (
+									<>
+										Older events did not load.{" "}
+										<button
+											className="link"
+											onClick={() => {
+												setFailed(null);
+											}}
+										>
+											retry
+										</button>
+									</>
+								) : loading ? (
+									"Loading older events…"
+								) : more ? (
+									"Scroll for older events"
+								) : (
+									"The beginning of the world"
+								)}
+							</div>
+						}
 					/>
 				</section>
 			</div>

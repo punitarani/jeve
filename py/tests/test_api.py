@@ -149,6 +149,66 @@ def test_events_paginate_by_seq(client: TestClient) -> None:
     assert seqs == sorted(seqs)
 
 
+def _first_seq(client: TestClient) -> int:
+    """The smallest seq in the table. Not 1: another test may have reseeded."""
+
+    page = client.get("/events", params={"limit": 1, "background": True}).json()
+    return int(page["events"][0]["seq"])
+
+
+def test_events_page_backwards_from_a_cursor(client: TestClient) -> None:
+    # The scrollback loop the timeline runs: open on the newest page, then walk
+    # into the past with the `oldest` cursor the page came with (API-0002).
+    everything = {"limit": 10, "background": True}
+    newest = client.get("/events", params={**everything, "latest": True}).json()
+    assert len(newest["events"]) == 10
+    assert newest["more"] is True, "10 of the fixture's events is not all of them"
+    assert newest["oldest"] == newest["events"][0]["seq"]
+    assert newest["seq"] == newest["events"][-1]["seq"]
+
+    older = client.get(
+        "/events", params={**everything, "before": newest["oldest"]}
+    ).json()
+    assert all(e["seq"] < newest["oldest"] for e in older["events"])
+    # No gap and no duplicate, in the other direction: the two pages meet.
+    assert older["events"][-1]["seq"] == newest["events"][0]["seq"] - 1
+    # Ascending on the wire whichever way the window was taken.
+    seqs = [e["seq"] for e in older["events"]]
+    assert seqs == sorted(seqs)
+
+
+def test_paging_backwards_stops_at_the_beginning(client: TestClient) -> None:
+    # `more` is false one request before the client would have found out by
+    # asking for a page that is not there.
+    floor = _first_seq(client)
+
+    body = client.get(
+        "/events", params={"before": floor + 4, "limit": 10, "background": True}
+    ).json()
+    assert [e["seq"] for e in body["events"]] == list(range(floor, floor + 4))
+    assert body["more"] is False
+
+    empty = client.get("/events", params={"before": floor, "background": True}).json()
+    assert empty["events"] == []
+    assert empty["more"] is False
+    assert empty["oldest"] == 0
+
+
+def test_a_window_is_bounded_at_both_ends(client: TestClient) -> None:
+    floor = _first_seq(client)
+    body = client.get(
+        "/events",
+        params={
+            "after": floor + 9,
+            "before": floor + 20,
+            "limit": 50,
+            "background": True,
+        },
+    ).json()
+    assert [e["seq"] for e in body["events"]] == list(range(floor + 10, floor + 20))
+    assert body["more"] is False
+
+
 def test_events_filter_by_kind(client: TestClient) -> None:
     body = client.get("/events", params={"kind": "incident.started"}).json()
     assert body["events"]

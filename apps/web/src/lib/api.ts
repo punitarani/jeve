@@ -32,12 +32,19 @@ async function get<T>(path: string, schema: ZodType<T>): Promise<T> {
 }
 
 export const fetchState = () => get("/state", WorldState);
-export const fetchEvents = (after: number, limit = 300) =>
-  get(`/events?after=${after}&limit=${limit}`, EventPage);
 
 /** The newest `limit` events, oldest first: where a page should open. */
 export const fetchLatestEvents = (limit = 300) =>
   get(`/events?latest=true&limit=${limit}`, EventPage);
+
+/**
+ * The page immediately older than `before`, oldest first.
+ *
+ * `before` is the `oldest` of the page you already hold, so scrollback is the
+ * same one-integer cursor that walks forwards (API-0002).
+ */
+export const fetchOlderEvents = (before: number, limit = 200) =>
+  get(`/events?before=${before}&limit=${limit}`, EventPage);
 export const fetchCausal = (seq: number, direction: "up" | "down" = "down") =>
   get(`/causal/${seq}?direction=${direction}`, CausalChain);
 export const fetchPersons = (org?: string) =>

@@ -145,7 +145,13 @@ class SimEvent(BaseModel):
 
 class EventPage(BaseModel):
     events: list[SimEvent]
-    seq: int
+    seq: int = Field(description="the newest seq in this page: the cursor for `after`")
+    oldest: int = Field(
+        description="the oldest seq in this page: the cursor for `before`; 0 when empty"
+    )
+    more: bool = Field(
+        description="whether another page exists in the direction this one travelled"
+    )
 
 
 class CausalChain(BaseModel):

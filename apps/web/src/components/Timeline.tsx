@@ -1,27 +1,36 @@
 "use client";
 
+import type { ReactNode, RefObject } from "react";
 import type { SimEvent } from "@jeve/contracts";
 import { money } from "@/lib/api";
 import { EVENT_TONE, ORG_COLORS } from "@/lib/tone";
 
 /**
- * Events in time order. Selecting one dims everything that is not causally
+ * Events newest first. Selecting one dims everything that is not causally
  * related to it and annotates the rest with their distance from it, so a
  * cascade reads as a shape rather than as a list you have to reconstruct.
+ *
+ * The order is whatever the caller hands over, and `footer` is whatever the
+ * caller wants below the last row — scrollback lives in the Dashboard, which
+ * owns the cursor; this stays a component that renders a list.
  */
 export function Timeline({
   events,
   selected,
   chain,
   onSelect,
+  laneRef,
+  footer,
 }: {
   events: SimEvent[];
   selected: number | null;
   chain: Map<number, number> | null;
   onSelect: (seq: number) => void;
+  laneRef?: RefObject<HTMLDivElement | null>;
+  footer?: ReactNode;
 }) {
   return (
-    <div className="lane" data-testid="timeline">
+    <div className="lane" data-testid="timeline" ref={laneRef}>
       {events.map((event) => {
         const depth = chain?.get(event.seq);
         const related = chain === null || depth !== undefined;
@@ -39,6 +48,7 @@ export function Timeline({
               .filter(Boolean)
               .join(" ")}
             data-testid={`event-${event.seq}`}
+            data-seq={event.seq}
             data-kind={event.kind}
             data-related={related ? "yes" : "no"}
             onClick={() => onSelect(event.seq)}
@@ -67,6 +77,7 @@ export function Timeline({
           </button>
         );
       })}
+      {footer}
     </div>
   );
 }
