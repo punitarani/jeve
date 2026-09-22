@@ -481,7 +481,15 @@ export class WorldModel {
     sky: string;
     sunIntensity: number;
     lamps: number;
-    agents: { id: string; x: number; y: number; floor: number; zone: string; visible: boolean }[];
+    agents: {
+      id: string;
+      x: number;
+      y: number;
+      floor: number;
+      zone: string;
+      visible: boolean;
+      walking: boolean;
+    }[];
   } {
     const sky = skyAt(this.minute);
     const agents = [...this.walkers.values()].map((w) => ({
@@ -491,6 +499,7 @@ export class WorldModel {
       floor: w.floor,
       zone: w.zone,
       visible: w.visible,
+      walking: w.walking,
     }));
     return {
       seq: this.seq,

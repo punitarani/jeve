@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
+/** What decided the world under test: `jev` for the fixture, else the rules twin. */
+const POLICY = process.env.JEVE_E2E_POLICY ?? "jev";
+
 /**
  * Gate 5: a human can complete the primary flow in a browser.
  *
@@ -162,8 +165,10 @@ test("a person's decisions show what was chosen and the draw behind it", async (
   // Something was actually chosen, not left blank. Since WORLD-0003 the most
   // recent thing anyone decided is usually where to go next.
   await expect(first).toContainText(/pay|answer|queue|buy|file|next_zone/);
-  // And this world is decided by the model, not by the rules twin.
-  await expect(rows.filter({ hasText: "jev" }).first()).toBeVisible();
+  // And this world is decided by the model, not by the rules twin — unless
+  // the stack is running free on rules between recordings (JEVE_E2E_POLICY).
+  if (POLICY === "jev")
+    await expect(rows.filter({ hasText: "jev" }).first()).toBeVisible();
 });
 
 /** Every org named by a row on screen, deduplicated. */

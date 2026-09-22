@@ -200,18 +200,20 @@ test("clicking a person shows the distribution behind their last decision", asyn
   await expect(page.getByTestId("world-hint")).toBeVisible();
 
   // Somebody who is on the map and standing still, found from the model and
-  // clicked at the pixel they are drawn at.
+  // clicked at the pixel they are drawn at. Standing still first: a walker
+  // has moved on by the time a slow machine delivers the click.
   const target = await page.evaluate(() => {
     const handle = (window as unknown as {
       __jeveWorld: Record<
         string,
         {
-          status(): { agents: { id: string; visible: boolean }[] };
+          status(): { agents: { id: string; visible: boolean; walking: boolean }[] };
           screenPositionOf(id: string): { x: number; y: number } | null;
         }
       >;
     }).__jeveWorld.explore!;
-    for (const agent of handle.status().agents) {
+    const agents = handle.status().agents;
+    for (const agent of [...agents.filter((a) => !a.walking), ...agents]) {
       const at = agent.visible ? handle.screenPositionOf(agent.id) : null;
       if (at && at.x > 40 && at.y > 40) return { id: agent.id, ...at };
     }
