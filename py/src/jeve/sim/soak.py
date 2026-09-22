@@ -33,7 +33,7 @@ from psycopg.rows import DictRow, dict_row
 from jeve import db
 from jeve.config import find_repo_root
 from jeve.core.clock import DAY, SimTime
-from jeve.core.orgs import ORGS, retailers
+from jeve.core.orgs import ORGS, clients_of, retailers
 from jeve.sim import daemon
 from jeve.world.seed_world import ROOT_SEED, seed
 
@@ -107,7 +107,8 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
         (28 * DAY,),
     )
     expected_months = 1 + (days - 4) // 28 if days >= 4 else 0
-    clients = sum(1 for org in ORGS if org.accountant is not None)
+    # A firm that keeps its own books is nobody's client and has no close.
+    clients = sum(len(clients_of(org.id)) for org in ORGS)
     out.append(
         Check(
             "months recur",
