@@ -789,10 +789,6 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
         ),
     }
     asks: list[Ask] = [destination(ctx), _MOOD]
-    if outage:
-        asks.append(_RELIABILITY)
-    if ctx.facts.get("strained"):
-        asks.append(_STRAIN)
     if offered:
         state["who_is_here"] = roster_words(
             present, own_org=org, vendor=ctx.facts.get("vendor")
@@ -835,6 +831,12 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
             asks.append(_RAISE)
     else:
         state["who_is_here"] = "Nobody they would stop to talk to."
+    # The belief revisions ride at the end: the request is being made anyway,
+    # and the questions that move the world keep their order (MEM-0002).
+    if outage:
+        asks.append(_RELIABILITY)
+    if ctx.facts.get("strained"):
+        asks.append(_STRAIN)
     return Prepared(ctx.kind, asks=tuple(asks), state=state)
 
 
@@ -1222,19 +1224,17 @@ def _interpret_draw(
 
 
 _APPROVE = Ask(
-    "decision",
+    "approve",
     "J",
-    Choice(
+    Noul(
         instructions=(
             "Does the credit union approve this firm's application for a line "
             "of credit worth a month of its payroll?"
         ),
-        criteria={
-            "approve": "Approve the line: the firm is short of cash but sound.",
-            "decline": (
-                "Decline: the firm is not paying its way; the line would not be repaid."
-            ),
-        },
+        criteria=_yes_no(
+            "Approve the line: the firm is short of cash but sound.",
+            "Decline: the firm is not paying its way; the line would not be repaid.",
+        ),
     ),
 )
 
@@ -1268,8 +1268,7 @@ def _prepare_approve(ctx: DecisionContext) -> Prepared:
 def _interpret_approve(
     ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
 ) -> Outcome:
-    decision = str(got["decision"].value)
-    return Outcome({"decision": "approve" if decision == "approve" else "decline"}, {})
+    return Outcome({"decision": "approve" if got["approve"].value else "decline"}, {})
 
 
 # -- ticket.confirm and chase.invoice: the loops that close (WORLD-0005) -------

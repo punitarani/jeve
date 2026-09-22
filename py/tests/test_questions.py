@@ -43,6 +43,33 @@ ASKING: dict[str, dict[str, object]] = {
         "cash_multiple": 1.4,
         "timesheets_available": False,
     },
+    "supply.order": {
+        "org": "thirdrail",
+        "stock_level": 1,
+        "runway_days": 21,
+        "price_up": True,
+        "can_afford": True,
+    },
+    "credit.draw": {
+        "org": "thirdrail",
+        "runway_days": 9,
+        "debt_cents": 0,
+        "weekly_wages_cents": 900_000,
+    },
+    "credit.approve": {
+        "applicant": "thirdrail",
+        "runway_days": 9,
+        "overdue_bills": 2,
+        "payroll_held": True,
+        "debt_cents": 0,
+        "amount_cents": 3_600_000,
+        "bank_can_lend": True,
+    },
+    "subscription.switch": {
+        "org": "ironworks",
+        "competitor": "tallybird",
+        "reliability": 1,
+    },
     "agent.tick": {
         "org": "halloran",
         "team": "halloran.partners",
@@ -223,6 +250,8 @@ def test_people_in_the_room_are_described_not_named() -> None:
         "other": "Nobody in particular.",
     }
     keys = [ask.key for ask in prepared.asks]
+    # With an outage on their mind, what they now think of the vendor is
+    # asked last, after everything that moves the world (MEM-0002).
     assert keys == [
         "next_zone",
         "mood",
@@ -230,12 +259,16 @@ def test_people_in_the_room_are_described_not_named() -> None:
         "with_whom",
         "topic",
         "raise_outage",
+        "vendor_reliability",
     ]
 
 
 def test_alone_there_is_nobody_to_ask_about() -> None:
     facts = {**ASKING["agent.tick"], "present": [], "can_raise": False}
     keys = [ask.key for ask in _prepare("agent.tick", facts).asks]
+    assert keys == ["next_zone", "mood", "vendor_reliability"]
+    quiet = {**facts, "outage": None}
+    keys = [ask.key for ask in _prepare("agent.tick", quiet).asks]
     assert keys == ["next_zone", "mood"]
 
 
