@@ -10,7 +10,7 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve import db
-from jeve.core.clock import DAY, TICK, at
+from jeve.core.clock import DAY, DISTRICT_CLOSE, DISTRICT_OPEN, TICK, at
 from jeve.decide.policy import RulesPolicy
 from jeve.sim import daemon
 from jeve.sim.daemon import Pace
@@ -394,6 +394,9 @@ def test_a_sleeping_daemon_still_has_a_pulse(conn: Connection[DictRow]) -> None:
 
 # -- SIM-0004: the night is configurable, and the clock says how fast it runs --
 
+NIGHT_TICKS = (at(1) + DISTRICT_OPEN - (at(0) + DISTRICT_CLOSE)) // TICK
+"""Ticks between the last shop closing and the first one opening again."""
+
 
 def test_a_night_is_skipped_at_whatever_speedup_it_is_given() -> None:
     """The hole a night leaves in the usage graph is `NIGHT_SPEEDUP` wide, and
@@ -405,9 +408,15 @@ def test_a_night_is_skipped_at_whatever_speedup_it_is_given() -> None:
 
     assert slow.seconds_per_tick == fast.seconds_per_tick  # open hours unmoved
     assert fast.night_speed == 6 * slow.night_speed
-    # A weeknight is thirteen sim-hours, so 52 ticks of dead time.
-    assert 52 * slow.seconds_per_tick / slow.night_speedup == pytest.approx(78.0)
-    assert 52 * fast.seconds_per_tick / fast.night_speedup == pytest.approx(13.0)
+    # A weeknight on the district's clock, the gym's close to the cafe's
+    # open, is eleven sim-hours: 44 ticks of dead time.
+    assert NIGHT_TICKS == 44
+
+    def night_at(pace: Pace) -> float:
+        return NIGHT_TICKS * pace.seconds_per_tick / pace.night_speedup
+
+    assert night_at(slow) == pytest.approx(66.0)
+    assert night_at(fast) == pytest.approx(11.0)
 
 
 def test_a_night_that_never_ends_is_refused() -> None:
@@ -427,8 +436,8 @@ def test_the_speedup_reaches_the_sleep_the_daemon_actually_takes(
         naps.append(seconds)
 
     monkeypatch.setattr(daemon, "_sleep", sleep)
-    # 18:00 on day 0 to 07:00 on day 1 is the night; stop just inside the
-    # morning so exactly one of them is skipped.
+    # The district shuts at 20:00 on day 0 and opens at 07:00 on day 1; stop
+    # just inside the morning so exactly one night is skipped.
     run = [
         "--seed-world",
         "--until",
@@ -442,8 +451,9 @@ def test_the_speedup_reaches_the_sleep_the_daemon_actually_takes(
     ]
     assert daemon.main(run) == 0
 
-    # 52 ticks of night at 15s each, sixty times faster than the open hours.
-    assert any(nap == pytest.approx(13.0) for nap in naps), naps
+    # 44 ticks of night at 15s each, sixty times faster than the open hours.
+    expected = NIGHT_TICKS * Pace(24.0, 2.0).seconds_per_tick / 60.0
+    assert any(nap == pytest.approx(expected) for nap in naps), naps
     # And at sixty it is shorter than a single tick's own pacing sleep: the
     # night has stopped being the biggest hole in the graph.
     assert max(naps) <= Pace(24.0, 2.0).seconds_per_tick

@@ -692,7 +692,8 @@ def test_the_bank_declines_a_firm_that_is_not_paying_its_way(
     assert declined is not None and declined["org_id"] == lender
     assert declined["payload"]["applicant"] == borrower.id
     assert declined["payload"]["reason"] == "not_paying_its_way"
-    assert conn.execute("SELECT count(*) AS n FROM loans").fetchone()["n"] == 1
+    lines = conn.execute("SELECT count(*) AS n FROM loans").fetchone()
+    assert lines is not None and int(lines["n"]) == 1
 
 
 @pytest.mark.parametrize("which", [0, 1], ids=["first_vendor", "second_vendor"])
@@ -738,9 +739,15 @@ def test_the_second_vendors_outage_reaches_its_own_customers_till(
     }
     assert all(down.get(org, 0) > 0 for org in users), down
     assert all(down.get(org, 0) == 0 for org in bystanders), down
-    # And the ticket about it goes to the vendor that sells it, not the other one.
+    # And the tickets about it go to the vendor that sells it, not the other
+    # one. (Both support desks also start the day warm on seeded tickets that
+    # are about nothing in particular; those are not the ones being counted.)
     triaged = conn.execute(
-        "SELECT DISTINCT org_id FROM events WHERE kind = 'ticket.triaged'"
+        "SELECT DISTINCT e.org_id FROM events e "
+        "JOIN tickets t ON t.id = (e.payload->>'ticket_id')::bigint "
+        "JOIN incidents i ON i.id = t.incident_id "
+        "WHERE e.kind = 'ticket.triaged' AND i.module_id = %s",
+        (till,),
     ).fetchall()
     assert {str(t["org_id"]) for t in triaged} == {vendor}
     assert other != vendor
