@@ -106,6 +106,13 @@ class Health(BaseModel):
         description="The status says a process should be alive and the "
         "heartbeat says none is."
     )
+    tracing: bool = Field(
+        description="Whether this deployment carries a BRAINTRUST_API_KEY "
+        "(LLM-0008). False means nothing is traced, silently and by design. "
+        "True means the key is present, not that Braintrust is accepting the "
+        "spans — the SDK reports a rejected key or project only on the "
+        "daemon's stderr."
+    )
 
 
 class TicketCounts(BaseModel):

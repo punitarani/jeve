@@ -237,7 +237,8 @@ is doing, asleep for the night included, so silence this long means no process."
 
 
 def _health(meta: dict[str, Any]) -> dict[str, object]:
-    """Is anybody driving? `status` is the daemon's word; this is the evidence.
+    """Is anybody driving, and is anyone watching? `status` is the daemon's
+    word; this is the evidence.
 
     A status of `running` written by a process that has since been killed stays
     `running` for ever. The heartbeat is what lets a reader tell.
@@ -255,6 +256,13 @@ def _health(meta: dict[str, Any]) -> dict[str, object]:
         "lag_s": round(float(meta["lag_s"]), 2),
         "last_error": meta["last_error"],
         "stale": expected_alive and (age is None or float(age) > STALE_AFTER_S),
+        # Read from settings rather than `tracing.enabled()`: that would
+        # configure tracing — importing the SDK, building a logger — as a side
+        # effect of a read endpoint. `api` and `sim` are one Fly app and share
+        # its secrets, so this answers "does the deployment have the key"
+        # honestly, which is the question that went unanswered for an hour
+        # when the key sat in Doppler and never reached Fly (LLM-0008).
+        "tracing": bool(load_settings().braintrust_api_key),
     }
 
 

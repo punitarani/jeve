@@ -115,14 +115,20 @@ class _BraintrustSink:
         # a wrong key costs nothing until a span is actually written. The
         # default `async_flush=True` batches on a background thread, which is
         # what a daemon that runs for days needs.
-        # `project_id` wins where it is set, per the SDK; the name is the
-        # fallback, and braintrust creates that project if it is missing.
-        # Passing both is one call rather than a branch — and `init_logger`
-        # with neither resolves to no object at all, which only shows up
+        #
+        # One of the two, never both. `_compute_logger_metadata` branches on
+        # which is None: an id alone is looked up (`get_project_id`), a name
+        # alone is created or resolved (`post_project`) — but *both* takes a
+        # third branch that trusts the id verbatim and never calls the API at
+        # all. A stale or foreign id would then be accepted here, travel on
+        # every row, and be rejected server-side; the batch is dropped on a
+        # background thread and nothing reaches us. The branch buys the
+        # validation. Passing neither resolves to no object and surfaces much
         # later as an assertion inside span export.
-        braintrust.init_logger(
-            project=self.DEFAULT_PROJECT, project_id=project_id, api_key=api_key
-        )
+        if project_id:
+            braintrust.init_logger(project_id=project_id, api_key=api_key)
+        else:
+            braintrust.init_logger(project=self.DEFAULT_PROJECT, api_key=api_key)
 
     def start_span(
         self, name: str, *, type: str | None, parent: str | None, **event: Any
