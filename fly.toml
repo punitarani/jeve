@@ -40,6 +40,9 @@ primary_region = "iad"  # Washington D.C. — closest to us-east-1
   JEVE_HALT_CEILING_USD = "10000"
   JEVE_HARD_CEILING_USD = "10000"
   JEVE_CASSETTE = "off"
+  # SIM-0004: dead time is skipped this much faster than the open hours. It
+  # calls no model, so the only thing a long night buys is a hole in the graph.
+  JEVE_NIGHT_SPEEDUP = "60"
   # ops/ is a humans-only checkpoint dir; in the image the cwd is /app, which
   # the runtime user can't write. /tmp is tmpfs and writable — the Postgres
   # ledger remains authoritative regardless (LLM-0007).

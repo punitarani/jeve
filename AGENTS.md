@@ -350,6 +350,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### OPS-0003: Deploy the web app after the backend, never before it
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `.github/workflows/ci.yml`, `scripts/check_deploy_order.py`  
+**Tags**: deployment, ci, contracts, agent-decided
+
+`deploy-web` needs `[web, contracts, deploy-backend]`, so the page ships only once the API it talks to is live.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### SIM-0001: One run loop, a horizon, a single-writer lock, and a governor that pauses
 
 **Status**: accepted (2026-09-20)  
@@ -381,6 +393,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: daemon, robustness, cost, agent-decided
 
 A 402 raises `ProviderBudgetError`; the daemon rolls the tick back, writes `waiting_on_budget` to `sim_meta`, beats from the sleep loop, and retries the same tick on a minutes-scale interval (`JEVE_BUDGET_WAIT_S`). In the container, `sim-entrypoint.sh` maps exits 4–7 to 0, so `on-failure` restarts crashes and leaves deliberate halts down; the reason stays in `sim_meta`, which is where an operator looks anyway.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### SIM-0004: the daemon outlives its database, and the night is a dial
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/sim/daemon.py`, `py/tests/test_daemon.py`  
+**Tags**: daemon, robustness, pacing, agent-decided
+
+Dead-time speedup is `JEVE_NIGHT_SPEEDUP` / `--night-speedup`, and losing the database is weather in the sense of SIM-0002: the daemon takes another connection and runs the same tick again, for ever, rather than exiting.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

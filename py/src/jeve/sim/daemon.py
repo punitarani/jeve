@@ -28,12 +28,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 
+import psycopg
 from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve import db, telemetry
 from jeve.core.clock import DAY, TICK, SimTime
 from jeve.decide.jev_policy import JevPolicy
+from jeve.decide.policy import Policy
 from jeve.decide.recorder import ReplayMissError, finalize_cassette, load_cassette
 from jeve.errors import (
     BudgetExceededError,
@@ -49,10 +51,15 @@ from jeve.world.seed_world import ROOT_SEED, seed
 DEFAULT_DAY_MINUTES = 24.0
 """One sim-day per 24 real minutes: a fifteen-minute tick every fifteen seconds."""
 
-NIGHT_SPEEDUP = 10.0
+DEFAULT_NIGHT_SPEEDUP = 10.0
 """Closed hours pass this much faster than open ones. Nothing happens at night,
 and a town that sits empty for fourteen real minutes in every twenty-four is a
-poor thing to watch. The tick rate while anything is open is unaffected."""
+poor thing to watch. The tick rate while anything is open is unaffected.
+
+A constant for two sessions, which meant the only way to shorten the hole a
+night leaves in the usage graph was to speed the whole world up — and that
+costs money, because the open hours are where the spend is. `JEVE_NIGHT_SPEEDUP`
+buys the same silence back for nothing (SIM-0004)."""
 
 DEFAULT_DAILY_BUDGET_USD = 2.00
 
@@ -67,6 +74,21 @@ one transaction, so one that raised has changed nothing and can simply be run
 again. One HTTP 520 used to end the process here, with the page still saying
 `running`. Budget exhaustion and a replay miss are not in this list: waiting
 cannot fix either."""
+
+DATABASE_WEATHER: tuple[type[BaseException], ...] = (
+    psycopg.OperationalError,
+    psycopg.InterfaceError,
+)
+"""SIM-0004: what Postgres going away looks like from in here — a failover, a
+restart, a pooler dropping the session, a laptop's network coming back on a
+different address.
+
+It is weather for the same reason a 520 is (SIM-0002): the tick is one
+transaction, so one that lost its connection changed nothing, and the world is
+exactly where the last commit left it. The difference is that the status cannot
+be written — there is nowhere to write it — so this loop is the only record
+until the database answers again. Ending the process instead was survivable
+only where something restarts it; `make sim` on a laptop is not that."""
 
 BACKOFF_BASE_S = 2.0
 BACKOFF_CAP_S = 120.0
@@ -83,6 +105,15 @@ class Pace:
 
     day_minutes: float
     daily_budget_usd: float
+    night_speedup: float = DEFAULT_NIGHT_SPEEDUP
+
+    def __post_init__(self) -> None:
+        if self.night_speedup <= 0.0:
+            raise ValueError(
+                f"night speedup must be positive, not {self.night_speedup} "
+                "(JEVE_NIGHT_SPEEDUP). Dead time is skipped fast, never backwards "
+                "and never for ever."
+            )
 
     @property
     def seconds_per_tick(self) -> float:
@@ -93,6 +124,25 @@ class Pace:
         """Real seconds that correspond to one sim-day: the budget's period."""
 
         return self.day_minutes * 60.0
+
+    @property
+    def speed(self) -> float:
+        """Sim-seconds per real second while anything is open.
+
+        What `sim_meta.speed` has always claimed to hold and never did: the
+        column defaulted to 1.0 and nothing ever wrote it, so the API served
+        `1.0` to a page watching a world running sixty times faster than that.
+        """
+
+        if self.seconds_per_tick <= 0.0:
+            return 0.0  # `--day-minutes 0`: flat out, and no honest number.
+        return TICK / self.seconds_per_tick
+
+    @property
+    def night_speed(self) -> float:
+        """Sim-seconds per real second while everything is shut."""
+
+        return self.speed * self.night_speedup
 
 
 class _Stop:
@@ -111,13 +161,23 @@ class _Stop:
         return self._requested
 
 
-def _status(conn: Connection[DictRow], status: str, error: str | None = None) -> None:
-    """Say what the process is doing, and why if it is not simply running."""
+def _status(
+    conn: Connection[DictRow],
+    status: str,
+    error: str | None = None,
+    *,
+    speed: float = 0.0,
+) -> None:
+    """Say what the process is doing, and why if it is not simply running.
+
+    `speed` is how fast sim time is moving right now, which for every status
+    but `running` is nought: a paused world is not a slow one.
+    """
 
     conn.execute(
-        "UPDATE sim_meta SET status = %s, last_error = %s, "
+        "UPDATE sim_meta SET status = %s, last_error = %s, speed = %s, "
         "heartbeat_at = now(), updated_at = now()",
-        (status, error),
+        (status, error, speed),
     )
     conn.commit()
     # The one funnel every state change passes through, so it is also where
@@ -149,13 +209,23 @@ def _halt(
     return code
 
 
-def _heartbeat(conn: Connection[DictRow], lag_s: float | None = None) -> None:
+def _heartbeat(
+    conn: Connection[DictRow],
+    lag_s: float | None = None,
+    *,
+    speed: float | None = None,
+) -> None:
     """Wall-clock proof of life. Never read by the simulation."""
 
-    if lag_s is None:
-        conn.execute("UPDATE sim_meta SET heartbeat_at = now()")
-    else:
-        conn.execute("UPDATE sim_meta SET heartbeat_at = now(), lag_s = %s", (lag_s,))
+    sets = ["heartbeat_at = now()"]
+    values: list[float] = []
+    if lag_s is not None:
+        sets.append("lag_s = %s")
+        values.append(lag_s)
+    if speed is not None:
+        sets.append("speed = %s")
+        values.append(speed)
+    conn.execute(f"UPDATE sim_meta SET {', '.join(sets)}", tuple(values))
     conn.commit()
 
 
@@ -194,48 +264,122 @@ def _describe(error: BaseException) -> str:
     return f"{type(error).__name__}: {first_line}"[:500]
 
 
+def _prepare(
+    conn: Connection[DictRow], args: argparse.Namespace, *, first: bool
+) -> None:
+    """Make a fresh connection fit to run the world from."""
+
+    db.migrate(conn)
+    # Ten seconds: long enough to outlive a killed predecessor's backend,
+    # short enough that a genuine second writer is told promptly.
+    db.take_writer_lock(conn, wait_s=10.0)
+
+    seeded = conn.execute("SELECT 1 FROM sim_meta").fetchone() is not None
+    # `--seed-world` only on the way in. Honouring it again after an outage
+    # would answer a dropped connection by deleting the world it interrupted.
+    if (args.seed_world and first) or not seeded:
+        summary = seed(conn, root_seed=args.seed)
+        print(
+            f"seeded {summary.orgs} orgs, {summary.persons} persons "
+            f"({summary.staff} staff + {summary.counterparties} counterparties)"
+        )
+    if first and args.policy == "jev" and args.cassette is not None:
+        # In both modes: a recording run must not pay again for what it has.
+        loaded = load_cassette(conn, args.cassette)
+        conn.commit()
+        print(f"cassette: {loaded} call(s) preloaded from {args.cassette.name}")
+
+
 def run(args: argparse.Namespace) -> int:
     stop = _Stop()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    pace = Pace(args.day_minutes, args.daily_budget)
+    pace = Pace(args.day_minutes, args.daily_budget, args.night_speedup)
+    # Built before the first connection and kept across every reconnection: the
+    # recorder's cache, its statistics and the governor's window all belong to
+    # the run, not to whichever database session happens to be carrying it.
+    policy = build_policy(
+        args.policy, args.calls, root_seed=args.seed, cassette=args.cassette
+    )
+    totals = Totals()
+    summarise = True
+    try:
+        return _supervise(policy, pace, args, stop, totals)
+    except db.WriterBusyError:
+        # `main` turns this into "refusing to start". It is the one exit with
+        # no summary: nothing of this run ran, so a report would describe a
+        # world this process never touched — and finalise a cassette it never
+        # opened, rewriting a file that is somebody else's.
+        summarise = False
+        raise
+    finally:
+        if summarise:
+            _report(policy, args, totals)
+        elif isinstance(policy, JevPolicy):
+            policy.close()
 
-    with db.connect() as conn:
-        db.migrate(conn)
-        # Ten seconds: long enough to outlive a killed predecessor's backend,
-        # short enough that a genuine second writer is told promptly.
-        db.take_writer_lock(conn, wait_s=10.0)
 
-        seeded = conn.execute("SELECT 1 FROM sim_meta").fetchone() is not None
-        if args.seed_world or not seeded:
-            summary = seed(conn, root_seed=args.seed)
-            print(
-                f"seeded {summary.orgs} orgs, {summary.persons} persons "
-                f"({summary.staff} staff + {summary.counterparties} counterparties)"
-            )
-        if args.policy == "jev" and args.cassette is not None:
-            # In both modes: a recording run must not pay again for what it has.
-            loaded = load_cassette(conn, args.cassette)
-            conn.commit()
-            print(f"cassette: {loaded} call(s) preloaded from {args.cassette.name}")
+def _supervise(
+    policy: Policy,
+    pace: Pace,
+    args: argparse.Namespace,
+    stop: _Stop,
+    totals: Totals,
+) -> int:
+    """Hold a connection to the world, and get another when one is lost."""
 
-        policy = build_policy(
-            args.policy, args.calls, root_seed=args.seed, cassette=args.cassette
-        )
-        engine = Engine(conn, policy, root_seed=args.seed)
-        totals = Totals()
-        code = 0
+    first = True
+    outages = 0
+    waiting_since = 0.0
+    while not stop.requested():
         try:
-            code = _loop(conn, engine, policy, pace, args, stop, totals)
-        finally:
-            _report(conn, policy, args, totals)
-        return code
+            with db.connect() as conn:
+                _prepare(conn, args, first=first)
+                first = False
+                if outages:
+                    print(f"the database is back after {outages} attempt(s)")
+                    outages = 0
+                engine = Engine(conn, policy, root_seed=args.seed)
+                return _loop(conn, engine, policy, pace, args, stop, totals)
+        except DATABASE_WEATHER as error:
+            outages += 1
+            if outages == 1:
+                waiting_since = time.monotonic()
+            delay = _backoff(outages)
+            waited = time.monotonic() - waiting_since
+            if args.max_wait is not None and waited + delay > args.max_wait:
+                print(
+                    f"HALTED: the database has not answered for {waited:.0f}s: {error}",
+                    file=sys.stderr,
+                )
+                # No table to write `halted` into, so the issue is the record
+                # (CORE-0012) — the one halt `_halt` cannot make.
+                telemetry.capture(error, tags={"sim.exit_code": 6})
+                return 6
+            # No connection, so nothing to beat into and no status to set: this
+            # line is the only sign of life until Postgres answers — and the
+            # count and the log line, which need no table (CORE-0012).
+            print(
+                f"waiting on the database (outage {outages}): {_describe(error)}; "
+                f"reconnecting in {delay:.0f}s",
+                file=sys.stderr,
+            )
+            telemetry.count(
+                "jeve.sim.weather", 1, attributes={"error": type(error).__name__}
+            )
+            telemetry.log(
+                "warning",
+                "waiting on the database",
+                attributes={"sim.outages": outages, "sim.error": _describe(error)},
+            )
+            _sleep(delay, stop)
+    return 0
 
 
 def _loop(
     conn: Connection[DictRow],
     engine: Engine,
-    policy: object,
+    policy: Policy,
     pace: Pace,
     args: argparse.Namespace,
     stop: _Stop,
@@ -246,7 +390,7 @@ def _loop(
     failures = 0
     waiting_since = 0.0
     budget_since = 0.0
-    _status(conn, "running")
+    _status(conn, "running", speed=pace.speed)
 
     while not stop.requested():
         row = conn.execute("SELECT sim_time, tick_seq FROM sim_meta").fetchone()
@@ -274,7 +418,11 @@ def _loop(
                 conn.commit()
                 after = args.until
             skipped_ticks = (after - before) / TICK
-            _sleep(skipped_ticks * pace.seconds_per_tick / NIGHT_SPEEDUP, stop, conn)
+            _heartbeat(conn, speed=pace.night_speed)
+            _sleep(
+                skipped_ticks * pace.seconds_per_tick / pace.night_speedup, stop, conn
+            )
+            _heartbeat(conn, speed=pace.speed)
             continue
 
         # The governor (CORE-0002). A sim-day's worth of real time has a model
@@ -294,7 +442,7 @@ def _loop(
                     f"pausing {pace.window_s - elapsed:.0f}s until the window rolls"
                 )
                 _sleep(pace.window_s - elapsed, stop, conn)
-                _status(conn, "running")
+                _status(conn, "running", speed=pace.speed)
                 continue
 
         started = time.monotonic()
@@ -389,13 +537,13 @@ def _loop(
                 print(f"the model is back after {failures} failed attempt(s)")
             failures = 0
             budget_since = 0.0
-            _status(conn, "running")
+            _status(conn, "running", speed=pace.speed)
         totals.ticks += 1
         totals.decisions += report.decisions
         totals.events.update(report.events)
         spent = time.monotonic() - started
         lag = max(0.0, spent - pace.seconds_per_tick)
-        _heartbeat(conn, lag_s=lag)
+        _heartbeat(conn, lag_s=lag, speed=pace.speed)
         telemetry.distribution("jeve.sim.tick.duration", spent, unit="second")
         telemetry.distribution("jeve.sim.tick.decisions", report.decisions)
         telemetry.distribution("jeve.sim.tick.events", len(report.events))
@@ -408,16 +556,18 @@ def _loop(
     return 0
 
 
-def _live_spend(policy: object) -> float:
+def _live_spend(policy: Policy) -> float:
     return policy.recorder.stats.live_cost_usd if isinstance(policy, JevPolicy) else 0.0
 
 
-def _report(
-    conn: Connection[DictRow],
-    policy: object,
-    args: argparse.Namespace,
-    totals: Totals,
-) -> None:
+def _report(policy: Policy, args: argparse.Namespace, totals: Totals) -> None:
+    """The run summary, printed once however many connections it took.
+
+    It opens its own connection for the parts that need one, because the run's
+    may be exactly what went wrong (SIM-0004) — and a summary that disappears
+    when the database does is a summary you cannot trust to be there.
+    """
+
     if isinstance(policy, JevPolicy):
         stats = policy.recorder.stats
         policy.close()
@@ -441,22 +591,27 @@ def _report(
             f"({args.calls})"
         )
     print(f"\nran {totals.ticks} ticks, {totals.decisions} decisions ({args.policy})")
-    if args.verbose:
-        print("\nevents:")
-        for kind, count in sorted(totals.events.items()):
-            print(f"  {count:6d}  {kind}")
-        if conn.closed:
-            return
-        for row in conn.execute(
-            "SELECT source, count(*) AS n FROM decisions "
-            "GROUP BY source ORDER BY source"
-        ).fetchall():
-            print(f"  decided by {row['source']}: {int(row['n'])}")
-        balance = conn.execute(
-            "SELECT COALESCE(sum(amount_cents),0) AS total FROM ledger_entries"
-        ).fetchone()
-        assert balance is not None
-        print(f"\nledger balances: {balance['total'] == 0} (sum={balance['total']})")
+    if not args.verbose:
+        return
+    print("\nevents:")
+    for kind, count in sorted(totals.events.items()):
+        print(f"  {count:6d}  {kind}")
+    try:
+        with db.connect() as conn:
+            for row in conn.execute(
+                "SELECT source, count(*) AS n FROM decisions "
+                "GROUP BY source ORDER BY source"
+            ).fetchall():
+                print(f"  decided by {row['source']}: {int(row['n'])}")
+            balance = conn.execute(
+                "SELECT COALESCE(sum(amount_cents),0) AS total FROM ledger_entries"
+            ).fetchone()
+            assert balance is not None
+            print(
+                f"\nledger balances: {balance['total'] == 0} (sum={balance['total']})"
+            )
+    except DATABASE_WEATHER as error:
+        print(f"\nno database to summarise from: {_describe(error)}", file=sys.stderr)
 
 
 def parse(argv: list[str] | None = None) -> argparse.Namespace:
@@ -481,6 +636,13 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=float(os.environ.get("JEVE_SIM_DAY_MINUTES") or DEFAULT_DAY_MINUTES),
         help="real minutes per sim-day; 0 runs flat out",
+    )
+    parser.add_argument(
+        "--night-speedup",
+        type=float,
+        default=float(os.environ.get("JEVE_NIGHT_SPEEDUP") or DEFAULT_NIGHT_SPEEDUP),
+        help="how much faster than the open hours dead time passes; the higher "
+        "it is, the smaller the hole a night leaves (JEVE_NIGHT_SPEEDUP)",
     )
     parser.add_argument(
         "--daily-budget",

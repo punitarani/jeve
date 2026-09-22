@@ -263,7 +263,16 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [web, contracts]
+    # After the backend, never beside it (OPS-0003). The zod schema is compiled
+    # into the static export at build time (WEB-0005), so a browser validates
+    # `/state` against whatever the contract said when the web app was built.
+    # Contracts flow backend to web (CORE-0011), so a new required field exists
+    # in the API first and the page learns to expect it second. Shipping the
+    # page first put a frontend that demanded `health.tracing` in front of an
+    # API that did not send it yet, for up to nineteen minutes.
+    #
+    # `deploy-backend` needs [python, docker], so this waits on the suite too.
+    needs: [web, contracts, deploy-backend]
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
