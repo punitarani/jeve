@@ -249,9 +249,15 @@ def test_a_failing_model_is_waited_for_and_leaves_no_trace(
     seen: list[tuple[str, str | None]] = []
     real_status = daemon._status
 
-    def status(c: Connection[DictRow], value: str, error: str | None = None) -> None:
+    def status(
+        c: Connection[DictRow],
+        value: str,
+        error: str | None = None,
+        *,
+        speed: float = 0.0,
+    ) -> None:
         seen.append((value, error))
-        real_status(c, value, error)
+        real_status(c, value, error, speed=speed)
 
     monkeypatch.setattr(daemon, "_status", status)
     _weather(
@@ -315,9 +321,15 @@ def test_a_spent_upstream_budget_waits_and_says_so(
     seen: list[tuple[str, str | None]] = []
     real_status = daemon._status
 
-    def status(c: Connection[DictRow], value: str, error: str | None = None) -> None:
+    def status(
+        c: Connection[DictRow],
+        value: str,
+        error: str | None = None,
+        *,
+        speed: float = 0.0,
+    ) -> None:
         seen.append((value, error))
-        real_status(c, value, error)
+        real_status(c, value, error, speed=speed)
 
     monkeypatch.setattr(daemon, "_status", status)
     _weather(monkeypatch, {3: ProviderBudgetError("/decisions returned 402")})
@@ -378,3 +390,148 @@ def test_a_sleeping_daemon_still_has_a_pulse(conn: Connection[DictRow]) -> None:
         "AS alive FROM sim_meta"
     ).fetchone()
     assert row is not None and row["alive"]
+
+
+# -- SIM-0004: the night is configurable, and the clock says how fast it runs --
+
+
+def test_a_night_is_skipped_at_whatever_speedup_it_is_given() -> None:
+    """The hole a night leaves in the usage graph is `NIGHT_SPEEDUP` wide, and
+    for two sessions the only way to narrow it was to speed the whole world up
+    — which costs money, because the open hours are where the spend is."""
+
+    slow = Pace(day_minutes=24.0, daily_budget_usd=2.0, night_speedup=10.0)
+    fast = Pace(day_minutes=24.0, daily_budget_usd=2.0, night_speedup=60.0)
+
+    assert slow.seconds_per_tick == fast.seconds_per_tick  # open hours unmoved
+    assert fast.night_speed == 6 * slow.night_speed
+    # A weeknight is thirteen sim-hours, so 52 ticks of dead time.
+    assert 52 * slow.seconds_per_tick / slow.night_speedup == pytest.approx(78.0)
+    assert 52 * fast.seconds_per_tick / fast.night_speedup == pytest.approx(13.0)
+
+
+def test_a_night_that_never_ends_is_refused() -> None:
+    for bad in (0.0, -1.0):
+        with pytest.raises(ValueError, match="night speedup must be positive"):
+            Pace(day_minutes=24.0, daily_budget_usd=2.0, night_speedup=bad)
+
+
+def test_the_speedup_reaches_the_sleep_the_daemon_actually_takes(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flag is only worth having if the night is the thing it shortens."""
+
+    naps: list[float] = []
+
+    def sleep(seconds: float, stop: daemon._Stop, c: object = None) -> None:
+        naps.append(seconds)
+
+    monkeypatch.setattr(daemon, "_sleep", sleep)
+    # 18:00 on day 0 to 07:00 on day 1 is the night; stop just inside the
+    # morning so exactly one of them is skipped.
+    run = [
+        "--seed-world",
+        "--until",
+        str(at(1, 7)),
+        "--policy",
+        "rules",
+        "--day-minutes",
+        "24",
+        "--night-speedup",
+        "60",
+    ]
+    assert daemon.main(run) == 0
+
+    # 52 ticks of night at 15s each, sixty times faster than the open hours.
+    assert any(nap == pytest.approx(13.0) for nap in naps), naps
+    # And at sixty it is shorter than a single tick's own pacing sleep: the
+    # night has stopped being the biggest hole in the graph.
+    assert max(naps) <= Pace(24.0, 2.0).seconds_per_tick
+    assert sim_time(conn) == at(1, 7)
+
+
+def test_the_clock_says_how_fast_it_is_running(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`sim_meta.speed` defaulted to 1.0 and nothing ever wrote it, so the API
+    served `1.0` to a page watching a world running sixty times faster."""
+
+    monkeypatch.setattr(daemon, "_sleep", lambda *a, **k: None)
+    assert (
+        daemon.main(
+            [
+                "--seed-world",
+                "--until",
+                str(at(0, 10)),
+                "--policy",
+                "rules",
+                "--day-minutes",
+                "24",
+            ]
+        )
+        == 0
+    )
+    row = conn.execute("SELECT status, speed FROM sim_meta").fetchone()
+    assert row is not None
+    # Paused at the horizon: a stopped world is not a slow one.
+    assert row["status"] == "paused"
+    assert float(row["speed"]) == 0.0
+
+
+def test_a_dropped_connection_is_weather_and_the_world_carries_on(
+    conn: Connection[DictRow],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """SIM-0004. A failover, a restart, a pooler dropping the session: the tick
+    is one transaction, so the world is where the last commit left it and the
+    run that results is the run in which nothing went wrong."""
+
+    horizon = ["--seed-world", "--until", str(at(0, 12)), *FLAT_OUT]
+    assert daemon.main(horizon) == 0
+    untroubled = event_log_hash(conn)
+
+    backends: list[int] = []
+    real_prepare = daemon._prepare
+
+    def prepare(c: Connection[DictRow], args: object, *, first: bool) -> None:
+        backends.append(c.info.backend_pid)
+        real_prepare(c, args, first=first)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(daemon, "_prepare", prepare)
+    monkeypatch.setattr(daemon, "BACKOFF_BASE_S", 0.01)
+
+    real_decide = RulesPolicy.decide
+    calls = {"n": 0}
+
+    def decide(self: RulesPolicy, ctx: object) -> object:
+        calls["n"] += 1
+        # Pull the rug out from under a tick, the way a failover does: from
+        # another session, so the daemon finds out the way it really would.
+        if calls["n"] == 20 and len(backends) == 1:
+            conn.execute("SELECT pg_terminate_backend(%s)", (backends[0],))
+        return real_decide(self, ctx)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(RulesPolicy, "decide", decide)
+    assert daemon.main(horizon) == 0
+
+    assert len(backends) == 2, "the daemon never got a second connection"
+    assert "waiting on the database" in capsys.readouterr().err
+    # The rolled-back tick re-ran, and `--seed-world` was not honoured twice.
+    assert event_log_hash(conn) == untroubled
+
+
+def test_a_refused_start_says_so_and_summarises_nothing(
+    conn: Connection[DictRow], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A run that never began has no world to report on — and no cassette of
+    its own to finalise, which would rewrite a file that is somebody else's."""
+
+    db.take_writer_lock(conn)
+    try:
+        assert daemon.main(["--until-day", "1", *FLAT_OUT]) == 3
+    finally:
+        conn.execute("SELECT pg_advisory_unlock_all()")
+    out = capsys.readouterr()
+    assert "refusing to start" in out.err
+    assert "ran 0 ticks" not in out.out

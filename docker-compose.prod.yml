@@ -68,6 +68,10 @@ services:
       # The cache is the model_calls table; a cassette in a container is an
       # unbounded file on an ephemeral disk (LLM-0007).
       - JEVE_CASSETTE=off
+      # SIM-0004. Dead time costs nothing, so there is no reason to watch it
+      # go by: at 60 a weeknight passes in 13 real seconds, a weekend in 37.
+      - JEVE_SIM_DAY_MINUTES=${JEVE_SIM_DAY_MINUTES:-24}
+      - JEVE_NIGHT_SPEEDUP=${JEVE_NIGHT_SPEEDUP:-60}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       # Guardrails, not the stop — OpenRouter's own cap is. Zero disables the
       # per-process cap, and the lifetime ladder sits far above any real run:
