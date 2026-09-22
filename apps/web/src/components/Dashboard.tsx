@@ -41,7 +41,6 @@ import {
 	TableHeader,
 	TableRow,
 } from "@/components/ui/table";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Timeline } from "./Timeline";
 import { PersonPanel } from "./PersonPanel";
 
@@ -217,8 +216,6 @@ export function Dashboard({
 		if (visible.length === 0) return;
 		void loadOlder();
 	}, [atOldest, more, loading, failed, visible.length, loadOlder]);
-
-	const shownKinds = kinds.map(([kind]) => kind).filter((k) => !hidden.has(k));
 
 	return (
 		<main>
@@ -401,66 +398,6 @@ export function Dashboard({
 						</CardAction>
 					</CardHeader>
 					<CardContent>
-						{kinds.length > 0 && (
-							<ToggleGroup
-								multiple
-								value={shownKinds}
-								onValueChange={(next) =>
-									setHidden(
-										new Set(
-											kinds
-												.map(([kind]) => kind)
-												.filter((kind) => !next.includes(kind)),
-										),
-									)
-								}
-								spacing={6}
-								className="mb-2.5 w-full flex-wrap"
-								data-testid="kind-filter"
-							>
-								{kinds.map(([kind, n]) => (
-									<ToggleGroupItem
-										key={kind}
-										value={kind}
-										size="sm"
-										className="h-5 rounded-full border border-border px-2 text-[11px] font-normal opacity-45 aria-pressed:opacity-100 hover:border-foreground hover:bg-transparent"
-										data-testid={`kind-${kind}`}
-									>
-										<span
-											className="swatch-sm"
-											style={{
-												background: `var(--${EVENT_TONE[kind] ?? "neutral"})`,
-											}}
-										/>
-										{kind} <span className="text-muted-foreground">{n}</span>
-									</ToggleGroupItem>
-								))}
-								{/* Not "clear": the cascade's clear button is found by name.
-								    These two carry testids because Playwright matches an
-								    accessible name as a substring, and "tallybird" contains
-								    "all" — every org row answers to that query too. */}
-								<Button
-									variant="link"
-									size="xs"
-									className="h-5 p-0 text-[11px] text-[var(--mark)]"
-									data-testid="filter-all"
-									onClick={() => setHidden(new Set())}
-								>
-									all
-								</Button>
-								<Button
-									variant="link"
-									size="xs"
-									className="h-5 p-0 text-[11px] text-[var(--mark)]"
-									data-testid="filter-none"
-									onClick={() =>
-										setHidden(new Set(kinds.map(([kind]) => kind)))
-									}
-								>
-									none
-								</Button>
-							</ToggleGroup>
-						)}
 						<Timeline
 							events={visible}
 							selected={selected}
