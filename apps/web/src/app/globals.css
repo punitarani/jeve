@@ -122,6 +122,18 @@ body {
 
 a { color: inherit; }
 
+/* One scrollbar look for the whole app — thin, on-palette, so the page and
+   every .lane/table/ScrollArea scroll the same way instead of flashing the
+   OS's light chrome on the dark theme. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--neutral) transparent;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--neutral); }
+
 .strip {
   display: flex;
   gap: 24px;
@@ -148,6 +160,18 @@ a { color: inherit; }
 
 @media (max-width: 1100px) { .dash-grid { grid-template-columns: 1fr; } }
 
+/* Phone widths: the strip wraps onto several rows and the panels are already
+   stacked — what remains is giving them the viewport's full width. */
+@media (max-width: 640px) {
+  .strip { gap: 4px 14px; padding: 8px 12px; }
+  .dash-grid { padding: 10px 12px; gap: 12px; }
+  .page-pad { padding: 20px; }
+  .section-pad { padding: 0 12px 20px; }
+  /* shadcn cards pad for desktop; halve it rather than squeeze the content */
+  [data-slot="card-header"], [data-slot="card-content"],
+  [data-slot="card-footer"] { padding-inline: 12px; }
+}
+
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .page-pad { padding: 32px; }
@@ -163,7 +187,7 @@ a { color: inherit; }
 
 .ev {
   display: grid;
-  grid-template-columns: 96px 118px 1fr auto;
+  grid-template-columns: 96px 118px minmax(0, 1fr) auto;
   gap: 10px;
   padding: 3px 6px;
   border-radius: 4px;
@@ -185,6 +209,24 @@ a { color: inherit; }
 .ev.dim { opacity: 0.25; }
 
 .depth { color: var(--muted-foreground); font-size: 11px; }
+
+/* Phone widths: four columns of fixed data cannot shrink to 340 px, so the
+   row folds — when/org/seq on line 1, the description on its own line.
+   minmax(0,…) above is the same fix for the desktop grid: a `1fr` track is
+   minmax(auto,1fr), and the summary's min-content is what pushed the whole
+   page into a horizontal scroll. */
+@media (max-width: 640px) {
+  .ev {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "when org depth" "line line line";
+    gap: 2px 10px;
+    padding: 5px 6px;
+  }
+  .ev > :nth-child(1) { grid-area: when; }
+  .ev > :nth-child(2) { grid-area: org; }
+  .ev > :nth-child(3) { grid-area: line; min-width: 0; }
+  .ev > :nth-child(4) { grid-area: depth; justify-self: end; }
+}
 
 /* -- the voxel world (WEB-0002) ------------------------------------------ */
 
@@ -213,7 +255,9 @@ a { color: inherit; }
 .hero-link { pointer-events: auto; color: var(--mark); text-decoration: none; }
 .hero-link:hover { text-decoration: underline; }
 
-.world-page { display: flex; flex-direction: column; height: 100vh; }
+/* dvh tracks the mobile URL bar collapsing, so the explorer stops jumping
+   when the bar hides. vh stays as the fallback for older engines. */
+.world-page { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .world-body { display: flex; flex: 1; min-height: 0; }
 .world-canvas {
   position: relative;
@@ -243,11 +287,11 @@ a { color: inherit; }
 .traits li { padding: 2px 0; }
 .dist { margin: 8px 0 12px; }
 .dist-name { font-size: 12px; margin-bottom: 4px; }
-.dist-row { display: grid; grid-template-columns: 118px 1fr 38px; gap: 8px; align-items: center; font-size: 12px; }
+.dist-row { display: grid; grid-template-columns: 118px minmax(0, 1fr) 38px; gap: 8px; align-items: center; font-size: 12px; }
 .dist-label { color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dist-p { text-align: right; font-variant-numeric: tabular-nums; }
 .chosen { font-size: 12px; color: var(--good); }
-.fields { display: grid; grid-template-columns: 110px 1fr; gap: 4px 10px; margin: 0; font-size: 12px; }
+.fields { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: 12px; }
 .fields dt { color: var(--muted-foreground); }
 .fields dd { margin: 0; }
 @media (max-width: 900px) {

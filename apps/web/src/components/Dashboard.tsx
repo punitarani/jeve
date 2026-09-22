@@ -186,7 +186,9 @@ export function Dashboard({
 						<Table>
 							<TableHeader>
 								<TableRow className="text-muted-foreground hover:bg-transparent">
-									<TableHead className="h-auto px-1.5 py-1 text-xs">Org</TableHead>
+									<TableHead className="h-auto px-1.5 py-1 text-xs whitespace-normal">
+										Org
+									</TableHead>
 									<TableHead className="num h-auto px-1.5 py-1 text-xs">
 										Cash
 									</TableHead>
@@ -205,7 +207,9 @@ export function Dashboard({
 										className="border-b-0 hover:bg-transparent"
 										data-testid={`org-${o.id}`}
 									>
-										<TableCell className="px-1.5 py-1.5">
+										{/* whitespace-normal: the only text column — wrapping the name keeps
+										    all four columns inside a phone-width card. */}
+										<TableCell className="whitespace-normal px-1.5 py-1.5">
 											<span
 												className="swatch-sm"
 												style={{ background: ORG_COLORS[o.id] ?? "#888" }}
