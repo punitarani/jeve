@@ -41,6 +41,13 @@ class Settings(BaseModel):
     cors_origins: tuple[str, ...] = ()
     dialogue_generate: bool = True
 
+    # LLM-0008: observability. The key is the only switch — absent,
+    # `jeve.tracing` never imports the SDK and opens no socket, which is what
+    # keeps CI and a clean clone offline.
+    braintrust_api_key: str | None = None
+    braintrust_project_id: str | None = None
+    """An id, not a name: a project that gets renamed keeps its spans."""
+
     @property
     def spend_path(self) -> Path:
         return self.ops_dir / "spend.json"
@@ -102,4 +109,6 @@ def load_settings(*, ops_dir: Path | None = None) -> Settings:
         ),
         dialogue_generate=os.environ.get("JEVE_DIALOGUE_GENERATE", "on")
         not in ("off", "0", "false"),
+        braintrust_api_key=os.environ.get("BRAINTRUST_API_KEY") or None,
+        braintrust_project_id=os.environ.get("BRAINTRUST_PROJECT_ID") or None,
     )

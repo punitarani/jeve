@@ -77,6 +77,10 @@ services:
       - JEVE_EXPLORE_CEILING_USD=${JEVE_EXPLORE_CEILING_USD:-10000}
       - JEVE_HALT_CEILING_USD=${JEVE_HALT_CEILING_USD:-10000}
       - JEVE_HARD_CEILING_USD=${JEVE_HARD_CEILING_USD:-10000}
+      # LLM-0008: unset key means tracing is simply off, which is the default
+      # here — the daemon behaves exactly as it did before either way.
+      - BRAINTRUST_API_KEY=${BRAINTRUST_API_KEY:-}
+      - BRAINTRUST_PROJECT_ID=${BRAINTRUST_PROJECT_ID:-}
       - PYTHONPATH=/app/src
     # Deliberate halts arrive as exit 0 through the entrypoint, so on-failure
     # restarts crashes only — never a world that asked to stop.
@@ -124,7 +128,9 @@ services:
     # reaches it when an operator needs to.
     restart: unless-stopped
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # postgres:18+ stores the cluster at PGDATA=/var/lib/postgresql/18/docker
+      # (pg_upgrade-style layout) and refuses a mount at the legacy /data path.
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U jeve -d jeve"]
       interval: 2s

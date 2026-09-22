@@ -19,11 +19,16 @@ from fastapi.testclient import TestClient
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-from jeve import db
+from jeve import db, tracing
 from jeve.api.app import app
+from jeve.config import load_settings
 from jeve.core.clock import at
 from jeve.decide import jev_policy
+
+# Captured before `no_network` swaps the name out: these tests want the real
+# thread, because the thread is what they are about.
 from jeve.decide.jev_policy import JevPolicy
+from jeve.decide.jev_policy import _Bridge as Bridge
 from jeve.decide.policy import DecisionContext, RulesPolicy
 from jeve.decide.recorder import (
     Recorder,
@@ -31,9 +36,14 @@ from jeve.decide.recorder import (
     finalize_cassette,
     load_cassette,
 )
+from jeve.llm import Gateway
 from jeve.sim import CASSETTE, advance
 from jeve.world.engine import Engine
 from jeve.world.seed_world import ROOT_SEED, seed
+from tests.conftest import RecordingSink
+from tests.test_gateway import Recorder as WireRecorder
+from tests.test_gateway import _decision_request as wire_request
+from tests.test_gateway import _settings as wire_settings
 from tests.test_world import event_log_hash
 from tests.worldcache import build_once
 
@@ -310,3 +320,76 @@ def test_the_committed_cassette_is_already_final() -> None:
         assert copy.read_bytes() == before
     finally:
         copy.unlink(missing_ok=True)
+
+
+# -- spans (LLM-0008) ------------------------------------------------------
+
+
+def test_a_replayed_batch_is_one_span_that_counts_its_cache(
+    conn: Connection[DictRow], spans: RecordingSink
+) -> None:
+    """A cache hit never reaches the gateway, so it is counted, not spanned.
+
+    `live_calls` is the whole cost story for this project, and a replay's is
+    zero by definition — which is what makes this the cheap check that the
+    counters mean what they say.
+    """
+
+    replay(conn, days=1).close()
+
+    batches = spans.named("decide.batch")
+    assert batches
+    assert not spans.named("jev.decide")
+    for batch in batches:
+        assert batch.type == "task"
+        data = batch.fields["metadata"]
+        assert data["mode"] == "replay"
+        assert data["live_calls"] == 0
+        assert data["cache_hits"] == data["lookups"]
+        assert data["distinct_requests"] <= data["lookups"]
+    assert sum(b.fields["metadata"]["lookups"] for b in batches) > 0
+    assert any(b.fields["metadata"]["kinds"] for b in batches)
+
+
+def test_a_call_is_parented_by_its_batch_across_the_gateway_thread(
+    spend_table: Connection[DictRow],
+    spans: RecordingSink,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The one place an ambient parent cannot reach (LLM-0008).
+
+    `_Bridge` runs the gateway on its own loop on its own thread, and
+    `run_coroutine_threadsafe` copies the context over there — so the batch
+    span open on this thread is not the current span in the gateway. The
+    handle has to be carried. The second half of this test is the proof that
+    it is doing something: with no handle, the same call is a root.
+    """
+
+    wire = WireRecorder()
+
+    def gateway(**_: object) -> Gateway:
+        return Gateway(
+            settings=wire_settings(tmp_path),
+            transport=wire.transport(),
+            backoff_base_s=0.0,
+        )
+
+    monkeypatch.setattr(jev_policy, "Gateway", gateway)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    bridge = Bridge(load_settings())
+    try:
+        with tracing.span("decide.batch", type="task") as batch:
+            handle = batch.export()
+        carried = bridge.fetch([wire_request()], parent=handle)
+        orphaned = bridge.fetch([wire_request()])
+    finally:
+        bridge.close()
+
+    assert not any(isinstance(r, BaseException) for r in carried + orphaned)
+    under_batch = spans.only("decide.batch").children
+    assert [child.name for child in under_batch] == ["jev.decide"]
+    assert under_batch[0].fields["metadata"]["endpoint"] == "decisions"
+
+    roots = [root.name for root in spans.roots]
+    assert roots == ["decide.batch", "jev.decide"]

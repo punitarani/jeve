@@ -10,10 +10,24 @@
 import { useEffect, useState } from "react";
 import type { EventPage, WorldState } from "@jeve/contracts";
 import { fetchLatestEvents, fetchState } from "@/lib/api";
+import { JellyLoader } from "@/components/block/jelly-loader";
+import { Card, CardContent } from "@/components/ui/card";
 import { Dashboard } from "./Dashboard";
 import { WorldHero } from "./WorldHero";
 
 type Loaded = { state: WorldState; page: EventPage };
+
+// Jeve's ramp: panel grey up to the accent purple, matching --line→--mark.
+const JEVE_COLORS = [
+	"#262d36",
+	"#37404d",
+	"#55606e",
+	"#77808f",
+	"#8b96a5",
+	"#7e6bb8",
+	"#a78bfa",
+	"#c4b5fd",
+];
 
 export function Landing() {
 	const [data, setData] = useState<Loaded | null>(null);
@@ -45,7 +59,11 @@ export function Landing() {
 			<main className="page-pad">
 				<h1>jeve</h1>
 				<p className="muted">The API is not reachable.</p>
-				<pre className="panel pre-wrap">{error}</pre>
+				<Card size="sm">
+					<CardContent>
+						<pre className="pre-wrap m-0">{error}</pre>
+					</CardContent>
+				</Card>
 				<p className="muted">
 					Start it with <code>make api</code>, and the world with{" "}
 					<code>make fixture</code>.
@@ -58,7 +76,12 @@ export function Landing() {
 		<>
 			<WorldHero />
 			{data === null ? (
-				<main className="page-pad">
+				<main className="page-pad flex min-h-[30vh] flex-col items-center justify-center">
+					{/* The loader's ellipses are position:absolute — it needs a sized,
+					    relative anchor or they scatter to the page. */}
+					<div className="relative h-28 w-28">
+						<JellyLoader colors={JEVE_COLORS} />
+					</div>
 					<p className="muted">Loading the world…</p>
 				</main>
 			) : (

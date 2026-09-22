@@ -16,17 +16,16 @@ confirmation: "cd py && uv run pytest tests/test_api.py"
 
 ## Context and Problem Statement
 
-The causal timeline opened on a single fetch of the newest 600 events, oldest
-first, inside a 60vh scroll box. Both halves of that were wrong for a reader.
-The clock runs far faster than real time, so nobody watches an event happen —
-they arrive to history, and the thing they came for was at the bottom of six
-hundred rows. And six hundred was the whole world: there was no way to see
-anything that happened before the window, ever.
+The causal timeline opened on one fetch of the newest 600 events, oldest first,
+in a 60vh scroll box. The clock runs far faster than real time, so nobody
+watches an event happen — they arrive to history, and the thing they came for
+was at the bottom of six hundred rows. Six hundred was also the whole world:
+nothing before that window was reachable, ever.
 
-Reversing the list is the easy half. The hard half is that `/events` could only
-walk forwards — `WHERE seq > after` was unconditional (API-0001) — so "the page
-before this one" was not a question the API could be asked. A reader scrolling
-down into the past is asking exactly that question, repeatedly.
+Reversing the list is the easy half. `/events` could only walk forwards —
+`WHERE seq > after` was unconditional (API-0001) — so "the page before this
+one" was not a question the API could be asked, and it is exactly the question
+a reader scrolling into the past asks, repeatedly.
 
 ## Considered Options
 
@@ -50,14 +49,14 @@ whether another page exists in the direction this one travelled. Rows come back
 ascending whichever way the window was taken; the timeline reverses once, where
 it renders.
 
-`more` is answered by selecting `limit + 1` rows and trimming, because the probe
-row is always the one beyond the window in the direction of travel. That keeps
-the client from learning it has reached the start of the log by asking for a
-page that isn't there.
+`more` comes from selecting `limit + 1` rows and trimming — the probe row is
+always the one beyond the window in the direction of travel — so the client
+never learns it has reached the start of the log by asking for a page that is
+not there.
 
-This extends API-0001 rather than replacing it: the seq is still the only cursor
-a client tracks, and still the only concept behind pagination, streaming and
-reconnection. It now just has a direction.
+This extends API-0001 rather than replacing it: the seq is still the only
+cursor a client tracks, and still the one concept behind pagination, streaming
+and reconnection. It just has a direction now.
 
 ### Consequences
 
@@ -66,19 +65,21 @@ reconnection. It now just has a direction.
 - Good: history before the opening window is reachable at all, in 200-row
   steps, and costs nothing until a reader scrolls for it.
 - Neutral: the opening window stays at 600. Shrinking it to a scroll page's 200
-  was tried and reverted — `encounter` is most of the log and the dashboard
-  hides it by default, so 200 raw events is about 50 rows, and in a ten-day
-  fixture the newest outage sits some 900 events back. The e2e suite caught a
-  first paint with no incident on it at all.
+  was tried and reverted — `encounter` is most of the log and is hidden by
+  default, so 200 raw events is about 50 rows, and the newest outage can sit
+  900 events back. The e2e suite caught a first paint with no incident on it.
 - Good: older rows append below the fold, so loading more never moves what the
   reader is looking at — the same instinct as refreshing only the header.
-- Bad: kind and org filtering stays client-side, so a page can arrive and leave
-  nothing new on screen. The lane keeps pulling until it fills or history runs
-  out, which costs sequential requests on a narrow filter. Moving the filters
-  server-side would break the chip counts (deliberately counted over everything
-  loaded) and the cascade that pulls a filtered-out kind back on screen.
-- Bad: the DOM grows without bound as a reader scrolls back. The foreground log
-  is a few thousand events, so the ceiling is reachable and harmless.
-- Reverse it if: the log grows past what a browser will hold, at which point the
-  lane needs windowing and this envelope is what a windowed list would page on
-  anyway.
+- Bad: kind and org filtering stays client-side, so a page can arrive leaving
+  nothing new on screen and the lane pulls again until it fills — sequential
+  requests on a narrow filter. Moving the filters to the server would break the
+  chip counts (deliberately counted over everything loaded) and the cascade
+  that pulls a filtered-out kind back on screen.
+- Bad: that loop has to be told when to give up. An empty lane keeps the
+  sentinel on screen for ever, so `hide all kinds` would walk the whole log to
+  show nothing; it stops when nothing is visible at all, since no page can put
+  a row on screen. An e2e test counts the requests.
+- Bad: the DOM grows unbounded as a reader scrolls back. The foreground log is
+  a few thousand events, so the ceiling is reachable and harmless.
+- Reverse it if: the log outgrows what a browser will hold. The lane then needs
+  windowing, and this envelope is what a windowed list would page on anyway.

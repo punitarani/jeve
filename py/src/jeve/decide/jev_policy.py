@@ -23,6 +23,7 @@ import threading
 from collections.abc import Coroutine, Sequence
 from typing import Any
 
+from jeve import tracing
 from jeve.config import Settings, load_settings
 from jeve.core.seed import derive_rng, path_of
 from jeve.decide import gates
@@ -70,17 +71,25 @@ class _Bridge:
             raise
 
     async def _fetch(
-        self, requests: Sequence[DecisionRequest]
+        self, requests: Sequence[DecisionRequest], parent: str | None
     ) -> list[RawDecision | BaseException]:
         return await asyncio.gather(
-            *(self._gateway.decide_raw(request) for request in requests),
+            *(self._gateway.decide_raw(request, parent=parent) for request in requests),
             return_exceptions=True,
         )
 
     def fetch(
-        self, requests: Sequence[DecisionRequest]
+        self, requests: Sequence[DecisionRequest], *, parent: str | None = None
     ) -> list[RawDecision | BaseException]:
-        return self.run(self._fetch(requests), timeout=CALL_TIMEOUT_S)
+        """`parent` is passed, not inherited.
+
+        `run_coroutine_threadsafe` schedules onto this loop, which copies the
+        context on *this* thread — so the batch span open on the caller's
+        thread is not the current span here, and a call would otherwise land
+        at the root of its own trace (LLM-0008).
+        """
+
+        return self.run(self._fetch(requests, parent), timeout=CALL_TIMEOUT_S)
 
     @property
     def run_spent_usd(self) -> float:
@@ -144,32 +153,56 @@ class JevPolicy:
         return self.decide_many([ctx])[0]
 
     def decide_many(self, contexts: Sequence[DecisionContext]) -> list[Decision]:
-        prepared = [self._prepare(ctx) for ctx in contexts]
-        requests: dict[str, tuple[Prepared, DecisionRequest]] = {}
-        hashes: list[str | None] = []
-        for item in prepared:
-            if not item.needs_model:
-                hashes.append(None)
-                continue
-            request = self._request(item)
-            # Looked up under the build we are pinned to (DECIDE-0004).
-            digest = call_key(self._pin, request.wire_bytes())
-            hashes.append(digest)
-            requests.setdefault(digest, (item, request))
+        # The batch is the root of the trace, not the call: identical
+        # situations in one tick share a request, and only here is the fan-in
+        # — and the cache hit rate, which is the whole cost story — visible
+        # (LLM-0008). A hit never reaches the gateway, so it is counted, not
+        # given a span of its own.
+        with tracing.span(
+            "decide.batch", type="task", metadata={"mode": self._recorder.mode}
+        ) as span:
+            prepared = [self._prepare(ctx) for ctx in contexts]
+            requests: dict[str, tuple[Prepared, DecisionRequest]] = {}
+            hashes: list[str | None] = []
+            for item in prepared:
+                if not item.needs_model:
+                    hashes.append(None)
+                    continue
+                request = self._request(item)
+                # Looked up under the build we are pinned to (DECIDE-0004).
+                digest = call_key(self._pin, request.wire_bytes())
+                hashes.append(digest)
+                requests.setdefault(digest, (item, request))
 
-        stored = self._recorder.lookup(requests)
-        for item, maybe in zip(prepared, hashes, strict=True):
-            if maybe is not None:
-                self._recorder.note(item.kind, hit=maybe in stored)
+            stored = self._recorder.lookup(requests)
+            lookups = 0
+            hits = 0
+            for item, maybe in zip(prepared, hashes, strict=True):
+                if maybe is not None:
+                    hit = maybe in stored
+                    lookups += 1
+                    hits += 1 if hit else 0
+                    self._recorder.note(item.kind, hit=hit)
 
-        missing = [digest for digest in requests if digest not in stored]
-        if missing:
-            stored |= self._fill(missing, requests)
+            missing = [digest for digest in requests if digest not in stored]
+            span.log(
+                metadata={
+                    "kinds": sorted({item.kind for item in prepared}),
+                    "contexts": len(contexts),
+                    "lookups": lookups,
+                    "cache_hits": hits,
+                    "distinct_requests": len(requests),
+                    "live_calls": len(missing),
+                }
+            )
+            if missing:
+                # Exported on this thread, because the gateway is not on it.
+                stored |= self._fill(missing, requests, parent=span.export() or None)
 
-        return [
-            self._decide_one(ctx, item, stored[maybe] if maybe else None)
-            for ctx, item, maybe in zip(contexts, prepared, hashes, strict=True)
-        ]
+            return [
+                self._decide_one(ctx, item, stored[maybe] if maybe else None)
+                for ctx, item, maybe in zip(contexts, prepared, hashes, strict=True)
+            ]
 
     def _prepare(self, ctx: DecisionContext) -> Prepared:
         if ctx.kind not in QUESTION_SETS:
@@ -192,6 +225,8 @@ class JevPolicy:
         self,
         missing: list[str],
         requests: dict[str, tuple[Prepared, DecisionRequest]],
+        *,
+        parent: str | None = None,
     ) -> dict[str, StoredCall]:
         if self._recorder.mode == "replay":
             kinds = sorted({requests[digest][0].kind for digest in missing})
@@ -202,7 +237,9 @@ class JevPolicy:
                 "with `LIVE=1 make e2e`."
             )
 
-        results = self._live().fetch([requests[digest][1] for digest in missing])
+        results = self._live().fetch(
+            [requests[digest][1] for digest in missing], parent=parent
+        )
         failure: BaseException | None = None
         drifted: set[str] = set()
         for digest, result in zip(missing, results, strict=True):

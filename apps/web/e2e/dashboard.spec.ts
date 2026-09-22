@@ -98,8 +98,10 @@ test("a person's decisions show what was chosen and the draw behind it", async (
 }) => {
   const select = page.getByTestId("person-select");
   await expect(select).toBeVisible();
+  await select.click();
 
-  const options = await select.locator("option").allTextContents();
+  // Base UI renders the select's items as a listbox overlay, not <option>s.
+  const options = await page.getByRole("option").allTextContents();
   expect(options.length).toBe(24);
 
   // Pick someone who actually decides in the flows that are wired up.
@@ -107,7 +109,7 @@ test("a person's decisions show what was chosen and the draw behind it", async (
     (o) => o.includes("office_manager") || o.includes("support"),
   );
   expect(decider, "no role in the fixture makes decisions").toBeTruthy();
-  await select.selectOption({ label: decider! });
+  await page.getByRole("option", { name: decider! }).click();
 
   const rows = page.getByTestId("decision-row");
   await expect(rows.first()).toBeVisible({ timeout: 10_000 });
@@ -175,6 +177,36 @@ test("encounters start filtered out, and the chip puts them back", async ({
     .toBe(0);
 });
 
+test("the kinds menu toggles kinds without closing on each pick", async ({
+  page,
+}) => {
+  // The dropdown is the same filter the chips drive, one control instead of
+  // one chip per kind. The menu must stay open between picks.
+  await page.getByRole("button", { name: "event kinds" }).click();
+  const item = page.getByTestId("menu-kind-payment.made");
+  await expect(item).toBeVisible();
+  await expect(item).toHaveAttribute("aria-checked", "true");
+
+  const before = await page.locator(".ev").count();
+  await item.click();
+  await expect(item).toHaveAttribute("aria-checked", "false");
+  await expect(item).toBeVisible(); // still open
+  await expect
+    .poll(async () => page.locator(".ev").count(), { timeout: 10_000 })
+    .toBeLessThan(before);
+
+  // "show all kinds" resets the filter and leaves the menu open.
+  await page.getByTestId("menu-kind-payment.made").click();
+  await page.getByTestId("menu-filter-none").click();
+  await expect(page.locator(".ev")).toHaveCount(0, { timeout: 10_000 });
+  await page.getByTestId("menu-filter-all").click();
+  await expect
+    .poll(async () => page.locator(".ev").count(), { timeout: 10_000 })
+    .toBeGreaterThan(0);
+  await page.keyboard.press("Escape");
+  await expect(item).not.toBeVisible();
+});
+
 test("a filtered-out kind still shows inside a cascade", async ({ page }) => {
   // An encounter is how an outage reaches a ticket (WORLD-0003). Hiding the
   // kind must not put a hole in the chain this dashboard exists to show.
@@ -210,6 +242,26 @@ test("rows carry a readable line, not just the kind name", async ({ page }) => {
 /** The seq of every row on screen, top to bottom. */
 const seqs = (page: Page) =>
   page.locator(".ev").evaluateAll((els) => els.map((el) => Number(el.dataset.seq)));
+
+test("hiding every kind does not page the whole log", async ({ page }) => {
+  // An empty lane keeps the foot of it on screen, and the scrollback loop
+  // re-arms whenever the foot is visible. Without a guard, `hide all kinds`
+  // walks the entire event table 200 rows at a time to show nothing.
+  let pages = 0;
+  await page.route("**/events?before=*", (route) => {
+    pages += 1;
+    return route.continue();
+  });
+
+  await page.getByRole("button", { name: "event kinds" }).click();
+  await page.getByTestId("menu-filter-none").click();
+  await expect(page.locator(".ev")).toHaveCount(0, { timeout: 10_000 });
+  await page.keyboard.press("Escape");
+
+  // Give the loop every chance to run away before asserting it did not.
+  await page.waitForTimeout(2_000);
+  expect(pages, "an empty lane must not fetch history it cannot show").toBe(0);
+});
 
 test("the timeline opens on the newest event", async ({ page }) => {
   // The clock runs far faster than real time, so a reader arrives to history:

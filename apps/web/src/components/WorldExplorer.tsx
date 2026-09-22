@@ -12,9 +12,20 @@ import {
 import { mountWorld, type WorldStatus } from "@jeve/world";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import type { ZodType } from "zod";
 
 import { API, money } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+	Card,
+	CardContent,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 const MOODS = ["stressed", "flat", "content", "upbeat"];
 
@@ -74,24 +85,35 @@ export function WorldExplorer() {
 					data-testid="world-view"
 				/>
 				<aside className="world-side">
-					{agentId !== null ? (
-						<AgentPanel id={agentId} tick={status?.tick ?? 0} />
-					) : orgId !== null ? (
-						<OrgPanel id={orgId} tick={status?.tick ?? 0} />
-					) : (
-						<div className="panel" data-testid="world-hint">
-							<h3>Nobody selected</h3>
-							<p className="muted">
-								Click a person to see what they last decided and the
-								distribution Jev returned for it. Click a building for the
-								firm&apos;s books.
-							</p>
-							<p className="muted">
-								Grey figures are customers: real demand, drawn as a sampled
-								crowd. They are flows, not people with positions.
-							</p>
+					<ScrollArea className="h-full">
+						<div className="p-3">
+							{agentId !== null ? (
+								<AgentPanel id={agentId} tick={status?.tick ?? 0} />
+							) : orgId !== null ? (
+								<OrgPanel id={orgId} tick={status?.tick ?? 0} />
+							) : (
+								<Card size="sm" data-testid="world-hint">
+									<CardHeader>
+										<CardTitle className="text-sm font-normal normal-case tracking-normal">
+											Nobody selected
+										</CardTitle>
+									</CardHeader>
+									<CardContent className="text-muted-foreground">
+										<p>
+											Click a person to see what they last decided and the
+											distribution Jev returned for it. Click a building for
+											the firm&apos;s books.
+										</p>
+										<p>
+											Grey figures are customers: real demand, drawn as a
+											sampled crowd. They are flows, not people with
+											positions.
+										</p>
+									</CardContent>
+								</Card>
+							)}
 						</div>
-					)}
+					</ScrollArea>
 				</aside>
 			</div>
 		</main>
@@ -148,12 +170,10 @@ function Bars({
 					<span className="dist-label">
 						{name === "mood" ? MOODS[Number(option)] ?? option : option}
 					</span>
-					<span className="dist-track">
-						<span
-							className="dist-fill"
-							style={{ width: `${Math.round(p * 100)}%` }}
-						/>
-					</span>
+					<Progress
+						value={Math.round(p * 100)}
+						className="w-full [&_[data-slot=progress-track]]:h-2 [&_[data-slot=progress-track]]:rounded"
+					/>
 					<span className="dist-p">{p.toFixed(2)}</span>
 				</div>
 			))}
@@ -169,96 +189,107 @@ function AgentPanel({ id, tick }: { id: string; tick: number }) {
 	);
 	if (error !== null)
 		return (
-			<div className="panel bad">
-				Could not load {id}: {error}
-			</div>
+			<Card size="sm" className="text-destructive">
+				<CardContent>
+					Could not load {id}: {error}
+				</CardContent>
+			</Card>
 		);
-	if (data === null) return <div className="panel muted">…</div>;
+	if (data === null)
+		return (
+			<Card size="sm">
+				<CardContent className="text-muted-foreground">…</CardContent>
+			</Card>
+		);
 	const d = data.last_decision;
 	const color = ORG_PALETTE[data.org_id]?.body ?? "#999";
 	return (
-		<div className="panel" data-testid="agent-panel" data-person={data.id}>
-			<h3>
-				<span className="swatch" style={{ background: color }} /> {data.name}
-			</h3>
-			<p className="muted">
-				{data.role.replaceAll("_", " ")} · {data.org_name} ·{" "}
-				{data.zone.replaceAll("_", " ")} · {MOODS[data.mood] ?? "—"}
-			</p>
-			<h4>Temperament, as Jev is told it</h4>
-			<ul className="traits">
-				{Object.entries(data.trait_words).map(([trait, words]) => (
-					<li key={trait}>
-						<span className="muted">
-							{trait} {data.traits[trait]?.toFixed(2)}
-						</span>{" "}
-						{words}
-					</li>
-				))}
-			</ul>
-			<h4>Last decision</h4>
-			{d === null ? (
-				<p className="muted">Has not decided anything yet.</p>
-			) : (
-				<>
-					<p>
-						<span className="pill" data-testid="decided-by">
-							{d.source}
-						</span>{" "}
-						<code>{d.question_set}</code>{" "}
-						<span className="muted">{d.label}</span>
-					</p>
-					{d.model !== null && <p className="muted">{d.model}</p>}
-					{Object.keys(d.distributions).length === 0 ? (
-						<p className="muted">
-							Settled by a code rule; no model was asked, so there is no
-							distribution to show.
+		<Card size="sm" data-testid="agent-panel" data-person={data.id}>
+			<CardHeader>
+				<CardTitle className="text-[15px] font-semibold">
+					<span className="swatch" style={{ background: color }} /> {data.name}
+				</CardTitle>
+				<p className="muted fineprint">
+					{data.role.replaceAll("_", " ")} · {data.org_name} ·{" "}
+					{data.zone.replaceAll("_", " ")} · {MOODS[data.mood] ?? "—"}
+				</p>
+			</CardHeader>
+			<CardContent>
+				<h4>Temperament, as Jev is told it</h4>
+				<ul className="traits">
+					{Object.entries(data.trait_words).map(([trait, words]) => (
+						<li key={trait}>
+							<span className="muted">
+								{trait} {data.traits[trait]?.toFixed(2)}
+							</span>{" "}
+							{words}
+						</li>
+					))}
+				</ul>
+				<h4>Last decision</h4>
+				{d === null ? (
+					<p className="muted">Has not decided anything yet.</p>
+				) : (
+					<>
+						<p>
+							<Badge variant="outline" data-testid="decided-by">
+								{d.source}
+							</Badge>{" "}
+							<code>{d.question_set}</code>{" "}
+							<span className="muted">{d.label}</span>
 						</p>
-					) : (
-						Object.entries(d.distributions).map(([name, dist]) => (
-							<Bars key={name} name={name} dist={dist} draw={d.draws[name]} />
-						))
-					)}
-					<p className="chosen">
-						→{" "}
-						{Object.entries(d.chosen)
-							.filter(([, v]) => v !== null && v !== false)
-							.map(([k, v]) => `${k}=${String(v)}`)
-							.join(", ")}
-					</p>
-				</>
-			)}
-			<h4>Last encounter</h4>
-			{data.last_encounter === null ? (
-				<p className="muted">Has not met anyone yet.</p>
-			) : (
-				<dl className="fields" data-testid="last-encounter">
-					<dt>with</dt>
-					<dd>{data.last_encounter.with_name}</dd>
-					<dt>where</dt>
-					<dd>{data.last_encounter.zone.replaceAll("_", " ")}</dd>
-					<dt>about</dt>
-					<dd>{data.last_encounter.topic.replaceAll("_", " ")}</dd>
-					<dt>when</dt>
-					<dd>{data.last_encounter.label}</dd>
-					<dt>started by</dt>
-					<dd>
-						{data.last_encounter.initiated
-							? data.name
-							: data.last_encounter.with_name}
-					</dd>
-					<dt>led to</dt>
-					<dd>
-						{data.last_encounter.led_to.length > 0
-							? data.last_encounter.led_to.join(", ")
-							: "nothing"}
-					</dd>
-				</dl>
-			)}
-			{data.last_encounter !== null && (
-				<Imagined key={data.last_encounter.seq} seq={data.last_encounter.seq} />
-			)}
-		</div>
+						{d.model !== null && <p className="muted">{d.model}</p>}
+						{Object.keys(d.distributions).length === 0 ? (
+							<p className="muted">
+								Settled by a code rule; no model was asked, so there is no
+								distribution to show.
+							</p>
+						) : (
+							Object.entries(d.distributions).map(([name, dist]) => (
+								<Bars key={name} name={name} dist={dist} draw={d.draws[name]} />
+							))
+						)}
+						<p className="chosen">
+							→{" "}
+							{Object.entries(d.chosen)
+								.filter(([, v]) => v !== null && v !== false)
+								.map(([k, v]) => `${k}=${String(v)}`)
+								.join(", ")}
+						</p>
+					</>
+				)}
+				<h4>Last encounter</h4>
+				{data.last_encounter === null ? (
+					<p className="muted">Has not met anyone yet.</p>
+				) : (
+					<dl className="fields" data-testid="last-encounter">
+						<dt>with</dt>
+						<dd>{data.last_encounter.with_name}</dd>
+						<dt>where</dt>
+						<dd>{data.last_encounter.zone.replaceAll("_", " ")}</dd>
+						<dt>about</dt>
+						<dd>{data.last_encounter.topic.replaceAll("_", " ")}</dd>
+						<dt>when</dt>
+						<dd>{data.last_encounter.label}</dd>
+						<dt>started by</dt>
+						<dd>
+							{data.last_encounter.initiated
+								? data.name
+								: data.last_encounter.with_name}
+						</dd>
+						<dt>led to</dt>
+						<dd>
+							{data.last_encounter.led_to.length > 0
+								? data.last_encounter.led_to.join(", ")
+								: "nothing"}
+						</dd>
+					</dl>
+				)}
+				{data.last_encounter !== null && (
+					<Imagined key={data.last_encounter.seq} seq={data.last_encounter.seq} />
+				)}
+			</CardContent>
+		</Card>
 	);
 }
 
@@ -296,21 +327,25 @@ function Imagined({ seq }: { seq: number }) {
 			.catch((e: unknown) => {
 				setError(String(e));
 				setState("idle");
+				toast.error("Could not render dialogue.", {
+					description: String(e),
+				});
 			});
 	};
 
 	if (state === "idle" || state === "asking") {
 		return (
 			<p>
-				<button
-					type="button"
-					className="link-button"
+				<Button
+					variant="outline"
+					size="xs"
 					onClick={ask}
 					disabled={state === "asking"}
 					data-testid="imagine"
+					className="text-[var(--mark)]"
 				>
 					{state === "asking" ? "asking a model…" : "imagine what was said"}
-				</button>
+				</Button>
 				{error !== null && <span className="bad"> {error}</span>}
 			</p>
 		);
@@ -348,36 +383,47 @@ function OrgPanel({ id, tick }: { id: string; tick: number }) {
 	);
 	if (error !== null)
 		return (
-			<div className="panel bad">
-				Could not load {id}: {error}
-			</div>
+			<Card size="sm" className="text-destructive">
+				<CardContent>
+					Could not load {id}: {error}
+				</CardContent>
+			</Card>
 		);
-	if (data === null) return <div className="panel muted">…</div>;
+	if (data === null)
+		return (
+			<Card size="sm">
+				<CardContent className="text-muted-foreground">…</CardContent>
+			</Card>
+		);
 	const color = ORG_PALETTE[data.id]?.body ?? "#999";
 	return (
-		<div className="panel" data-testid="org-panel" data-org={data.id}>
-			<h3>
-				<span className="swatch" style={{ background: color }} /> {data.name}
-			</h3>
-			<p className="muted">{data.kind}</p>
-			<dl className="fields">
-				<dt>cash</dt>
-				<dd data-testid="org-cash">{money(data.cash_cents)}</dd>
-				<dt>owed to them</dt>
-				<dd>{money(data.receivable_cents)}</dd>
-				<dt>staff in</dt>
-				<dd>
-					{data.staff_present} of {data.staff_total}
-				</dd>
-				<dt>open tickets</dt>
-				<dd>{data.open_tickets}</dd>
-				<dt>unpaid invoices</dt>
-				<dd>{data.unpaid_invoices}</dd>
-				<dt>going on</dt>
-				<dd>
-					{data.active.length > 0 ? data.active.join("; ") : "nothing unusual"}
-				</dd>
-			</dl>
-		</div>
+		<Card size="sm" data-testid="org-panel" data-org={data.id}>
+			<CardHeader>
+				<CardTitle className="text-[15px] font-semibold">
+					<span className="swatch" style={{ background: color }} /> {data.name}
+				</CardTitle>
+				<p className="muted fineprint">{data.kind}</p>
+			</CardHeader>
+			<CardContent>
+				<dl className="fields">
+					<dt>cash</dt>
+					<dd data-testid="org-cash">{money(data.cash_cents)}</dd>
+					<dt>owed to them</dt>
+					<dd>{money(data.receivable_cents)}</dd>
+					<dt>staff in</dt>
+					<dd>
+						{data.staff_present} of {data.staff_total}
+					</dd>
+					<dt>open tickets</dt>
+					<dd>{data.open_tickets}</dd>
+					<dt>unpaid invoices</dt>
+					<dd>{data.unpaid_invoices}</dd>
+					<dt>going on</dt>
+					<dd>
+						{data.active.length > 0 ? data.active.join("; ") : "nothing unusual"}
+					</dd>
+				</dl>
+			</CardContent>
+		</Card>
 	);
 }
