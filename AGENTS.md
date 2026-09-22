@@ -341,6 +341,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### MEM-0002: Beliefs are four typed slots revised by score questions inside existing requests; relationships decay in SQL
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/memory/**`, `py/migrations/0012_beliefs.sql`, `py/tests/test_beliefs.py`  
+**Tags**: memory, beliefs, diffusion, churn, agent-decided
+
+A belief is a level in one of four slots — `vendor_reliability`, `employer_strain`, `counterparty_trust`, `knows_of` — held by a person about an entity, revised only by a `score` asked inside `agent.tick`, `ticket.confirm` or `chase.invoice`, and read back as the words of its level into the next question it bears on; a relationship is a strength of one to three that a conversation raises and a nightly SQL job lowers.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### OPS-0001: deployment topology — fly process groups, workers static assets, doppler secrets
 
 **Status**: accepted (2026-09-21)  
@@ -473,6 +485,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### WEB-0007: Storeys are per-floor instanced groups; the level cut is visibility; camera and haze derive from the map
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `packages/world/src/render.ts`, `packages/world/src/voxels.ts`, `packages/world/src/model.ts`, `packages/world/src/index.ts`, `apps/web/src/components/WorldExplorer.tsx`, `apps/web/e2e/a-world.spec.ts`  
+**Tags**: three.js, rendering, storeys, performance, agent-decided
+
+Every static voxel carries the storey it belongs to, the renderer builds one lit and one glowing instanced mesh per floor, and the level cut is model state that the renderer mirrors as mesh visibility and the model applies to people: someone above the cut is neither drawn nor picked.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### WORLD-0001: Build and tune the world on rules before wiring in any model
 
 **Status**: accepted (2026-09-20)  
@@ -552,6 +576,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: space, cadence, cost, agent-decided
 
 A person is asked `agent.tick` when they arrive, when the stay they chose runs out, when a module their firm runs on goes down, when someone from the vendor of a module they know is down walks onto their floor, and at noon; how long a stay lasts is a band of ticks drawn in code about the person and the moment, never a question.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0008: Archetype flows — rent, supplies and stock, credit lines, and a second vendor
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/world/flows.py`, `py/migrations/0011_archetypes.sql`, `py/tests/test_flows.py`  
+**Tags**: flows, ledger, economy, agent-decided
+
+Rent is a fact, supplies are a judgement, credit is a judgement on each side and a rule to repay, and every one of them runs on the ledger through the same `bill`, `post` and daily `payment.timing` as before; a sale takes a unit of stock, and a second vendor's outage reaches its own customers' tills.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

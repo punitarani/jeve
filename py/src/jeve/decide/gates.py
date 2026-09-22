@@ -73,6 +73,9 @@ def _catering_order(ctx: DecisionContext) -> Settled | None:
 
 
 def _retail_purchase(ctx: DecisionContext) -> Settled | None:
+    if ctx.facts.get("no_stock"):
+        # Nothing on the shelf to buy: a fact about the shop, not a choice.
+        return {"buy": False, "reason": "no_stock"}
     if not ctx.facts.get("can_afford", True):
         return {"buy": False, "reason": "no_money"}
     if _number(ctx.facts.get("queue_length")) <= 0 and not ctx.facts.get("till_down"):
@@ -84,6 +87,19 @@ def _retail_purchase(ctx: DecisionContext) -> Settled | None:
     return None
 
 
+def _supply_order(ctx: DecisionContext) -> Settled | None:
+    if not ctx.facts.get("can_afford", True):
+        return {"order": "none"}
+    return None
+
+
+def _credit_approve(ctx: DecisionContext) -> Settled | None:
+    if not ctx.facts.get("bank_can_lend", True):
+        # The bank cannot lend what it does not have. Never a judgement.
+        return {"decision": "decline", "reason": "bank_short"}
+    return None
+
+
 GATES: dict[str, Gate] = {
     "file.ticket": _file_ticket,
     "payment.timing": _payment_timing,
@@ -91,6 +107,8 @@ GATES: dict[str, Gate] = {
     "payroll.release": _payroll_release,
     "catering.order": _catering_order,
     "retail.purchase": _retail_purchase,
+    "supply.order": _supply_order,
+    "credit.approve": _credit_approve,
 }
 
 

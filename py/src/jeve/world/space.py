@@ -46,6 +46,7 @@ from jeve.core.orgs import BY_ID, ORGS, module_owner, social_places, staff_ids, 
 from jeve.core.seed import derive_rng, derive_seed
 from jeve.decide.policy import DecisionContext
 from jeve.decide.questions import candidates
+from jeve.memory import beliefs
 from jeve.world.map import HOME, PLAZA, Node, Tile, entry_for, find_path, spot_for, town
 
 if TYPE_CHECKING:
@@ -269,17 +270,35 @@ def _known_outage(agent: Agent, down: list[str]) -> str | None:
     return known[0] if known else None
 
 
-def _facts(agent: Agent, others: list[Agent], outage: str | None) -> dict[str, Any]:
+def _facts(
+    engine: Engine,
+    report: TickReport,
+    agent: Agent,
+    others: list[Agent],
+    outage: str | None,
+    strained: dict[str, bool],
+) -> dict[str, Any]:
     vendor = module_owner(outage) if outage else None
     org = BY_ID[agent.org]
     present: list[dict[str, object]] = [
         {"id": o.id, "org": o.org, "role": o.role} for o in others
     ]
     # Everyone here is counted for the model; only a few are offered by name
-    # of a label (DECIDE-0005). The mapping from label to person is here, in
-    # facts, and never in the state that is sent.
-    offered = candidates(present, own_org=agent.org, vendor=vendor)
+    # of a label (DECIDE-0005), the people they know best sooner (MEM-0002).
+    # The mapping from label to person is here, in facts, never in the state.
+    known = beliefs.strengths(engine.conn, agent.id)
+    offered = candidates(present, own_org=agent.org, vendor=vendor, strengths=known)
+    incident = _open_incident(engine, [outage]) if outage else None
     return {
+        "outage_hours": (
+            (report.sim_time - int(incident["started"])) // HOUR if incident else 0
+        ),
+        "strained": strained.get(agent.org, False),
+        "warned": strained.get(f"{agent.org}:warned", False),
+        "employer_strain": beliefs.get(
+            engine.conn, agent.id, "employer_strain", agent.org
+        ),
+        "strengths": known,
         "org": agent.org,
         "team": agent.team,
         "here": agent.zone,
@@ -396,6 +415,7 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
         by_place.setdefault((agent.zone, agent.floor), []).append(agent)
 
     deciding = _wakes(engine, report, now, present, arrived, down)
+    strained = _strained(engine, report)
     contexts: list[DecisionContext] = []
     for agent in deciding:
         # Colleagues at their own desks are always together; that is not an
@@ -414,7 +434,7 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
                 role=agent.role,
                 sim_time=report.sim_time,
                 kind="agent.tick",
-                facts=_facts(agent, others, outage),
+                facts=_facts(engine, report, agent, others, outage, strained),
                 traits=agent.traits,
             )
         )
@@ -429,6 +449,7 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
     closing = SimTime(report.sim_time + TICK)
     decided = {agent.id for agent in deciding}
     for agent, decision in zip(deciding, made, strict=True):
+        _revise(engine, report, agent, decision, down)
         wanted_zone = str(decision.chosen.get("next_zone", agent.zone))
         wanted_floor = int(decision.chosen.get("next_floor", agent.floor))
         if wanted_zone not in (PLAZA, agent.org, *BY_ID) or wanted_zone == HOME:
@@ -464,6 +485,48 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
         "AND path <> '[]'::jsonb",
         (report.tick_seq,),
     )
+
+
+def _strained(engine: Engine, report: TickReport) -> dict[str, bool]:
+    """Which firms held payroll or warned of insolvency this past week: what
+    their staff have seen, and so what their view of the employer is about."""
+
+    out: dict[str, bool] = {}
+    for row in engine.conn.execute(
+        "SELECT DISTINCT org_id, kind FROM events WHERE kind IN "
+        "('payroll.held', 'insolvency.warning') AND sim_time > %s "
+        "AND org_id IS NOT NULL",
+        (report.sim_time - 7 * 86400,),
+    ).fetchall():
+        out[str(row["org_id"])] = True
+        if row["kind"] == "insolvency.warning":
+            out[f"{row['org_id']}:warned"] = True
+    return out
+
+
+def _revise(
+    engine: Engine, report: TickReport, agent: Agent, decision: Made, down: list[str]
+) -> None:
+    """Whatever the decision said about the world, written down as a belief
+    (MEM-0002): about the vendor whose product is down, about their employer."""
+
+    level = decision.chosen.get("vendor_reliability")
+    outage = _known_outage(agent, down)
+    if level is not None and outage is not None:
+        beliefs.set_level(
+            engine.conn,
+            agent.id,
+            "vendor_reliability",
+            module_owner(outage),
+            int(str(level)),
+            report.sim_time,
+        )
+    strain = decision.chosen.get("employer_strain")
+    if strain is not None:
+        beliefs.set_level(
+            engine.conn, agent.id, "employer_strain", agent.org, int(str(strain)),
+            report.sim_time,
+        )  # fmt: skip
 
 
 def _encounters(
@@ -513,6 +576,17 @@ def _encounters(
                 "decided_by": decision.source,
             },
         )
+        # Two people who talked know each other a little better, and what
+        # one knew the other now knows: an outage they discussed, a price
+        # rise that came up over money (MEM-0002). Diffusion is a copy.
+        beliefs.bump_relationship(engine.conn, agent.id, other.id, report.sim_time)
+        if topic == "the_outage" and incident is not None:
+            fact = f"outage:{incident['id']}"
+            beliefs.learn(engine.conn, agent.id, fact, report.sim_time)
+            beliefs.learn(engine.conn, other.id, fact, report.sim_time)
+        elif topic == "money":
+            for fact in _facts_known(engine, agent.id, "price_rise:"):
+                beliefs.learn(engine.conn, other.id, fact, report.sim_time)
         if (
             decision.chosen.get("raise_outage")
             and outage is not None
@@ -521,12 +595,24 @@ def _encounters(
             _escalate(engine, report, agent, other, outage, seq, decision)
 
 
+def _facts_known(engine: Engine, person_id: str, prefix: str) -> list[str]:
+    return [
+        str(row["entity_id"])
+        for row in engine.conn.execute(
+            "SELECT entity_id FROM beliefs WHERE person_id = %s AND slot = 'knows_of' "
+            "AND entity_id LIKE %s",
+            (person_id, prefix + "%"),
+        ).fetchall()
+    ]
+
+
 def _open_incident(engine: Engine, down: list[str]) -> dict[str, Any] | None:
     if not down:
         return None
     row = engine.conn.execute(
-        "SELECT id, module_id, cause_event_seq, escalated_sim FROM incidents "
-        "WHERE ended_sim IS NULL AND module_id = ANY(%s) ORDER BY id LIMIT 1",
+        "SELECT id, module_id, cause_event_seq, escalated_sim, started_sim "
+        "FROM incidents WHERE ended_sim IS NULL AND module_id = ANY(%s) "
+        "ORDER BY id LIMIT 1",
         (down,),
     ).fetchone()
     if row is None:
@@ -536,6 +622,7 @@ def _open_incident(engine: Engine, down: list[str]) -> dict[str, Any] | None:
         "module": str(row["module_id"]),
         "cause": int(row["cause_event_seq"]) if row["cause_event_seq"] else None,
         "escalated": row["escalated_sim"] is not None,
+        "started": int(row["started_sim"]),
     }
 
 

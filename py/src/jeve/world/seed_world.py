@@ -26,7 +26,7 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve import db
-from jeve.core.clock import DAY, at
+from jeve.core.clock import DAY, DISTRICT_CLOSE, at
 from jeve.core.names import person_name
 from jeve.core.orgs import (
     MODULES,
@@ -38,6 +38,7 @@ from jeve.core.orgs import (
     vendors,
 )
 from jeve.core.seed import derive_rng
+from jeve.world.flows import daily_demand
 
 ROOT_SEED = 20260920
 
@@ -144,7 +145,8 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             TRUNCATE sim_meta, scheduled, events, orgs, teams, persons, accounts,
                      ledger_txns, ledger_entries, modules, incidents,
                      subscriptions, tickets, invoices, payments, retail_sales,
-                     decisions, positions, outage_notices
+                     decisions, positions, outage_notices, loans, beliefs,
+                     relationships
                      RESTART IDENTITY CASCADE
             """
         )
@@ -452,6 +454,32 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             for org in ORGS
             if org.caterer is not None
         ]
+        # Rent goes out on the first working day of the month; supplies are
+        # ordered on Monday mornings; the supplier puts its prices up in the
+        # second week, which is the story's second shock (WORLD-0008).
+        landlords = sorted({org.landlord for org in ORGS if org.landlord is not None})
+        schedule += [
+            (at(1, 9, 30), 0, "rent.run", landlord, '{"month": 0}')
+            for landlord in landlords
+        ]
+        schedule += [
+            (at(0, 9, 30), 0, "supply.order", org.id, "{}")
+            for org in ORGS
+            if org.supplier is not None
+        ]
+        suppliers = sorted({org.supplier for org in ORGS if org.supplier is not None})
+        schedule += [
+            (at(9, 9), 0, "supply.reprice", supplier, "{}") for supplier in suppliers
+        ]
+        # Every night, what fades fades (MEM-0002).
+        schedule.append((at(0) + DISTRICT_CLOSE, 0, "day.end", None, "{}"))
+        # A good week's stock on the shelves to begin with.
+        for org in ORGS:
+            if org.supplier is not None:
+                conn.execute(
+                    "UPDATE orgs SET stock_units = %s WHERE id = %s",
+                    (9 * daily_demand(org.id), org.id),
+                )
         db.executemany(
             conn,
             "INSERT INTO scheduled (due_sim_time, ord, kind, subject_id, payload) "

@@ -828,6 +828,18 @@ def social_places() -> tuple[OrgSpec, ...]:
     return tuple(org for org in ORGS if org.social)
 
 
+def bank() -> str | None:
+    """The one firm that lends: the district's bank, if the roster has one."""
+
+    return next((org.id for org in ORGS if org.archetype == "bank"), None)
+
+
+def buyers_of(supplier_id: str) -> tuple[OrgSpec, ...]:
+    """Who orders their stock from a supplier."""
+
+    return tuple(org for org in ORGS if org.supplier == supplier_id)
+
+
 def retailers() -> tuple[OrgSpec, ...]:
     return tuple(org for org in ORGS if org.retail is not None)
 

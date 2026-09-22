@@ -36,6 +36,7 @@ from jeve.core.orgs import (
     BY_ID,
     MODULES,
     ORGS,
+    bank,
     module_owner,
     modules_of,
     retailers,
@@ -44,6 +45,7 @@ from jeve.core.seed import derive_rng
 from jeve.decide.gates import ASK_FROM_DAYS_BEFORE_DUE
 from jeve.decide.policy import Decision, DecisionContext, Policy
 from jeve.decide.questions import trait_fraction
+from jeve.memory import beliefs
 from jeve.world import flows, scheduler, space
 
 # Every rate in here is per *hour*, and turned into a chance for one tick where
@@ -391,6 +393,7 @@ class Engine:
             self._payments(report, now)
             self._client_payments(report, now)
             self._chase(report, now)
+            self._credit(report, now)
         self._retail(report, now)
 
         self._conn.execute(
@@ -628,6 +631,13 @@ class Engine:
             ),
         )
         for row, made in zip(asked, self._decide_many(report, contexts), strict=True):
+            # Noticing is knowing (MEM-0002): the fact spreads from here.
+            beliefs.learn(
+                self._conn,
+                str(row["person_id"]),
+                f"outage:{int(row['incident_id'])}",
+                report.sim_time,
+            )
             if made.chosen.get("file"):
                 self._file(report, row, made)
 
@@ -819,10 +829,13 @@ class Engine:
 
         answered = self._conn.execute(
             "SELECT t.id, t.reporter_id, t.module_id, t.answered_sim, t.answered_seq, "
-            "  t.asked_day, p.traits, m.status AS module_status "
+            "  t.asked_day, p.traits, m.status AS module_status, "
+            "  COALESCE(i.ended_sim, %s) - i.started_sim AS outage_seconds "
             "FROM tickets t JOIN persons p ON p.id = t.reporter_id "
             "LEFT JOIN modules m ON m.id = t.module_id "
-            "WHERE t.status = 'answered' ORDER BY t.id"
+            "LEFT JOIN incidents i ON i.id = t.incident_id "
+            "WHERE t.status = 'answered' ORDER BY t.id",
+            (report.sim_time,),
         ).fetchall()
         asked: list[DictRow] = []
         contexts: list[DecisionContext] = []
@@ -844,6 +857,7 @@ class Engine:
                     facts={
                         "module_down": row["module_status"] == "down",
                         "days_since_answer": since // DAY,
+                        "outage_hours": int(row["outage_seconds"] or 0) // HOUR,
                     },
                     traits=dict(row["traits"] or {}),
                 )
@@ -855,6 +869,17 @@ class Engine:
             (now.day, [int(r["id"]) for r in asked]),
         )
         for row, made in zip(asked, self._decide_many(report, contexts), strict=True):
+            level = made.chosen.get("vendor_reliability")
+            if level is not None and row["module_id"]:
+                # What the outage did to their view of the vendor (MEM-0002).
+                beliefs.set_level(
+                    self._conn,
+                    str(row["reporter_id"]),
+                    "vendor_reliability",
+                    module_owner(str(row["module_id"])),
+                    int(str(level)),
+                    report.sim_time,
+                )
             if made.chosen.get("confirm"):
                 self._close(report, row, reason="confirmed", made=made)
 
@@ -1061,10 +1086,11 @@ class Engine:
         """A vendor bills everyone on its products, in one run."""
 
         rows = self._conn.execute(
-            "SELECT org_id, person_id, module_id, monthly_cents FROM subscriptions "
+            "SELECT id, org_id, person_id, module_id, monthly_cents FROM subscriptions "
             "WHERE active AND module_id = ANY(%s) ORDER BY id",
             (list(modules_of(vendor)),),
         ).fetchall()
+        rows = self._churn(report, vendor, rows)
         total = 0
         issued: list[int] = []
         for row in rows:
@@ -1109,6 +1135,100 @@ class Engine:
             )
         # Monthly, so the next run is 28 days out.
         self._schedule(report.sim_time + 28 * DAY, "subscription.run", vendor, {})
+
+    def _churn(
+        self, report: TickReport, vendor: str, rows: list[DictRow]
+    ) -> list[DictRow]:
+        """Renewal is where a belief about the vendor becomes a decision
+        (MEM-0002): a subscriber whose people think the product unreliable,
+        and who could buy the same thing from the other vendor, is asked once
+        a month whether to. Returns the rows this vendor still bills."""
+
+        asked: list[DictRow] = []
+        contexts: list[DecisionContext] = []
+        competitors: dict[str, str] = {}
+        for row in rows:
+            module = str(row["module_id"])
+            category = MODULES[module].category
+            rival = next(
+                (
+                    m
+                    for m, spec in sorted(MODULES.items())
+                    if spec.category == category and module_owner(m) != vendor
+                ),
+                None,
+            )
+            if rival is None:
+                continue
+            org_id = str(row["org_id"]) if row["org_id"] else None
+            person = str(row["person_id"]) if row["person_id"] else None
+            if org_id is not None:
+                view = beliefs.firm_view(
+                    self._conn, org_id, "vendor_reliability", vendor
+                )
+                payer = self.payer_of(org_id)
+                decider = payer
+            else:
+                assert person is not None
+                view = beliefs.get(self._conn, person, "vendor_reliability", vendor)
+                decider = self._conn.execute(
+                    "SELECT id, role, traits FROM persons WHERE id = %s", (person,)
+                ).fetchone()
+            if view is None or view > 1 or decider is None:
+                continue
+            competitors[str(row["id"])] = rival
+            asked.append(row)
+            contexts.append(
+                DecisionContext(
+                    person_id=str(decider["id"]),
+                    role=str(decider["role"]),
+                    sim_time=report.sim_time,
+                    kind="subscription.switch",
+                    facts={
+                        "org": org_id or "",
+                        "module": module,
+                        "competitor": module_owner(rival),
+                        "reliability": view,
+                    },
+                    traits=dict(decider["traits"] or {}),
+                )
+            )
+        if not asked:
+            return rows
+        gone: set[int] = set()
+        for row, made in zip(asked, self._decide_many(report, contexts), strict=True):
+            if not made.chosen.get("switch"):
+                continue
+            rival = competitors[str(row["id"])]
+            old = str(row["module_id"])
+            ended = self._conn.execute(
+                "SELECT seq FROM events WHERE kind = 'incident.ended' "
+                "AND payload->>'module_id' = %s ORDER BY seq DESC LIMIT 1",
+                (old,),
+            ).fetchone()
+            self._conn.execute(
+                "UPDATE subscriptions SET module_id = %s, monthly_cents = %s "
+                "WHERE id = %s",
+                (rival, MODULES[rival].monthly_cents, int(row["id"])),
+            )
+            self._emit(
+                report,
+                "subscription.switched",
+                actor_id=str(row["person_id"]) if row["person_id"] else None,
+                org_id=str(row["org_id"]) if row["org_id"] else vendor,
+                decision_id=made.id,
+                causes=[int(ended["seq"])] if ended else [],
+                payload={
+                    "from_module": old,
+                    "to_module": rival,
+                    "from_vendor": vendor,
+                    "to_vendor": module_owner(rival),
+                    "subscriber": str(row["org_id"] or row["person_id"]),
+                    "decided_by": made.source,
+                },
+            )
+            gone.add(int(row["id"]))
+        return [row for row in rows if int(row["id"]) not in gone]
 
     def _outside_income(self, report: TickReport, org_id: str) -> None:
         """A week's worth of what the firm earns beyond the district."""
@@ -1356,6 +1476,7 @@ class Engine:
             ):
                 continue
             cash = self.cash_of(f"{issuer}.cash")
+            debtor = str(bill["to_person_id"] or bill["to_org_id"])
             asked.append(bill)
             contexts.append(
                 DecisionContext(
@@ -1368,6 +1489,10 @@ class Engine:
                         "days_late": (report.sim_time - int(bill["due_sim"])) // DAY,
                         "large": int(bill["amount_cents"]) >= 200_000,
                         "runway_days": cash / max(1, int(bill["amount_cents"])) * 7,
+                        "debtor": debtor,
+                        "trust_level": beliefs.get(
+                            self._conn, str(chaser["id"]), "counterparty_trust", debtor
+                        ),
                     },
                     traits=dict(chaser["traits"] or {}),
                 )
@@ -1381,6 +1506,16 @@ class Engine:
         for bill, ctx, made in zip(
             asked, contexts, self._decide_many(report, contexts), strict=True
         ):
+            trust = made.chosen.get("counterparty_trust")
+            if trust is not None:
+                beliefs.set_level(
+                    self._conn,
+                    ctx.person_id,
+                    "counterparty_trust",
+                    str(ctx.facts["debtor"]),
+                    int(str(trust)),
+                    report.sim_time,
+                )
             if not made.chosen.get("chase"):
                 continue
             self._emit(
@@ -1473,6 +1608,10 @@ class Engine:
                 (org_id, report.tick_seq, org_id),
             ).fetchall()
         household_cash = self.cash_of("households.cash") if staff else 0
+        # A retailer with a supplier sells from stock (WORLD-0008). An arrival
+        # finds the shelf as the arrivals ahead of it would leave it: the same
+        # independence that lets the whole tick's customers be asked at once.
+        stock = self.stock_of(org_id) if org.supplier is not None else None
 
         servers = retail.servers / 2 if till_down else retail.servers
         low, high = retail.basket_cents
@@ -1503,6 +1642,7 @@ class Engine:
                         "till_down": till_down,
                         "queue_length": max(0, int(arrival - servers)),
                         "can_afford": (not is_staff) or household_cash >= basket,
+                        "no_stock": stock is not None and stock - arrival <= 0,
                     },
                     traits=dict(row["traits"] or {}),
                 )
@@ -1510,6 +1650,7 @@ class Engine:
         if not contexts:
             return
 
+        sold = 0
         for ctx, amount, is_staff, made in zip(
             contexts,
             baskets,
@@ -1534,6 +1675,7 @@ class Engine:
                 continue
             if is_staff and household_cash < amount:
                 continue  # the referee: someone ahead of them spent the last of it
+            sold += 1
             seq = self._emit(
                 report,
                 "retail.sale",
@@ -1554,9 +1696,71 @@ class Engine:
             txn = self._post(report.sim_time, f"{org_id} sale", legs, seq)
             self._conn.execute(
                 "INSERT INTO retail_sales (org_id, sim_time, person_id, amount_cents, "
-                "txn_id, pos_down) VALUES (%s,%s,%s,%s,%s,%s)",
+                "txn_id, till_down) VALUES (%s,%s,%s,%s,%s,%s)",
                 (org_id, report.sim_time, person_id, amount, txn, till_down),
             )
+        if stock is not None and sold:
+            self._conn.execute(
+                "UPDATE orgs SET stock_units = greatest(0, stock_units - %s) "
+                "WHERE id = %s",
+                (sold, org_id),
+            )
+
+    def stock_of(self, org_id: str) -> int:
+        row = self._conn.execute(
+            "SELECT stock_units FROM orgs WHERE id = %s", (org_id,)
+        ).fetchone()
+        return int(row["stock_units"]) if row else 0
+
+    # -- credit lines (WORLD-0008) ------------------------------------------
+
+    def _credit(self, report: TickReport, now: SimTime) -> None:
+        """Runway short and no line open: the bill-payer thinks about the bank,
+        once a day at their own hour. And a line that can be cleared is
+        cleared: repayment is a rule, the way affording anything is."""
+
+        from jeve.world import flows
+
+        lender = bank()
+        if lender is None:
+            return
+        for org in ORGS:
+            if org.landlord is None or org.id == lender:
+                continue
+            payer = self.payer_of(org.id)
+            if payer is None:
+                continue
+            cash = self.cash_of(f"{org.id}.cash")
+            weekly = org.wages_per_week_cents
+            open_loan = self._conn.execute(
+                "SELECT id, balance_cents FROM loans WHERE borrower_org_id = %s "
+                "AND closed_sim IS NULL ORDER BY id LIMIT 1",
+                (org.id,),
+            ).fetchone()
+            if open_loan is not None:
+                if (
+                    cash - int(open_loan["balance_cents"])
+                    >= flows.REPAY_AT_WEEKS * weekly
+                ):
+                    flows.repay(self, report, org.id, open_loan)
+                continue
+            asked = self._conn.execute(
+                "SELECT credit_asked_day FROM orgs WHERE id = %s", (org.id,)
+            ).fetchone()
+            if not self.gets_to_it(
+                str(payer["id"]),
+                now,
+                "credit",
+                asked["credit_asked_day"] if asked else None,
+            ):
+                continue
+            runway_days = cash / max(1, weekly) * 7
+            if runway_days >= flows.SHORT_RUNWAY_DAYS:
+                continue
+            self._conn.execute(
+                "UPDATE orgs SET credit_asked_day = %s WHERE id = %s", (now.day, org.id)
+            )
+            flows.consider_credit(self, report, org.id, payer, runway_days=runway_days)
 
 
 # -- scheduled work the engine itself does (WORLD-0005) ------------------------

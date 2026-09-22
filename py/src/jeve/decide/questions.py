@@ -28,6 +28,8 @@ from jeve.core.clock import SimTime
 from jeve.core.orgs import ORGS, role_words
 from jeve.decide.policy import DecisionContext
 from jeve.llm.protocol import Choice, Noul, NoulCriteria, Score
+from jeve.memory.beliefs import SLOTS as BELIEF_SLOTS
+from jeve.memory.beliefs import words as belief_words
 
 type Mode = Literal["J", "P"]
 """J: judgement, take the argmax. P: propensity, sample the distribution.
@@ -138,6 +140,11 @@ _TRAIT_WORDS: dict[str, tuple[str, str, str]] = {
         "keeps to themselves; avoids small talk",
         "friendly enough; chats when there is a reason to",
         "talkative; stops to chat with anyone nearby",
+    ),
+    "risk_appetite": (
+        "cautious with money; would rather go without than borrow",
+        "borrows when there is a clear need and a way to repay",
+        "comfortable with debt; borrows early to keep options open",
     ),
 }
 
@@ -547,17 +554,27 @@ def _priority(person: dict[str, object], *, own_org: str, vendor: object) -> int
 
 
 def candidates(
-    present: list[dict[str, object]], *, own_org: str, vendor: object
+    present: list[dict[str, object]],
+    *,
+    own_org: str,
+    vendor: object,
+    strengths: dict[str, int] | None = None,
 ) -> list[str]:
     """Who is offered as somebody to talk to: at most `CANDIDATES` of the
-    people here, the vendor's staff first, then colleagues, then the rest in
-    a stable order. The one function both policies and the world use, so the
-    labels a model chooses from and the people the rules twin picks among are
-    the same short list (DECIDE-0005)."""
+    people here, the vendor's staff first, then colleagues, then the people
+    they know best (MEM-0002), then the rest in a stable order. The one
+    function both policies and the world use, so the labels a model chooses
+    from and the people the rules twin picks among are the same short list
+    (DECIDE-0005)."""
 
+    known = strengths or {}
     ranked = sorted(
         present,
-        key=lambda p: (_priority(p, own_org=own_org, vendor=vendor), str(p.get("id"))),
+        key=lambda p: (
+            _priority(p, own_org=own_org, vendor=vendor),
+            -known.get(str(p.get("id")), 0),
+            str(p.get("id")),
+        ),
     )
     return [str(p["id"]) for p in ranked[:CANDIDATES] if "id" in p]
 
@@ -568,10 +585,16 @@ def _offered(ctx: DecisionContext) -> list[dict[str, object]]:
     present = _present(ctx)
     ids = ctx.facts.get("candidates")
     if not isinstance(ids, list):
+        known = ctx.facts.get("strengths")
         ids = candidates(
             present,
             own_org=str(ctx.facts.get("org", "")),
             vendor=ctx.facts.get("vendor"),
+            strengths=(
+                {str(k): int(str(v)) for k, v in known.items()}
+                if isinstance(known, dict)
+                else None
+            ),
         )
     by_id = {str(p.get("id")): p for p in present}
     return [by_id[str(i)] for i in ids if str(i) in by_id]
@@ -660,6 +683,42 @@ def destination(ctx: DecisionContext) -> Ask:
     )
 
 
+# Beliefs are revised by a score inside a request already being made
+# (MEM-0002): never a call of their own.
+_RELIABILITY = Ask(
+    "vendor_reliability",
+    "J",
+    Score(
+        instructions=(
+            "Having lived with this outage, how reliable does this person now "
+            "think the software is?"
+        ),
+        criteria=list(BELIEF_SLOTS["vendor_reliability"]),
+    ),
+)
+_STRAIN = Ask(
+    "employer_strain",
+    "J",
+    Score(
+        instructions=(
+            "From what they have seen at work lately, how is this person's "
+            "employer doing?"
+        ),
+        criteria=list(BELIEF_SLOTS["employer_strain"]),
+    ),
+)
+_TRUST = Ask(
+    "counterparty_trust",
+    "J",
+    Score(
+        instructions=(
+            "After this, how does the person chasing the bill rate this "
+            "customer as a payer?"
+        ),
+        criteria=list(BELIEF_SLOTS["counterparty_trust"]),
+    ),
+)
+
 _INTERACT = Ask(
     "interact",
     "P",
@@ -710,6 +769,15 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
     offered = _offered(ctx)
     outage = ctx.facts.get("outage")
 
+    minds: list[str] = []
+    if outage:
+        minds.append(
+            "A piece of software the firm depends on has been down and it is "
+            "disrupting the day."
+        )
+    strain = ctx.facts.get("employer_strain")
+    if strain is not None and int(_number(strain)) >= 2:
+        minds.append(belief_words("employer_strain", strain))
     state: dict[str, object] = {
         "person": f"a {role_words(ctx.role)} at {ORG_WORDS.get(org, 'a firm')}",
         "temperament": trait_words("sociability", ctx.traits.get("sociability")),
@@ -717,13 +785,14 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
         "time": time_of_day_words(ctx.sim_time),
         "where": where_words(ctx),
         "on_their_mind": (
-            "A piece of software the firm depends on has been down and it is "
-            "disrupting the day."
-            if outage
-            else "Nothing unusual; an ordinary working day."
+            " ".join(minds) if minds else "Nothing unusual; an ordinary working day."
         ),
     }
     asks: list[Ask] = [destination(ctx), _MOOD]
+    if outage:
+        asks.append(_RELIABILITY)
+    if ctx.facts.get("strained"):
+        asks.append(_STRAIN)
     if offered:
         state["who_is_here"] = roster_words(
             present, own_org=org, vendor=ctx.facts.get("vendor")
@@ -780,20 +849,21 @@ def _interpret_agent_tick(
         for index, person in enumerate(_offered(ctx)):
             if slot(index) == picked:
                 with_id = str(person["id"])
-    return Outcome(
-        {
-            "next_zone": next_zone,
-            "next_floor": next_floor,
-            "interact": with_id is not None,
-            "with": with_id,
-            "topic": str(got["topic"].value) if with_id and "topic" in got else None,
-            "mood": int(str(got["mood"].value)),
-            "raise_outage": bool(
-                with_id and "raise_outage" in got and got["raise_outage"].value
-            ),
-        },
-        {},
-    )
+    chosen: dict[str, object] = {
+        "next_zone": next_zone,
+        "next_floor": next_floor,
+        "interact": with_id is not None,
+        "with": with_id,
+        "topic": str(got["topic"].value) if with_id and "topic" in got else None,
+        "mood": int(str(got["mood"].value)),
+        "raise_outage": bool(
+            with_id and "raise_outage" in got and got["raise_outage"].value
+        ),
+    }
+    for belief in ("vendor_reliability", "employer_strain"):
+        if belief in got:
+            chosen[belief] = int(str(got[belief].value))
+    return Outcome(chosen, {})
 
 
 def resolve_destination(ctx: DecisionContext, choice: str) -> tuple[str, int]:
@@ -1042,6 +1112,166 @@ def _interpret_catering(
     return Outcome({"order": order if order in ("small", "large") else "none"}, {})
 
 
+# -- supply.order, credit.draw, credit.approve: the archetype flows (WORLD-0008)
+
+_STOCK_WORDS = (
+    "The shelves are bare; there is nothing left to sell.",
+    "Stock is low: a couple of days' worth at most.",
+    "Stock is fine for the week.",
+    "The store room is full.",
+)
+
+
+def stock_words(level: object) -> str:
+    return _STOCK_WORDS[max(0, min(3, int(_number(level))))]
+
+
+def debt_words(debt_cents: object, weekly_wages_cents: object) -> str:
+    debt = _number(debt_cents)
+    weekly = max(1.0, _number(weekly_wages_cents, 1.0))
+    if debt <= 0:
+        return "The firm has no debt."
+    if debt < 2 * weekly:
+        return "The firm already owes the bank a little."
+    return "The firm already carries a heavy line of credit."
+
+
+_SUPPLY = Ask(
+    "order",
+    "P",
+    Choice(
+        instructions=(
+            "Does this person place an order with the supplier today, and how large?"
+        ),
+        criteria={
+            "none": "No order this week; what is on the shelves will do.",
+            "small": "A small order: a few days' worth.",
+            "large": "A large order: more than a week's worth, to be safe.",
+            "other": "Something else.",
+        },
+    ),
+)
+
+
+def _prepare_supply(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_SUPPLY,),
+        state={
+            "person": "the person who does the buying at "
+            + ORG_WORDS.get(org, "a shop"),
+            "temperament": trait_words("promptness", ctx.traits.get("promptness")),
+            "stock": stock_words(ctx.facts.get("stock_level")),
+            "cash": runway_words(ctx.facts.get("runway_days")),
+            "prices": (
+                "The supplier has just put its prices up."
+                if ctx.facts.get("price_up")
+                else "The supplier's prices are as usual."
+            ),
+        },
+    )
+
+
+def _interpret_supply(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    order = str(got["order"].value)
+    return Outcome({"order": order if order in ("small", "large") else "none"}, {})
+
+
+_DRAW = Ask(
+    "draw",
+    "P",
+    Noul(
+        instructions=(
+            "With the firm's cash running short, does this person apply to the "
+            "credit union for a line of credit today?"
+        ),
+        criteria=_yes_no(
+            "They apply for a line of credit.",
+            "They hold off and try to get by.",
+        ),
+    ),
+)
+
+
+def _prepare_draw(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_DRAW,),
+        state={
+            "person": "the person who pays the bills at "
+            + ORG_WORDS.get(org, "a firm"),
+            "temperament": trait_words(
+                "risk_appetite", ctx.traits.get("risk_appetite")
+            ),
+            "cash": runway_words(ctx.facts.get("runway_days")),
+            "debt": debt_words(
+                ctx.facts.get("debt_cents"), ctx.facts.get("weekly_wages_cents")
+            ),
+        },
+    )
+
+
+def _interpret_draw(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"draw": bool(got["draw"].value)}, {})
+
+
+_APPROVE = Ask(
+    "decision",
+    "J",
+    Choice(
+        instructions=(
+            "Does the credit union approve this firm's application for a line "
+            "of credit worth a month of its payroll?"
+        ),
+        criteria={
+            "approve": "Approve the line: the firm is short of cash but sound.",
+            "decline": (
+                "Decline: the firm is not paying its way; the line would not be repaid."
+            ),
+        },
+    ),
+)
+
+
+def _prepare_approve(ctx: DecisionContext) -> Prepared:
+    applicant = str(ctx.facts.get("applicant", ""))
+    overdue = int(_number(ctx.facts.get("overdue_bills")))
+    return Prepared(
+        ctx.kind,
+        asks=(_APPROVE,),
+        state={
+            "applicant": ORG_WORDS.get(applicant, "a local firm"),
+            "cash": runway_words(ctx.facts.get("runway_days")),
+            "bills": (
+                "They pay their bills on time."
+                if overdue == 0
+                else f"They have {count_words(overdue, 'bill')} overdue."
+            ),
+            "payroll": (
+                "They have held payroll in the last month."
+                if ctx.facts.get("payroll_held")
+                else "They have met every payroll."
+            ),
+            "debt": debt_words(
+                ctx.facts.get("debt_cents"), ctx.facts.get("amount_cents")
+            ),
+        },
+    )
+
+
+def _interpret_approve(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    decision = str(got["decision"].value)
+    return Outcome({"decision": "approve" if decision == "approve" else "decline"}, {})
+
+
 # -- ticket.confirm and chase.invoice: the loops that close (WORLD-0005) -------
 
 _CONFIRM = Ask(
@@ -1072,7 +1302,7 @@ def answered_words(days: object) -> str:
 def _prepare_confirm(ctx: DecisionContext) -> Prepared:
     return Prepared(
         ctx.kind,
-        asks=(_CONFIRM,),
+        asks=(_CONFIRM, _RELIABILITY),
         state={
             "person": "a customer who pays for small-business software",
             "temperament": trait_words("diligence", ctx.traits.get("diligence")),
@@ -1086,9 +1316,13 @@ def _interpret_confirm(
     ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
 ) -> Outcome:
     confirm = bool(got["confirm"].value)
-    return Outcome(
-        {"confirm": confirm, "reason": "confirmed" if confirm else "silent"}, {}
-    )
+    chosen: dict[str, object] = {
+        "confirm": confirm,
+        "reason": "confirmed" if confirm else "silent",
+    }
+    if "vendor_reliability" in got:
+        chosen["vendor_reliability"] = int(str(got["vendor_reliability"].value))
+    return Outcome(chosen, {})
 
 
 _CHASE = Ask(
@@ -1108,9 +1342,10 @@ _CHASE = Ask(
 
 def _prepare_chase(ctx: DecisionContext) -> Prepared:
     org = str(ctx.facts.get("org", ""))
+    trust = ctx.facts.get("trust_level")
     return Prepared(
         ctx.kind,
-        asks=(_CHASE,),
+        asks=(_CHASE, _TRUST),
         state={
             "person": (
                 "the person who looks after the money at "
@@ -1124,6 +1359,11 @@ def _prepare_chase(ctx: DecisionContext) -> Prepared:
                 else "it is a modest amount"
             ),
             "cash": runway_words(ctx.facts.get("runway_days")),
+            "customer": (
+                belief_words("counterparty_trust", trust)
+                if trust is not None
+                else "They have no history with this customer's payments."
+            ),
         },
     )
 
@@ -1131,7 +1371,58 @@ def _prepare_chase(ctx: DecisionContext) -> Prepared:
 def _interpret_chase(
     ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
 ) -> Outcome:
-    return Outcome({"chase": bool(got["chase"].value)}, {})
+    chosen: dict[str, object] = {"chase": bool(got["chase"].value)}
+    if "counterparty_trust" in got:
+        chosen["counterparty_trust"] = int(str(got["counterparty_trust"].value))
+    return Outcome(chosen, {})
+
+
+# -- subscription.switch: churn (MEM-0002) --------------------------------------
+
+_SWITCH = Ask(
+    "switch",
+    "P",
+    Noul(
+        instructions=(
+            "The month's bill for the software has come. Does this firm move "
+            "to the competing product instead of renewing?"
+        ),
+        criteria=_yes_no(
+            "They switch to the competitor this month.",
+            "They renew where they are.",
+        ),
+    ),
+)
+
+
+def _prepare_switch(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    competitor = str(ctx.facts.get("competitor", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_SWITCH,),
+        state={
+            "person": (
+                "the person who pays the bills at " + ORG_WORDS.get(org, "a firm")
+                if org
+                else "a customer who pays for small-business software"
+            ),
+            "temperament": trait_words("promptness", ctx.traits.get("promptness")),
+            "software": belief_words(
+                "vendor_reliability", ctx.facts.get("reliability")
+            ),
+            "alternative": (
+                f"{ORG_WORDS.get(competitor, 'another vendor').capitalize()} sells a "
+                "comparable product at a similar price."
+            ),
+        },
+    )
+
+
+def _interpret_switch(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"switch": bool(got["switch"].value)}, {})
 
 
 QUESTION_SETS: dict[str, QuestionSet] = {
@@ -1149,5 +1440,9 @@ QUESTION_SETS: dict[str, QuestionSet] = {
         QuestionSet("catering.order", _prepare_catering, _interpret_catering),
         QuestionSet("ticket.confirm", _prepare_confirm, _interpret_confirm),
         QuestionSet("chase.invoice", _prepare_chase, _interpret_chase),
+        QuestionSet("supply.order", _prepare_supply, _interpret_supply),
+        QuestionSet("credit.draw", _prepare_draw, _interpret_draw),
+        QuestionSet("credit.approve", _prepare_approve, _interpret_approve),
+        QuestionSet("subscription.switch", _prepare_switch, _interpret_switch),
     )
 }

@@ -33,7 +33,7 @@ from psycopg.rows import DictRow, dict_row
 from jeve import db
 from jeve.config import find_repo_root
 from jeve.core.clock import DAY, SimTime
-from jeve.core.orgs import ORGS, clients_of, retailers
+from jeve.core.orgs import ORGS, clients_of, retailers, tenants_of, vendors
 from jeve.sim import daemon
 from jeve.world.seed_world import ROOT_SEED, seed
 
@@ -245,10 +245,136 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
             ),
         )
     )
+
+    # The archetype flows (WORLD-0008): rent is paid, shelves are restocked,
+    # a line of credit is either repaid or its borrower was seen going under,
+    # and both vendors' products failed and were triaged.
+    rent_paid = {
+        str(r["org_id"]): int(r["n"])
+        for r in conn.execute(
+            "SELECT i.to_org_id AS org_id, count(*) AS n FROM invoices i "
+            "WHERE i.kind = 'rent' AND i.paid_sim IS NOT NULL GROUP BY 1"
+        ).fetchall()
+    }
+    tenants = [t for org in ORGS for t in tenants_of(org.id) if t.rent_cents > 0]
+    out.append(
+        Check(
+            "every tenant paid rent",
+            days < 14 or all(rent_paid.get(t.id, 0) > 0 for t in tenants),
+            ", ".join(f"{t.id} {rent_paid.get(t.id, 0)}" for t in tenants),
+        )
+    )
+    deliveries = {
+        str(r["org_id"]): int(r["n"])
+        for r in conn.execute(
+            "SELECT payload->>'to_org_id' AS org_id, count(*) AS n FROM events "
+            "WHERE kind = 'supply.delivered' GROUP BY 1"
+        ).fetchall()
+    }
+    stocked = [org for org in ORGS if org.supplier is not None]
+    out.append(
+        Check(
+            "every shop restocked",
+            days < 14 or all(deliveries.get(org.id, 0) >= 2 for org in stocked),
+            ", ".join(
+                f"{org.id} {deliveries.get(org.id, 0)} delivery(s)" for org in stocked
+            ),
+        )
+    )
+    # A line a firm can clear is cleared by rule; one it cannot is serviced:
+    # every month's interest that fell due was paid (three days' grace for the
+    # office-hours job), nobody holds two lines at once, and a borrower that
+    # cannot keep up was seen going under. A cafe living on a revolving line
+    # for a season is a measure, not a failure: the cash table shows it.
+    now = days * DAY
+    open_lines = conn.execute(
+        "SELECT l.id, l.borrower_org_id, l.opened_sim, "
+        "(SELECT count(*) FROM events e WHERE e.kind = 'loan.interest' "
+        " AND (e.payload->>'loan_id')::int = l.id) AS paid, "
+        "EXISTS (SELECT 1 FROM events w WHERE w.kind = 'insolvency.warning' "
+        " AND w.org_id = l.borrower_org_id) AS warned "
+        "FROM loans l WHERE l.closed_sim IS NULL ORDER BY l.id"
+    ).fetchall()
+    unserviced = sorted(
+        {
+            str(r["borrower_org_id"])
+            for r in open_lines
+            if not r["warned"]
+            and int(r["paid"]) < (now - int(r["opened_sim"]) - 3 * DAY) // (28 * DAY)
+        }
+    )
+    borrowers = [str(r["borrower_org_id"]) for r in open_lines]
+    stacked = sorted({b for b in borrowers if borrowers.count(b) > 1})
+    loans = _one(conn, "SELECT count(*) FROM loans")
+    repaid = _one(conn, "SELECT count(*) FROM loans WHERE closed_sim IS NOT NULL")
+    out.append(
+        Check(
+            "every line of credit is repaid, serviced, or its borrower was seen "
+            "going under",
+            not unserviced and not stacked,
+            f"{loans} line(s) drawn, {repaid} repaid, {len(open_lines)} open"
+            + (f"; interest missed: {', '.join(unserviced)}" if unserviced else "")
+            + (f"; two lines at once: {', '.join(stacked)}" if stacked else ""),
+        )
+    )
+    triaged = {
+        str(r["org_id"]): int(r["n"])
+        for r in conn.execute(
+            "SELECT org_id, count(*) AS n FROM events WHERE kind = 'ticket.triaged' "
+            "GROUP BY 1"
+        ).fetchall()
+    }
+    out.append(
+        Check(
+            "both vendors had an incident and triaged a ticket about it",
+            all(triaged.get(v.id, 0) > 0 for v in vendors()),
+            ", ".join(f"{v.id} {triaged.get(v.id, 0)} triaged" for v in vendors()),
+        )
+    )
     return out
 
 
 # -- measures: reported, never asserted ------------------------------------------
+
+
+def _diffusion(conn: Connection[DictRow], days: int) -> list[str]:
+    """How a fact spreads (MEM-0002): who knew of the price rise, by day, and
+    how many subscribers each vendor lost to the other."""
+
+    known = conn.execute(
+        "SELECT updated_sim / 86400 AS day, count(*) AS n FROM beliefs "
+        "WHERE slot = 'knows_of' AND entity_id LIKE 'price_rise:%%' "
+        "GROUP BY 1 ORDER BY 1"
+    ).fetchall()
+    running = 0
+    rows = [
+        "",
+        "### Word of the price rise, by day",
+        "",
+        "| day | people who know |",
+        "|---:|---:|",
+    ]
+    for row in known:
+        running += int(row["n"])
+        rows.append(f"| {int(row['day'])} | {running} |")
+    if not known:
+        rows.append("| — | 0 |")
+    churn = conn.execute(
+        "SELECT payload->>'from_vendor' AS lost, payload->>'to_vendor' AS won, "
+        "count(*) AS n FROM events WHERE kind = 'subscription.switched' GROUP BY 1, 2"
+    ).fetchall()
+    rows += [
+        "",
+        "### Subscribers who switched vendor",
+        "",
+        "| from | to | n |",
+        "|---|---|---:|",
+    ]
+    for row in churn:
+        rows.append(f"| {row['lost']} | {row['won']} | {int(row['n'])} |")
+    if not churn:
+        rows.append("| — | — | 0 |")
+    return rows
 
 
 def _cash_by_week(conn: Connection[DictRow], days: int) -> list[str]:
@@ -353,6 +479,7 @@ def measures(conn: Connection[DictRow], *, days: int) -> list[str]:
                 f"${int(p['weekly_wages_cents']) / 100:,.0f} | "
                 f"${int(p['overdue_receivables_cents']) / 100:,.0f} | {p['cause']} |"
             )
+    lines += _diffusion(conn, days)
     return lines
 
 

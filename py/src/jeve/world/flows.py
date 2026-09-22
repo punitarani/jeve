@@ -23,11 +23,23 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from jeve.core.clock import DAY, TICK, SimTime, next_office_open
-from jeve.core.orgs import BY_ID, module_owner, modules_of, wage
+from jeve.core.orgs import (
+    BY_ID,
+    bank,
+    buyers_of,
+    module_owner,
+    modules_of,
+    tenants_of,
+    wage,
+)
+from jeve.core.seed import derive_rng
 from jeve.decide.policy import DecisionContext
+from jeve.memory import beliefs
 from jeve.world import scheduler
 
 if TYPE_CHECKING:
+    from psycopg.rows import DictRow
+
     from jeve.world.engine import Engine, TickReport
 
 # What a credit is worth, as a share of the month's fee for the broken module.
@@ -595,4 +607,520 @@ def deliver_catering(
         terms_days=7,
         kind="services",
         causes=[delivered],
+    )
+
+
+# -- flow 11: rent (WORLD-0008) ------------------------------------------------
+#
+# The landlord bills every tenant on the first working day of the month and
+# sends someone round once a month; the bill is settled by the same daily
+# payment.timing every other bill gets. No new question: rent is a fact.
+
+RENT_TERMS_DAYS = 7
+MAINTENANCE_WITHIN_DAYS = 20
+
+
+@scheduler.job("rent.run", office_hours_only=True)
+def rent(
+    engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
+) -> None:
+    """The month's rent, for every tenant of this landlord."""
+
+    month = int(payload.get("month", 0))
+    for tenant in tenants_of(org_id):
+        if tenant.rent_cents <= 0:
+            continue
+        engine.bill(
+            report,
+            from_org=org_id,
+            to_org=tenant.id,
+            amount=tenant.rent_cents,
+            terms_days=RENT_TERMS_DAYS,
+            kind="rent",
+            causes=[],
+        )
+        # A visit some day this month: about the landlord, the tenant and
+        # the month (CORE-0009), never the tick.
+        rng = derive_rng(engine.root_seed, "maintenance", org_id, tenant.id, month)
+        day = report.sim_time // DAY + 1 + int(rng.random() * MAINTENANCE_WITHIN_DAYS)
+        engine.schedule(
+            day * DAY + 10 * 3600, "maintenance.visit", org_id, {"tenant": tenant.id}
+        )
+    engine.schedule(
+        report.sim_time + 28 * DAY, "rent.run", org_id, {"month": month + 1}
+    )
+
+
+@scheduler.job("maintenance.visit", office_hours_only=True)
+def maintenance_visit(
+    engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
+) -> None:
+    """Somebody from the landlord comes round: another way a person from one
+    firm ends up standing on another firm's floor."""
+
+    from jeve.world import space
+
+    tenant = str(payload.get("tenant", ""))
+    if tenant not in BY_ID:
+        return
+    carrier = space.send(engine, report, org=org_id, to=tenant, prefer=("maintenance",))
+    engine.emit(
+        report,
+        "maintenance.visited",
+        actor_id=carrier,
+        org_id=org_id,
+        payload={"tenant": tenant, "visited_by": carrier},
+    )
+
+
+# -- flow 12: supplies and stock (WORLD-0008) ----------------------------------
+#
+# A retailer with a supplier sells from stock. Its buyer orders once a week —
+# how much is the judgement — the supplier delivers next morning on foot, bills
+# net fifteen, and can put its prices up. A sale takes a unit; a bare shelf
+# sends customers away by rule.
+
+SUPPLY_ORDER_DAYS: dict[str, int] = {"small": 4, "large": 9}
+"""How many days of a retailer's ordinary demand each size of order covers."""
+COST_OF_GOODS = 0.4
+"""What a unit costs the retailer, as a share of the average basket."""
+SUPPLY_TERMS_DAYS = 15
+PRICE_RISE = 1.15
+
+
+def daily_demand(org_id: str) -> int:
+    """A retailer's ordinary weekday walk-ins: what its stock is measured in."""
+
+    retail = BY_ID[org_id].retail
+    return sum(retail.arrivals_per_hour.values()) if retail is not None else 0
+
+
+def unit_cost_cents(org_id: str) -> int:
+    retail = BY_ID[org_id].retail
+    if retail is None:
+        return 0
+    low, high = retail.basket_cents
+    return int((low + high) / 2 * COST_OF_GOODS)
+
+
+def stock_level(org_id: str, units: int) -> int:
+    """0 bare, 1 low, 2 fine, 3 full — against the retailer's own demand."""
+
+    demand = max(1, daily_demand(org_id))
+    days = units / demand
+    return 0 if days < 1 else 1 if days < 3 else 2 if days < 7 else 3
+
+
+@scheduler.job("supply.order", office_hours_only=True)
+def order_supplies(
+    engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
+) -> None:
+    """Does the buyer order this week, and how much?"""
+
+    org = BY_ID[org_id]
+    supplier = org.supplier
+    buyer = engine.conn.execute(
+        "SELECT id, role, traits FROM persons WHERE org_id = %s AND role = ANY(%s) "
+        "ORDER BY array_position(%s::text[], role), id LIMIT 1",
+        (org_id, list(org.buyer_roles), list(org.buyer_roles)),
+    ).fetchone()
+    # Mondays and Thursdays, whatever was decided this time: a shop that
+    # sells a week's stock in six days cannot wait a week to ask.
+    engine.schedule(
+        report.sim_time + (3 if SimTime(report.sim_time).weekday == 0 else 4) * DAY,
+        "supply.order",
+        org_id,
+        {},
+    )
+    if buyer is None or supplier is None:
+        return
+    price = engine.conn.execute(
+        "SELECT price_multiplier FROM orgs WHERE id = %s", (supplier,)
+    ).fetchone()
+    multiplier = float(price["price_multiplier"]) if price else 1.0
+    stock = engine.stock_of(org_id)
+    cash = engine.cash_of(f"{org_id}.cash")
+    small = SUPPLY_ORDER_DAYS["small"] * daily_demand(org_id)
+    made = engine.decide(
+        report,
+        DecisionContext(
+            person_id=str(buyer["id"]),
+            role=str(buyer["role"]),
+            sim_time=report.sim_time,
+            kind="supply.order",
+            facts={
+                "org": org_id,
+                "stock_level": stock_level(org_id, stock),
+                "runway_days": cash / max(1, org.wages_per_week_cents) * 7,
+                "price_up": multiplier > 1.0,
+                "can_afford": cash >= int(small * unit_cost_cents(org_id) * multiplier),
+            },
+            traits=dict(buyer["traits"] or {}),
+        ),
+    )
+    size = str(made.chosen.get("order", "none"))
+    if size not in SUPPLY_ORDER_DAYS:
+        return
+    units = SUPPLY_ORDER_DAYS[size] * daily_demand(org_id)
+    amount = int(units * unit_cost_cents(org_id) * multiplier)
+    seq = engine.emit(
+        report,
+        "supply.ordered",
+        actor_id=str(buyer["id"]),
+        org_id=org_id,
+        decision_id=made.id,
+        payload={
+            "supplier": supplier,
+            "size": size,
+            "units": units,
+            "amount_cents": amount,
+            "decided_by": made.source,
+        },
+    )
+    # Next morning the yard is open, or the morning after a Sunday.
+    morning = report.sim_time - report.sim_time % DAY + DAY + 8 * 3600
+    while not SimTime(morning).open_for(BY_ID[supplier].hours):
+        morning += DAY
+    engine.schedule(
+        morning,
+        "supply.deliver",
+        org_id,
+        {"ordered": seq, "units": units, "amount": amount},
+    )
+
+
+@scheduler.job("supply.deliver")
+def deliver_supplies(
+    engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
+) -> None:
+    """The order arrives on the supplier's van — a driver who then stands in
+    the shop — and the supplier bills for it."""
+
+    from jeve.world import space
+
+    supplier = BY_ID[org_id].supplier
+    if supplier is None:
+        return
+    units = int(payload.get("units", 0))
+    amount = int(payload.get("amount", 0))
+    carrier = space.send(
+        engine, report, org=supplier, to=org_id, prefer=("driver", "picker")
+    )
+    engine.conn.execute(
+        "UPDATE orgs SET stock_units = stock_units + %s WHERE id = %s", (units, org_id)
+    )
+    delivered = engine.emit(
+        report,
+        "supply.delivered",
+        actor_id=carrier,
+        org_id=supplier,
+        causes=[int(payload["ordered"])] if payload.get("ordered") else [],
+        payload={
+            "to_org_id": org_id,
+            "units": units,
+            "amount_cents": amount,
+            "carried_by": carrier,
+            "stock_units": engine.stock_of(org_id),
+        },
+    )
+    if amount > 0:
+        engine.bill(
+            report,
+            from_org=supplier,
+            to_org=org_id,
+            amount=amount,
+            terms_days=SUPPLY_TERMS_DAYS,
+            kind="supplies",
+            causes=[delivered],
+        )
+
+
+@scheduler.job("supply.reprice", office_hours_only=True)
+def reprice_supplies(
+    engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
+) -> None:
+    """The supplier puts its prices up. Its buyers hear of it on their next
+    order; whether it changes what they do is theirs to decide."""
+
+    multiplier = float(payload.get("multiplier", PRICE_RISE))
+    engine.conn.execute(
+        "UPDATE orgs SET price_multiplier = %s WHERE id = %s", (multiplier, org_id)
+    )
+    engine.emit(
+        report,
+        "supply.repriced",
+        org_id=org_id,
+        payload={"multiplier": multiplier, "buyers": [b.id for b in buyers_of(org_id)]},
+    )
+    # The buyers hear first; from them it spreads by word of mouth (MEM-0002).
+    for buyer in buyers_of(org_id):
+        person = engine.conn.execute(
+            "SELECT id FROM persons WHERE org_id = %s AND role = ANY(%s) "
+            "ORDER BY array_position(%s::text[], role), id LIMIT 1",
+            (buyer.id, list(buyer.buyer_roles), list(buyer.buyer_roles)),
+        ).fetchone()
+        if person is not None:
+            beliefs.learn(
+                engine.conn, str(person["id"]), f"price_rise:{org_id}", report.sim_time
+            )
+
+
+# -- nightly: what fades (MEM-0002) ---------------------------------------------
+
+
+@scheduler.job("day.end")
+def day_end(
+    engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
+) -> None:
+    """Relationships nobody has kept up weaken by a step. Aggregation in SQL,
+    never generation; tomorrow's job is put in the diary."""
+
+    beliefs.decay(engine.conn, report.sim_time)
+    engine.schedule(report.sim_time + DAY, "day.end", None, {})
+
+
+# -- flow 13: credit lines (WORLD-0008) ----------------------------------------
+#
+# A firm whose runway is short may ask the bank for a line; the bank's lending
+# officer decides; interest runs monthly; the line is repaid by rule when the
+# firm can. Insolvency becomes a process with steps in it rather than a cliff.
+
+SHORT_RUNWAY_DAYS = 14
+LINE_WEEKS = 4
+"""A line of credit is this many weeks of the borrower's payroll."""
+REPAY_AT_WEEKS = 4
+"""Cleared once the firm holds this many weeks of payroll beyond the balance."""
+LOAN_RATE_BP = 900
+
+
+def consider_credit(
+    engine: Engine,
+    report: TickReport,
+    org_id: str,
+    payer: DictRow,
+    *,
+    runway_days: float,
+) -> None:
+    """The bill-payer decides whether to apply. Called from the engine's daily
+    pass, at the payer's own hour, only when runway is short."""
+
+    debt = engine.conn.execute(
+        "SELECT COALESCE(sum(balance_cents),0) AS cents FROM loans "
+        "WHERE borrower_org_id = %s AND closed_sim IS NULL",
+        (org_id,),
+    ).fetchone()
+    made = engine.decide(
+        report,
+        DecisionContext(
+            person_id=str(payer["id"]),
+            role=str(payer["role"]),
+            sim_time=report.sim_time,
+            kind="credit.draw",
+            facts={
+                "org": org_id,
+                "runway_days": runway_days,
+                "debt_cents": int(debt["cents"]) if debt else 0,
+                "weekly_wages_cents": BY_ID[org_id].wages_per_week_cents,
+            },
+            traits=dict(payer["traits"] or {}),
+        ),
+    )
+    if not made.chosen.get("draw"):
+        return
+    amount = LINE_WEEKS * BY_ID[org_id].wages_per_week_cents
+    seq = engine.emit(
+        report,
+        "credit.applied",
+        actor_id=str(payer["id"]),
+        org_id=org_id,
+        decision_id=made.id,
+        payload={
+            "amount_cents": amount,
+            "runway_days": round(runway_days, 1),
+            "decided_by": made.source,
+        },
+    )
+    engine.schedule(
+        report.sim_time + TICK,
+        "credit.decide",
+        org_id,
+        {"applied": seq, "amount": amount},
+    )
+
+
+@scheduler.job("credit.decide", office_hours_only=True)
+def decide_credit(
+    engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
+) -> None:
+    """The bank's lending officer looks at the applicant's books."""
+
+    lender = bank()
+    officer = _person(engine, "lending_officer", lender) if lender else None
+    if lender is None or officer is None:
+        return
+    amount = int(payload.get("amount", 0))
+    cash = engine.cash_of(f"{org_id}.cash")
+    weekly = BY_ID[org_id].wages_per_week_cents
+    overdue = engine.conn.execute(
+        "SELECT count(*) AS n FROM invoices WHERE to_org_id = %s AND paid_sim IS NULL "
+        "AND written_off_sim IS NULL AND due_sim < %s",
+        (org_id, report.sim_time),
+    ).fetchone()
+    held = engine.conn.execute(
+        "SELECT count(*) AS n FROM events WHERE kind = 'payroll.held' AND org_id = %s "
+        "AND sim_time > %s",
+        (org_id, report.sim_time - 28 * DAY),
+    ).fetchone()
+    debt = engine.conn.execute(
+        "SELECT COALESCE(sum(balance_cents),0) AS cents FROM loans "
+        "WHERE borrower_org_id = %s AND closed_sim IS NULL",
+        (org_id,),
+    ).fetchone()
+    made = engine.decide(
+        report,
+        DecisionContext(
+            person_id=str(officer["id"]),
+            role="lending_officer",
+            sim_time=report.sim_time,
+            kind="credit.approve",
+            facts={
+                "applicant": org_id,
+                "amount_cents": amount,
+                "runway_days": cash / max(1, weekly) * 7,
+                "overdue_bills": int(overdue["n"]) if overdue else 0,
+                "payroll_held": bool(held and int(held["n"]) > 0),
+                "debt_cents": int(debt["cents"]) if debt else 0,
+                "bank_can_lend": engine.cash_of(f"{lender}.cash") >= amount,
+            },
+            traits=dict(officer["traits"] or {}),
+        ),
+    )
+    causes = [int(payload["applied"])] if payload.get("applied") else []
+    if made.chosen.get("decision") != "approve":
+        engine.emit(
+            report,
+            "credit.declined",
+            actor_id=str(officer["id"]),
+            org_id=lender,
+            decision_id=made.id,
+            causes=causes,
+            payload={
+                "applicant": org_id,
+                "amount_cents": amount,
+                "reason": str(made.chosen.get("reason", "")),
+                "decided_by": made.source,
+            },
+        )
+        return
+    seq = engine.emit(
+        report,
+        "loan.drawn",
+        actor_id=str(officer["id"]),
+        org_id=org_id,
+        decision_id=made.id,
+        causes=causes,
+        payload={
+            "lender": lender,
+            "amount_cents": amount,
+            "rate_bp": LOAN_RATE_BP,
+            "decided_by": made.source,
+        },
+    )
+    loan = engine.conn.execute(
+        "INSERT INTO loans (lender_org_id, borrower_org_id, principal_cents, "
+        "balance_cents, rate_bp, opened_sim, opened_seq) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        (lender, org_id, amount, amount, LOAN_RATE_BP, report.sim_time, seq),
+    ).fetchone()
+    assert loan is not None
+    engine.post(
+        report.sim_time,
+        f"{lender} lends {org_id} {amount}",
+        [
+            (f"{lender}.cash", -amount),
+            (f"{lender}.receivable", amount),
+            (f"{org_id}.cash", amount),
+            (f"{org_id}.payable", -amount),
+        ],
+        seq,
+    )
+    engine.schedule(
+        report.sim_time + 28 * DAY, "loan.interest", org_id, {"loan": int(loan["id"])}
+    )
+
+
+@scheduler.job("loan.interest", office_hours_only=True)
+def charge_interest(
+    engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
+) -> None:
+    """A month's interest on an open line, taken from the borrower's cash."""
+
+    loan = engine.conn.execute(
+        "SELECT id, lender_org_id, balance_cents, rate_bp FROM loans "
+        "WHERE id = %s AND closed_sim IS NULL",
+        (int(payload.get("loan", 0)),),
+    ).fetchone()
+    if loan is None:
+        return
+    lender = str(loan["lender_org_id"])
+    interest = int(int(loan["balance_cents"]) * int(loan["rate_bp"]) / 10_000 / 12)
+    if interest > 0:
+        seq = engine.emit(
+            report,
+            "loan.interest",
+            org_id=org_id,
+            payload={
+                "loan_id": int(loan["id"]),
+                "amount_cents": interest,
+                "lender": lender,
+            },
+        )
+        engine.post(
+            report.sim_time,
+            f"{org_id} pays {lender} interest on loan {loan['id']}",
+            [
+                (f"{org_id}.cash", -interest),
+                (f"{org_id}.expense", interest),
+                (f"{lender}.cash", interest),
+                (f"{lender}.revenue", -interest),
+            ],
+            seq,
+        )
+    engine.schedule(report.sim_time + 28 * DAY, "loan.interest", org_id, dict(payload))
+
+
+def repay(engine: Engine, report: TickReport, org_id: str, loan: DictRow) -> None:
+    """Clear the line: a rule, once the cash is there."""
+
+    balance = int(loan["balance_cents"])
+    lender = engine.conn.execute(
+        "SELECT lender_org_id FROM loans WHERE id = %s", (int(loan["id"]),)
+    ).fetchone()
+    if lender is None:
+        return
+    bank_id = str(lender["lender_org_id"])
+    seq = engine.emit(
+        report,
+        "loan.repaid",
+        org_id=org_id,
+        payload={
+            "loan_id": int(loan["id"]),
+            "amount_cents": balance,
+            "lender": bank_id,
+        },
+    )
+    engine.post(
+        report.sim_time,
+        f"{org_id} repays {bank_id} loan {loan['id']}",
+        [
+            (f"{org_id}.cash", -balance),
+            (f"{org_id}.payable", balance),
+            (f"{bank_id}.cash", balance),
+            (f"{bank_id}.receivable", -balance),
+        ],
+        seq,
+    )
+    engine.conn.execute(
+        "UPDATE loans SET balance_cents = 0, closed_sim = %s WHERE id = %s",
+        (report.sim_time, int(loan["id"])),
     )

@@ -201,9 +201,11 @@ class RulesPolicy:
         diligence = _num(ctx.traits.get("diligence"), 0.5)
         draw = _uniform(rng)
         confirm = draw < 0.35 + 0.5 * diligence
-        return {"confirm": confirm, "reason": "confirmed" if confirm else "silent"}, {
-            "confirm": draw
-        }
+        return {
+            "confirm": confirm,
+            "reason": "confirmed" if confirm else "silent",
+            "vendor_reliability": _reliability(ctx.facts.get("outage_hours")),
+        }, {"confirm": draw}
 
     def _chase_invoice(
         self, ctx: DecisionContext, rng: object
@@ -211,9 +213,13 @@ class RulesPolicy:
         """Pick up the phone about a bill that is a week late, or let it ride."""
 
         vocality = _num(ctx.traits.get("vocality"), 0.4)
-        weeks = _num(ctx.facts.get("days_late"), 7.0) / 7.0
+        days = _num(ctx.facts.get("days_late"), 7.0)
         draw = _uniform(rng)
-        return {"chase": draw < min(0.95, vocality + 0.15 * weeks)}, {"chase": draw}
+        trust = 3 if days <= 0 else 2 if days < 7 else 1 if days < 30 else 0
+        return {
+            "chase": draw < min(0.95, vocality + 0.15 * days / 7.0),
+            "counterparty_trust": trust,
+        }, {"chase": draw}
 
     def _agent_tick(
         self, ctx: DecisionContext, rng: object
@@ -263,21 +269,43 @@ class RulesPolicy:
             with_id = str(people[int(who * len(people))]["id"])
         topic = None
         if with_id is not None:
-            topic = "the_outage" if outage and about < 0.6 else "small_talk"
+            # The outage when there is one; otherwise mostly small talk, some
+            # shop, and now and then money — which is how word of a price
+            # rise gets round (MEM-0002).
+            if outage and about < 0.5:
+                topic = "the_outage"
+            else:
+                topic = (
+                    "small_talk"
+                    if about < 0.65
+                    else "work"
+                    if about < 0.85
+                    else "money"
+                )
         vocality = _num(ctx.traits.get("vocality"), 0.4)
         raised = bool(with_id and ctx.facts.get("can_raise") and push < vocality)
-        return (
-            {
-                "next_zone": next_zone,
-                "next_floor": next_floor,
-                "interact": with_id is not None,
-                "with": with_id,
-                "topic": topic,
-                "mood": 1 if outage else 2,
-                "raise_outage": raised,
-            },
-            {"go": go, "talk": talk, "who": who, "about": about, "push": push},
-        )
+        chosen: dict[str, object] = {
+            "next_zone": next_zone,
+            "next_floor": next_floor,
+            "interact": with_id is not None,
+            "with": with_id,
+            "topic": topic,
+            "mood": 1 if outage else 2,
+            "raise_outage": raised,
+        }
+        # Beliefs, revised alongside (MEM-0002): the rules twin reads them off
+        # the facts the model would be told.
+        if outage:
+            chosen["vendor_reliability"] = _reliability(ctx.facts.get("outage_hours"))
+        if ctx.facts.get("strained"):
+            chosen["employer_strain"] = 3 if ctx.facts.get("warned") else 2
+        return chosen, {
+            "go": go,
+            "talk": talk,
+            "who": who,
+            "about": about,
+            "push": push,
+        }
 
     def _credit_decision(
         self, ctx: DecisionContext, rng: object
@@ -318,6 +346,62 @@ class RulesPolicy:
         small, large = (0.45, 0.2) if stressed else (0.3, 0.1)
         order = "large" if roll < large else "small" if roll < large + small else "none"
         return {"order": order}, {"order": roll}
+
+    # -- the archetype flows (WORLD-0008) ------------------------------------
+
+    def _supply_order(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """Buy when the shelves say so; buy less when the price has gone up."""
+
+        roll = _uniform(rng)
+        level = int(_num(ctx.facts.get("stock_level"), 2))
+        pricey = bool(ctx.facts.get("price_up"))
+        if level == 0:
+            order = "small" if pricey else "large"
+        elif level == 1:
+            order = "small" if pricey else "large"
+        elif level == 2:
+            order = "small" if roll < (0.4 if pricey else 0.6) else "none"
+        else:
+            order = "none"
+        return {"order": order}, {"order": roll}
+
+    def _credit_draw(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """Whether to go to the bank is temperament: the cautious go without."""
+
+        roll = _uniform(rng)
+        appetite = _num(ctx.traits.get("risk_appetite"), 0.45)
+        return {"draw": roll < 0.25 + 0.7 * appetite}, {"draw": roll}
+
+    def _subscription_switch(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """Half of the firms that think a vendor unreliable leave it."""
+
+        roll = _uniform(rng)
+        return {"switch": roll < 0.5}, {"switch": roll}
+
+    def _credit_approve(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """A bank's rule of thumb: lend to a firm that pays its way."""
+
+        overdue = int(_num(ctx.facts.get("overdue_bills"), 0))
+        held = bool(ctx.facts.get("payroll_held"))
+        indebted = _num(ctx.facts.get("debt_cents"), 0) > 0
+        if indebted or (held and overdue > 3):
+            return {"decision": "decline", "reason": "not_paying_its_way"}, {}
+        return {"decision": "approve"}, {}
+
+
+def _reliability(outage_hours: object) -> int:
+    """What an outage of this length does to a person's view of the vendor."""
+
+    hours = _num(outage_hours, 0.0)
+    return 0 if hours >= 12 else 1 if hours >= 4 else 2 if hours >= 1 else 3
 
 
 def _num(value: object, default: float) -> float:

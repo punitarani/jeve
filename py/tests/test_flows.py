@@ -18,9 +18,19 @@ from psycopg.rows import DictRow
 from jeve import db
 from jeve.core import orgs
 from jeve.core.clock import DAY, SimTime, at
-from jeve.core.orgs import BY_ID, ORGS, RoleSpec, clients_of, modules_of
+from jeve.core.orgs import (
+    BY_ID,
+    ORGS,
+    RoleSpec,
+    bank,
+    clients_of,
+    modules_of,
+    tenants_of,
+    vendors,
+)
 from jeve.decide.policy import RulesPolicy
 from jeve.sim import advance
+from jeve.world import engine as engine_module
 from jeve.world import flows
 from jeve.world.engine import Engine
 from jeve.world.seed_world import ROOT_SEED, seed
@@ -421,3 +431,316 @@ def test_a_firm_that_cannot_afford_lunch_is_not_asked(
         "SELECT count(*) AS n FROM events WHERE kind = 'catering.ordered'"
     ).fetchone()
     assert ordered is not None and int(ordered["n"]) == 0
+
+
+# -- the archetype flows (WORLD-0008) -----------------------------------------
+
+
+def test_rent_is_billed_by_the_landlord_and_paid_by_every_tenant(
+    conn: Connection[DictRow],
+) -> None:
+    run(conn, days=12)
+    landlords = {org.landlord for org in ORGS if org.landlord is not None}
+    assert landlords
+    for landlord in sorted(landlords):
+        tenants = [t for t in tenants_of(landlord) if t.rent_cents > 0]
+        rows = conn.execute(
+            "SELECT to_org_id, amount_cents, paid_sim FROM invoices "
+            "WHERE kind = 'rent' AND from_org_id = %s ORDER BY to_org_id",
+            (landlord,),
+        ).fetchall()
+        assert [str(r["to_org_id"]) for r in rows] == sorted(t.id for t in tenants)
+        for row in rows:
+            assert int(row["amount_cents"]) == BY_ID[str(row["to_org_id"])].rent_cents
+            # Seven-day terms, answered by the same daily question as any bill.
+            assert row["paid_sim"] is not None, row["to_org_id"]
+    # And somebody from the landlord came round: a person from one firm
+    # standing on another's floor, which is what encounters are made of.
+    visits = conn.execute(
+        "SELECT payload FROM events WHERE kind = 'maintenance.visited'"
+    ).fetchall()
+    assert visits
+    assert any(v["payload"].get("visited_by") for v in visits)
+    books_balance(conn)
+
+
+def test_supplies_are_ordered_delivered_on_foot_and_billed(
+    conn: Connection[DictRow],
+) -> None:
+    run(conn, days=12)
+    orders = conn.execute(
+        "SELECT seq, org_id, sim_time, payload FROM events "
+        "WHERE kind = 'supply.ordered' ORDER BY seq"
+    ).fetchall()
+    assert {str(o["org_id"]) for o in orders} == {
+        org.id for org in ORGS if org.supplier is not None
+    }
+    for order in orders:
+        supplier = BY_ID[str(order["org_id"])].supplier
+        delivery = conn.execute(
+            "SELECT seq, sim_time, actor_id, payload FROM events "
+            "WHERE kind = 'supply.delivered' AND %s = ANY(causes)",
+            (order["seq"],),
+        ).fetchone()
+        assert delivery is not None, order["org_id"]
+        assert (
+            SimTime(int(delivery["sim_time"])).day > SimTime(int(order["sim_time"])).day
+        )
+        assert delivery["payload"]["units"] == order["payload"]["units"]
+        # Carried by the supplier's driver, who is then standing in the shop.
+        assert delivery["actor_id"] is not None
+        carried = conn.execute(
+            "SELECT 1 FROM events WHERE kind = 'agent.moved' AND actor_id = %s "
+            "AND sim_time = %s AND payload->>'to_zone' = %s",
+            (delivery["actor_id"], delivery["sim_time"], order["org_id"]),
+        ).fetchone()
+        assert carried is not None
+        assert str(delivery["actor_id"]).startswith(f"{supplier}.")
+        bill = conn.execute(
+            "SELECT payload FROM events WHERE kind = 'invoice.issued' "
+            "AND org_id = %s AND %s = ANY(causes)",
+            (supplier, delivery["seq"]),
+        ).fetchone()
+        assert bill is not None
+        assert bill["payload"]["invoice_kind"] == "supplies"
+        assert bill["payload"]["amount_cents"] == order["payload"]["amount_cents"]
+    # Stock is what was delivered less what was sold, and never negative.
+    stock = conn.execute("SELECT min(stock_units) AS low FROM orgs").fetchone()
+    assert stock is not None and int(stock["low"]) >= 0
+    books_balance(conn)
+
+
+def test_a_price_rise_reaches_the_buyer_and_shrinks_the_order(
+    conn: Connection[DictRow],
+) -> None:
+    """The supplier reprices in week two; on rules a buyer told of it buys
+    smaller. The words reach the buyer through the question, so this is
+    also what a model would be told."""
+
+    run(conn, days=12)
+    repriced = conn.execute(
+        "SELECT sim_time, payload FROM events WHERE kind = 'supply.repriced'"
+    ).fetchone()
+    assert repriced is not None and float(repriced["payload"]["multiplier"]) > 1
+    asked = conn.execute(
+        "SELECT sim_time, chosen FROM decisions WHERE question_set = 'supply.order' "
+        "AND sim_time > %s ORDER BY sim_time",
+        (repriced["sim_time"],),
+    ).fetchall()
+    assert asked, "nobody ordered after the price rise"
+    # Once prices are up, nobody on rules places a large order.
+    assert all(a["chosen"]["order"] != "large" for a in asked)
+
+
+def test_a_bare_shelf_sends_customers_away_by_rule(
+    conn: Connection[DictRow],
+) -> None:
+    seed(conn, root_seed=ROOT_SEED)
+    shop = next(org for org in ORGS if org.supplier is not None and org.retail)
+    with conn.transaction():
+        conn.execute("UPDATE orgs SET stock_units = 0 WHERE id = %s", (shop.id,))
+        conn.execute("DELETE FROM scheduled WHERE kind = 'supply.order'")
+    engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED, spatial=False)
+    advance(conn, engine, until=at(0, 12))
+    sales = conn.execute(
+        "SELECT count(*) AS n FROM events WHERE kind = 'retail.sale' AND org_id = %s",
+        (shop.id,),
+    ).fetchone()
+    walkouts = conn.execute(
+        "SELECT payload->>'reason' AS reason, count(*) AS n FROM events "
+        "WHERE kind = 'retail.walkout' AND org_id = %s GROUP BY 1",
+        (shop.id,),
+    ).fetchall()
+    assert sales is not None and int(sales["n"]) == 0
+    assert {str(w["reason"]) for w in walkouts} == {"no_stock"}
+    # Settled by the gate, not asked: the walkouts are rules decisions.
+    asked = conn.execute(
+        "SELECT count(*) AS n FROM decisions d JOIN persons p ON p.id = d.person_id "
+        "WHERE d.question_set = 'retail.purchase' AND p.org_id = %s "
+        "AND d.source <> 'rules'",
+        (shop.id,),
+    ).fetchone()
+    assert asked is not None and int(asked["n"]) == 0
+
+
+def test_a_firm_short_of_runway_draws_a_line_and_repays_it(
+    conn: Connection[DictRow],
+) -> None:
+    """Insolvency is a process: cash runs short, the payer applies, the bank's
+    officer approves, wages are paid from the line, and when the firm can it
+    clears the line by rule."""
+
+    seed(conn, root_seed=ROOT_SEED)
+    lender = bank()
+    assert lender is not None
+    # A tenant that earns nothing from beyond the district, so a drained
+    # account stays drained until the bank or its clients refill it.
+    borrower = next(
+        org
+        for org in ORGS
+        if org.landlord is not None
+        and org.id != lender
+        and not org.outside_income_cents
+    )
+    weekly = borrower.wages_per_week_cents
+    engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED, encounters=False)
+    payer = engine.payer_of(borrower.id)
+    assert payer is not None
+    # Take the firm down to a week of wages: a fact on the ledger, not a mood.
+    # And make its bill-payer the borrowing kind, so the rules twin's roll
+    # is about whether the flow works rather than about one temperament.
+    cash = engine.cash_of(f"{borrower.id}.cash")
+    with conn.transaction():
+        conn.execute(
+            "INSERT INTO ledger_txns (sim_time, memo) VALUES (0, 'test: drain') "
+            "RETURNING id"
+        )
+        txn = conn.execute("SELECT max(id) AS id FROM ledger_txns").fetchone()
+        assert txn is not None
+        drain = cash - weekly
+        conn.execute(
+            "INSERT INTO ledger_entries (txn_id, account_id, amount_cents) VALUES "
+            "(%s, %s, %s), (%s, 'external', %s)",
+            (txn["id"], f"{borrower.id}.cash", -drain, txn["id"], drain),
+        )
+        conn.execute(
+            "UPDATE persons SET traits = traits || '{\"risk_appetite\": 0.9}'::jsonb "
+            "WHERE id = %s",
+            (str(payer["id"]),),
+        )
+    advance(conn, engine, until=at(2))
+
+    applied = conn.execute(
+        "SELECT seq, org_id, payload FROM events WHERE kind = 'credit.applied' "
+        "AND org_id = %s ORDER BY seq LIMIT 1",
+        (borrower.id,),
+    ).fetchone()
+    assert applied is not None, "a firm a week from empty never asked the bank"
+    assert applied["payload"]["amount_cents"] == flows.LINE_WEEKS * weekly
+    drawn = conn.execute(
+        "SELECT seq, payload FROM events WHERE kind = 'loan.drawn' "
+        "AND %s = ANY(causes)",
+        (applied["seq"],),
+    ).fetchone()
+    assert drawn is not None and drawn["payload"]["lender"] == lender
+    loan = conn.execute(
+        "SELECT * FROM loans WHERE borrower_org_id = %s", (borrower.id,)
+    ).fetchone()
+    assert loan is not None and int(loan["balance_cents"]) == flows.LINE_WEEKS * weekly
+    books_balance(conn)
+
+    # With the line in the account, the firm can afford a payroll it could
+    # not have before; and once it holds four weeks of wages beyond the
+    # balance, the line is cleared without anyone being asked.
+    with conn.transaction():
+        conn.execute(
+            "INSERT INTO ledger_txns (sim_time, memo) VALUES (%s, 'test: windfall')",
+            (at(2),),
+        )
+        txn = conn.execute("SELECT max(id) AS id FROM ledger_txns").fetchone()
+        assert txn is not None
+        windfall = flows.REPAY_AT_WEEKS * weekly + int(loan["balance_cents"])
+        conn.execute(
+            "INSERT INTO ledger_entries (txn_id, account_id, amount_cents) VALUES "
+            "(%s, %s, %s), (%s, 'external', %s)",
+            (txn["id"], f"{borrower.id}.cash", windfall, txn["id"], -windfall),
+        )
+    advance(conn, engine, until=at(3))
+    repaid = conn.execute(
+        "SELECT payload FROM events WHERE kind = 'loan.repaid' AND org_id = %s",
+        (borrower.id,),
+    ).fetchone()
+    assert repaid is not None
+    closed = conn.execute(
+        "SELECT closed_sim, balance_cents FROM loans WHERE id = %s", (loan["id"],)
+    ).fetchone()
+    assert closed is not None and closed["closed_sim"] is not None
+    assert int(closed["balance_cents"]) == 0
+    books_balance(conn)
+
+
+def test_the_bank_declines_a_firm_that_is_not_paying_its_way(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rules twin's bank: held payroll and a stack of overdue bills is a
+    decline, recorded with its reason and citing the application."""
+
+    seed(conn, root_seed=ROOT_SEED)
+    lender = bank()
+    assert lender is not None
+    borrower = next(
+        org for org in ORGS if org.landlord is not None and org.id != lender
+    )
+    with conn.transaction():
+        # Already in debt: the one thing the rules twin never lends into.
+        conn.execute(
+            "INSERT INTO loans (lender_org_id, borrower_org_id, principal_cents, "
+            "balance_cents, rate_bp, opened_sim) "
+            "VALUES (%s, %s, 1000000000, 1000000000, 900, 0)",
+            (lender, borrower.id),
+        )
+        conn.execute(
+            "INSERT INTO scheduled (due_sim_time, kind, subject_id, payload) "
+            "VALUES (%s, 'credit.decide', %s, %s)",
+            (at(0, 10), borrower.id, json.dumps({"amount": 1_000_00})),
+        )
+    engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED, spatial=False)
+    advance(conn, engine, until=at(0, 11))
+    declined = conn.execute(
+        "SELECT payload, org_id FROM events WHERE kind = 'credit.declined'"
+    ).fetchone()
+    assert declined is not None and declined["org_id"] == lender
+    assert declined["payload"]["applicant"] == borrower.id
+    assert declined["payload"]["reason"] == "not_paying_its_way"
+    assert conn.execute("SELECT count(*) AS n FROM loans").fetchone()["n"] == 1
+
+
+@pytest.mark.parametrize("which", [0, 1], ids=["first_vendor", "second_vendor"])
+def test_the_second_vendors_outage_reaches_its_own_customers_till(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch, which: int
+) -> None:
+    """A vendor's register goes down; the tills on *its* product slow and the
+    other vendor's customers notice nothing. Which till depends on which
+    product is data, so it is tried from both sides."""
+
+    seed(conn, root_seed=ROOT_SEED)
+    vendor = vendors()[which].id
+    other = vendors()[1 - which].id
+    till = next(m for m in modules_of(vendor) if m.endswith("pos"))
+    users = [
+        org.id for org in ORGS if org.retail and modules_of(org.id, "pos") == (till,)
+    ]
+    bystanders = [
+        org.id
+        for org in ORGS
+        if org.retail and modules_of(org.id, "pos") not in ((till,), ())
+    ]
+    assert users and bystanders
+    with conn.transaction():
+        conn.execute("DELETE FROM scheduled WHERE kind = 'incident.start'")
+        conn.execute(
+            "INSERT INTO scheduled (due_sim_time, kind, subject_id, payload) "
+            "VALUES (%s, 'incident.start', %s, %s)",
+            (at(0, 9), till, '{"severity": 2, "expected_minutes": 480}'),
+        )
+    # One outage, the scheduled one: the hazard would otherwise be free to
+    # take the other vendor's register down the same morning.
+    monkeypatch.setattr(engine_module, "HAZARD_PER_HOUR", 0.0)
+    engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED, spatial=False)
+    advance(conn, engine, until=at(0, 14))
+    down = {
+        str(r["org_id"]): int(r["n"])
+        for r in conn.execute(
+            "SELECT org_id, count(*) AS n FROM retail_sales WHERE till_down "
+            "AND sim_time < %s GROUP BY 1",
+            (at(0, 14),),
+        ).fetchall()
+    }
+    assert all(down.get(org, 0) > 0 for org in users), down
+    assert all(down.get(org, 0) == 0 for org in bystanders), down
+    # And the ticket about it goes to the vendor that sells it, not the other one.
+    triaged = conn.execute(
+        "SELECT DISTINCT org_id FROM events WHERE kind = 'ticket.triaged'"
+    ).fetchall()
+    assert {str(t["org_id"]) for t in triaged} == {vendor}
+    assert other != vendor
