@@ -21,7 +21,7 @@ from typing import Any
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-from jeve import db
+from jeve import db, memory
 from jeve.core.clock import (
     DAY,
     HOUR,
@@ -110,6 +110,14 @@ class TickReport:
     sim_time: int
     events: list[str] = field(default_factory=list)
     decisions: int = 0
+    in_episode: set[str] = field(default_factory=set)
+    """Who spent this tick in a conversation (WORLD-0006).
+
+    Three rounds is most of a quarter of an hour. Somebody who was in one is not
+    also at their desk clearing tickets in the same fifteen minutes, and the
+    organisational-simulation literature is unanimous that a meeting costs
+    attention — a model in which talking is free makes talking strictly
+    dominant. Held for the tick, not stored: it is about now."""
 
     def add(self, kind: str) -> None:
         self.events.append(kind)
@@ -125,6 +133,7 @@ class Engine:
         debt_level: float = 1.0,
         encounters: bool = True,
         spatial: bool = True,
+        episodes: bool = False,
     ) -> None:
         self._conn = conn
         self._policy = policy
@@ -134,6 +143,14 @@ class Engine:
         """Off, people still move but meeting changes nothing: the control arm
         for "does space matter?"."""
         self.spatial = spatial
+        self.episodes = episodes
+        """On, a meeting with a stake gets rounds instead of one shot
+        (WORLD-0006). Off by default, and that is a claim about evidence rather
+        than about confidence: the one-shot encounter is the control arm, and
+        whether the extra resolution changes anything downstream is what
+        `ops/episodes.md` measures. It is also what keeps `make e2e` honest —
+        episodes ask questions no cassette holds, so turning them on for the
+        recorded fixture means re-recording it."""
         # Whatever ran before us may have died mid-tick (WORLD-0002).
         db.resync_sequences(self._conn)
         self._conn.commit()
@@ -489,7 +506,24 @@ class Engine:
             module_id,
             {"incident_id": int(row["id"]), "cause": seq},
         )
-        self._will_notice(int(row["id"]), module_id, report.sim_time)
+        incident_id = int(row["id"])
+        self._will_notice(incident_id, module_id, report.sim_time)
+
+        # That the module is down is now a thing people can tell each other
+        # (MEM-0002). The vendor's own staff know at once — it is their outage.
+        fact = memory.Fact.outage(incident_id, module_id)
+        memory.record_fact(self._conn, fact, sim_time=report.sim_time, seq=seq)
+        for person in self._conn.execute(
+            "SELECT id FROM persons WHERE org_id = 'tallybird' AND kind = 'staff' "
+            "ORDER BY id"
+        ).fetchall():
+            memory.learn(
+                self._conn,
+                str(person["id"]),
+                fact.id,
+                sim_time=report.sim_time,
+                seq=seq,
+            )
 
     def _will_notice(self, incident_id: int, module_id: str, started: int) -> None:
         """Everyone who uses the module finds out it is down — each in their own
@@ -535,6 +569,13 @@ class Engine:
         causes += _seq_of(row["escalation_event_seq"])
         self._conn.execute(
             "UPDATE modules SET status = 'up' WHERE id = %s", (module_id,)
+        )
+        # An outage that is over is gossip, not news: it stops travelling, and
+        # stops creating notices for an incident nobody can still be stuck on.
+        memory.make_stale(
+            self._conn,
+            memory.Fact.outage(incident_id, module_id).id,
+            sim_time=report.sim_time,
         )
         minutes = (report.sim_time - int(row["started_sim"])) // 60
         ended_seq = self._emit(
@@ -583,6 +624,15 @@ class Engine:
         contexts: list[DecisionContext] = []
         for row in waiting:
             person_id = str(row["person_id"])
+            # They have noticed it themselves, first hand. Written down whether
+            # or not they go on to report it: knowing is not the same as acting,
+            # and it is knowing that they can pass on (MEM-0002).
+            memory.learn(
+                self._conn,
+                person_id,
+                memory.Fact.outage(int(row["incident_id"]), str(row["module_id"])).id,
+                sim_time=report.sim_time,
+            )
             if row["asked_day"] is not None and not self.gets_to_it(
                 person_id, now, "report", row["asked_day"]
             ):
@@ -686,6 +736,10 @@ class Engine:
 
         for agent in staff:
             person_id = str(agent["id"])
+            if person_id in report.in_episode:
+                # They spent this quarter of an hour in a conversation. A world
+                # where talking is free makes talking strictly dominant.
+                continue
             traits = dict(agent["traits"] or {})
 
             # Triage the oldest untriaged ticket.
@@ -1102,6 +1156,8 @@ class Engine:
             if payer is None:
                 continue
             person_id = str(payer["id"])
+            if person_id in report.in_episode:
+                continue
             if now.time_of_day < self.slot(person_id, now.day, "bills"):
                 continue
             bills = [
@@ -1126,6 +1182,8 @@ class Engine:
                         "can_afford": cash >= int(bill["amount_cents"]),
                         "runway_days": cash / max(1, int(bill["amount_cents"])) * 7,
                         "chased": bill["chased_sim"] is not None,
+                        "promised": memory.open_commitment(self._conn, int(bill["id"]))
+                        is not None,
                     },
                     traits=dict(payer["traits"] or {}),
                 )
@@ -1170,6 +1228,8 @@ class Engine:
                         "runway_days": 60,
                         "chased": bill["chased_sim"] is not None,
                         "autopay": autopay,
+                        "promised": memory.open_commitment(self._conn, int(bill["id"]))
+                        is not None,
                     },
                     traits=traits,
                 )
@@ -1268,6 +1328,10 @@ class Engine:
                 "days_late) VALUES (%s,%s,%s,%s,%s)",
                 (bill["id"], report.sim_time, amount, txn, days_late),
             )
+            # Anyone who gave their word about this bill has now kept it.
+            memory.close_commitments_for(
+                self._conn, int(bill["id"]), sim_time=report.sim_time, kept=True
+            )
 
     def _chase(self, report: TickReport, now: SimTime) -> None:
         """A bill a week late gets chased — if whoever is owed is the type.
@@ -1296,7 +1360,9 @@ class Engine:
             if issuer not in chasers:
                 chasers[issuer] = self.payer_of(issuer)
             chaser = chasers[issuer]
-            if chaser is None or not self.gets_to_it(
+            if chaser is None or str(chaser["id"]) in report.in_episode:
+                continue
+            if not self.gets_to_it(
                 str(chaser["id"]), now, "chasing", bill["chase_asked_day"]
             ):
                 continue

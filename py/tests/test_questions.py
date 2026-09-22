@@ -43,6 +43,30 @@ ASKING: dict[str, dict[str, object]] = {
         "cash_multiple": 1.4,
         "timesheets_available": False,
     },
+    # The richest path through an episode round: somebody who can settle the
+    # matter, already pushed, with a piece of news in their pocket — so `act`,
+    # `settled`, `mood` and `mention` are all in the request.
+    "episode.round": {
+        "org": "halloran",
+        "here": "cafe",
+        "stake": "invoice",
+        "role_in_stake": "holder",
+        "days_late": 9,
+        "large": True,
+        "present": [
+            {
+                "id": "ledgerline.client_admin.17",
+                "org": "ledgerline",
+                "role": "client_admin",
+            }
+        ],
+        "raised": True,
+        "pressed": True,
+        "promised": False,
+        "refused": False,
+        "tension": 1,
+        "tellable_topic": "price_rise",
+    },
     "agent.tick": {
         "org": "halloran",
         "here": "cafe",

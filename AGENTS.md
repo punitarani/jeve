@@ -16,7 +16,8 @@ simulation ever reads generated text.
 |---|---|
 | `py/src/jeve/` | The simulation. `core → llm → decide → world → sim`, with `gen` and `api` on the outside. `tests/test_layering.py` enforces it |
 | `py/src/jeve/decide/` | The `Policy` seam: `JevPolicy`, its rules twin, question sets, J/P/H sampling, the call cache |
-| `py/src/jeve/world/` | Engine, the ten flows, the scheduler registry, the town map, encounters |
+| `py/src/jeve/world/` | Engine, the ten flows, the scheduler registry, the town map, encounters and episodes |
+| `py/src/jeve/memory/` | What persists between meetings: facts, who knows them, promises (MEM-0002) |
 | `py/src/jeve/sim/` | `python -m jeve.sim`: the one run loop, for fixture, daemon and soak alike |
 | `py/src/jeve/gen/` | Prose rendered from typed state. **Nothing that computes the world may import it** |
 | `py/fixtures/cassettes/` | Recorded Jev responses, keyed by content hash of `(model, state, questions)`. What makes `make e2e` free |
@@ -27,7 +28,7 @@ simulation ever reads generated text.
 | `packages/contracts/` | zod schemas for everything the API serves (generated from pydantic) |
 | `tools/contract-gen/` | pydantic → zod contract generation |
 | `decisions/` | Decision records and their generated index |
-| `docs/research/` | Ground truth on Jev, prior-art mapping, validation survey |
+| `docs/research/` | Ground truth on Jev, prior-art mapping, validation survey, the recursive-micro-simulation survey |
 | `docs/design/` | Long-form analysis behind the decision records |
 | `ops/` | Runtime state (spend ledger) and tracked measurements (`economics.md`, `soak.md`, `persona-probe.md`, `providers.md`) |
 | `tools/` | Contract generation and utility scripts |
@@ -314,6 +315,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### MEM-0002: Facts travel, promises are scored, and both are typed rows
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/memory/**`, `py/migrations/0009_episodes.sql`, `py/tests/test_episodes.py`  
+**Tags**: memory, knowledge, diffusion, commitments, agent-decided
+
+A **fact** is a thing that can be known and passed on, identified by what it is about (`outage:<incident>`, `price_rise:<org>`) rather than minted from a counter, so the same news is the same row in every arm of a counterfactual. **Knowledge** records who holds it, from whom, and at what remove. A **commitment** is a promise to pay a particular bill.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### OPS-0001: deployment topology — fly process groups, workers static assets, doppler secrets
 
 **Status**: accepted (2026-09-21)  
@@ -513,6 +526,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: economy, flows, soak, agent-decided
 
 - **Tickets end.** An answered ticket is confirmed by its reporter (a decision) once the module is back, or closes by rule after two days. The same person hitting the same module within three days reopens it rather than filing anew. - **Months recur.** `month.end`, `close.run`, payroll and catering reschedule themselves; scheduled work is a registry of handlers, each marked `office_hours_only` or not, replacing a nine-branch `if`. - **Every bill is answered once a day.** From two days before it is due, each unpaid invoice gets one `payment.timing` question per sim-day, at an hour that belongs to the payer (CORE-0009), sampled once — not a per-tick hazard. The per-tick `LIMIT` windows go, and with them 1,591 `payment.deferred` events that recorded a die being rolled. A bill seven days late is chased by its issuer (`chase.invoice`, where `vocality` finally reaches a question). Clients in the four prompter quintiles pay by standing instruction on the due date: a gate, not a question. - **Wages come back.** Staff are paid into a household account and spend from it at the cafe. Households are accounts without an org, funded by an opening balance against `external`; payroll is four legs. - **The books open mid-story.** The seed includes last month's invoices falling due in the first week, so collection is visible inside a ten-day run. Initial conditions, not outcomes. - **Gates are written once** (`decide/gates.py`) and read by both policies: not due, cannot afford, already open. - **`make soak`** runs 35 days on rules and asserts invariants, not outcomes: the ledger balances; tickets opened in week five; a second month-end and its close; no receivable older than sixty days unanswered; every firm that trends to zero has an `insolvency.warning` that names why; every counterparty segment acts. It writes `ops/soak.md`. If behaviour sinks a firm, that is reported.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0006: Give a meeting with a stake rounds instead of one shot
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/world/episodes.py`, `py/src/jeve/world/space.py`, `py/migrations/0009_episodes.sql`, `py/tests/test_episodes.py`, `py/src/jeve/sim/episode_study.py`  
+**Tags**: episodes, encounters, space, causality, resolution, agent-decided
+
+A meeting becomes an **episode** — two to four people, up to three rounds, one typed request per participant per round — only when they have something between them: a broken module one can act on, a live bill between their firms, or news one holds and another lacks. Everyone else keeps the one-shot encounter, which stays the control arm and the cheap proxy. Episodes are **off by default**.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

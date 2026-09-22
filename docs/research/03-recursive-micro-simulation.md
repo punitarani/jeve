@@ -54,6 +54,18 @@ escalation → invoice timeline that `test_space.py` already measures. (3) The p
 test: the one-shot encounter's marginal must match the episode's, or every study confounds
 resolution with base rate.
 
+> **Built, 2026-09-22.** All three, as WORLD-0006 (episodes) and MEM-0002 (the store they
+> write to), with `make episodes` as the harness. The first result is in `ops/episodes.md`
+> and the design analysis in `docs/design/011-episodes.md`. Headline: over 21 sim-days on
+> the rules twin, episodes pulled the first services invoice forward about sixteen hours
+> and cut total outage minutes, at +2.1% decisions — and step (3) **failed**, which is the
+> more useful finding. The proxy escalates 0.10 of the outage conversations it sees against
+> the episode arm's 0.72, so resolution and base rate are entangled in this world. That gap
+> is an upper bound, because the two denominators are different constructs and selection
+> sits inside it; separating them needs a shadow arm that computes episodes everywhere and
+> applies them nowhere. Episodes therefore ship switched off. Nothing below has been
+> rewritten in hindsight — §7's experiments were pre-registered before any of it ran.
+
 ---
 
 ## 1. The idea, stated so it can be tested

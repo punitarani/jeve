@@ -22,6 +22,27 @@ Cloudflare site.
 * `fly config validate` and `wrangler deploy --dry-run` are clean.
 * 36 audit screenshots in `docs/audit/shots/` at ~61fps on SwiftShader.
 
+## Since then: episodes (WORLD-0006, MEM-0002)
+
+A meeting with a stake between the people in it can now get up to three rounds
+instead of one shot, and has somewhere to write the result: facts that travel,
+promises that are scored. **Off by default** (`--episodes` / `JEVE_EPISODES=1`),
+because the one-shot encounter is the control arm and `episode.round` asks
+questions the golden cassette does not hold.
+
+* `make episodes` plays the same 21 sim-days twice, with and without, and writes
+  `ops/episodes.md`. First result: episodes pulled the first services invoice
+  forward ~16h and cut total outage minutes, at +2.1% decisions — and the two
+  resolutions **disagree** about how often a conversation gets an outage
+  escalated (0.10 against 0.72), so the dial moves base rates too. That gap is
+  an upper bound; separating selection from resolution needs a shadow arm that
+  computes episodes everywhere and applies them nowhere. It is the next piece of
+  work and the reason episodes ship switched off.
+* The survey behind it is `docs/research/03-recursive-micro-simulation.md`; the
+  design analysis is `docs/design/011-episodes.md`.
+* `GET /episodes` and `GET /episodes/{id}` serve the typed record, its rounds,
+  and what it caused. No prose, and none is rendered on request.
+
 ## Not yet done
 
 * **Nothing is deployed.** Fly app, Cloudflare site, and secrets exist only
