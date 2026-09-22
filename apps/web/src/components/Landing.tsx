@@ -8,14 +8,14 @@
  * "API is not reachable" state is a client concern rather than a 500.
  */
 import { useEffect, useState } from "react";
-import type { SimEvent, WorldState } from "@jeve/contracts";
+import type { EventPage, WorldState } from "@jeve/contracts";
 import { fetchLatestEvents, fetchState } from "@/lib/api";
 import { JellyLoader } from "@/components/block/jelly-loader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dashboard } from "./Dashboard";
 import { WorldHero } from "./WorldHero";
 
-type Loaded = { state: WorldState; events: SimEvent[] };
+type Loaded = { state: WorldState; page: EventPage };
 
 // Jeve's ramp: panel grey up to the accent purple, matching --line→--mark.
 const JEVE_COLORS = [
@@ -35,9 +35,15 @@ export function Landing() {
 
 	useEffect(() => {
 		let cancelled = false;
+		// Six hundred, not a scroll page's two hundred. `encounter` is most of
+		// the log and the dashboard hides it by default, so 200 raw events is
+		// about 50 rows on screen — and in a ten-day fixture the newest outage
+		// sits some 900 events back. A first paint that reaches no incident is
+		// a dashboard opening on nothing worth reading. Scrollback pages in
+		// smaller steps from here.
 		Promise.all([fetchState(), fetchLatestEvents(600)])
 			.then(([state, page]) => {
-				if (!cancelled) setData({ state, events: page.events });
+				if (!cancelled) setData({ state, page });
 			})
 			.catch((reason: unknown) => {
 				if (!cancelled)
@@ -79,7 +85,7 @@ export function Landing() {
 					<p className="muted">Loading the world…</p>
 				</main>
 			) : (
-				<Dashboard initialState={data.state} initialEvents={data.events} />
+				<Dashboard initialState={data.state} initialPage={data.page} />
 			)}
 		</>
 	);

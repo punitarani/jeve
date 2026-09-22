@@ -97,7 +97,12 @@ export type SimEvent = z.infer<typeof SimEvent>;
 
 export const EventPage = z.object({
   events: z.array(SimEvent),
+  /** the newest seq in this page: the cursor for `after` */
   seq: z.number().int(),
+  /** the oldest seq in this page: the cursor for `before`; 0 when empty */
+  oldest: z.number().int(),
+  /** whether another page exists in the direction this one travelled */
+  more: z.boolean(),
 });
 export type EventPage = z.infer<typeof EventPage>;
 
