@@ -1,8 +1,10 @@
 # Handoff
 
-Jeve is a continuously-running simulation of a four-firm street economy
-(Tallybird Software, Halloran & Pike LLP, Ledgerline Accounting, Third Rail
-Cafe). Agents act through *typed* decisions from Jev over OpenRouter; prose
+Jeve is a continuously-running simulation of a twelve-firm district economy
+(two software vendors, a law firm, an accountancy, a landlord, a cafe, a
+dental clinic, an architecture studio, a credit union, a hardware store, a
+gym and a provisions supplier; the roster is `py/src/jeve/core/orgs.py`).
+Agents act through *typed* decisions from Jev over OpenRouter; prose
 is a projection, never an input. State lives in Postgres; the browser reads
 it through a FastAPI on Fly.io and renders a voxel town from a static
 Cloudflare site.

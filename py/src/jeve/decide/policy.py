@@ -153,7 +153,7 @@ class RulesPolicy:
             {"pay": draw},
         )
 
-    def _cafe_purchase(
+    def _retail_purchase(
         self, ctx: DecisionContext, rng: object
     ) -> tuple[dict[str, object], dict[str, float]]:
         """Buy, or walk out because the queue is too long.
@@ -166,7 +166,7 @@ class RulesPolicy:
         nearly half the town was already leaving.
         """
 
-        pos_down = bool(ctx.facts.get("pos_down"))
+        pos_down = bool(ctx.facts.get("till_down"))
         queue_length = _num(ctx.facts.get("queue_length"), 0.0)
         patience = _num(ctx.traits.get("patience"), 0.5)
 
@@ -225,8 +225,6 @@ class RulesPolicy:
         """
 
         go, talk, who, about, push = (_uniform(rng) for _ in range(5))
-        here = str(ctx.facts.get("here", ""))
-        own = str(ctx.facts.get("own_zone", here))
         present = ctx.facts.get("present")
         people = (
             [p for p in present if isinstance(p, dict)]
@@ -236,14 +234,29 @@ class RulesPolicy:
         outage = bool(ctx.facts.get("outage"))
         hour = (ctx.sim_time % 86400) // 3600
         lunch = 12 <= hour < 14
+        social = ctx.facts.get("social")
+        places = list(social) if isinstance(social, dict) else []
 
-        if here != own:
-            next_zone = own if go < 0.5 else here
-        elif ctx.facts.get("org") == "thirdrail":
-            next_zone = here  # someone has to mind the counter
+        if not ctx.facts.get("at_workplace"):
+            choice = "own_workplace" if go < 0.5 else "stay"
+        elif ctx.facts.get("minds_counter"):
+            choice = "stay"  # someone has to mind the counter
         else:
-            cafe = 0.25 if lunch else 0.04
-            next_zone = "cafe" if go < cafe else "plaza" if go < cafe + 0.04 else here
+            out = 0.25 if lunch else 0.04
+            lobby = 0.03 if ctx.facts.get("lobby") else 0.0
+            if go < out and places:
+                choice = places[int(go / out * len(places))]
+            elif go < out + 0.04:
+                choice = "plaza"
+            elif go < out + 0.04 + lobby:
+                choice = "lobby"
+            else:
+                choice = "stay"
+        # The same table as the model's answers go through: a place is a
+        # place whoever decided (WORLD-0006).
+        from jeve.decide.questions import resolve_destination
+
+        next_zone, next_floor = resolve_destination(ctx, choice)
 
         sociability = _num(ctx.traits.get("sociability"), 0.5)
         with_id: str | None = None
@@ -257,6 +270,7 @@ class RulesPolicy:
         return (
             {
                 "next_zone": next_zone,
+                "next_floor": next_floor,
                 "interact": with_id is not None,
                 "with": with_id,
                 "topic": topic,

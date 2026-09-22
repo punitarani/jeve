@@ -16,14 +16,14 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve import db
+from jeve.core import orgs
 from jeve.core.clock import DAY, SimTime, at
+from jeve.core.orgs import BY_ID, ORGS, RoleSpec, clients_of, modules_of
 from jeve.decide.policy import RulesPolicy
 from jeve.sim import advance
 from jeve.world import flows
 from jeve.world.engine import Engine
-from jeve.world.flows import WEEKLY_WAGE_CENTS
-from jeve.world.map import ORG_ZONE
-from jeve.world.seed_world import ROOT_SEED, STAFF, seed
+from jeve.world.seed_world import ROOT_SEED, seed
 from tests.worldcache import build_once
 
 pytestmark = pytest.mark.timeout(300)
@@ -167,18 +167,11 @@ def test_everyone_is_paid_on_friday_and_the_books_balance(
         "SELECT org_id, sim_time, payload FROM events WHERE kind = 'payroll.paid' "
         "ORDER BY org_id"
     ).fetchall()
-    assert [str(p["org_id"]) for p in paid] == [
-        "halloran",
-        "ledgerline",
-        "tallybird",
-        "thirdrail",
-    ]
+    assert [str(p["org_id"]) for p in paid] == sorted(org.id for org in ORGS)
     for row in paid:
         when = SimTime(int(row["sim_time"]))
         assert when.weekday == 4 and when.in_office_hours
-        expected = sum(
-            WEEKLY_WAGE_CENTS[role] for org, role, _ in STAFF if org == row["org_id"]
-        )
+        expected = BY_ID[str(row["org_id"])].wages_per_week_cents
         assert row["payload"]["amount_cents"] == expected
         spent = conn.execute(
             "SELECT e.amount_cents FROM ledger_entries e JOIN ledger_txns t "
@@ -190,7 +183,7 @@ def test_everyone_is_paid_on_friday_and_the_books_balance(
     again = conn.execute(
         "SELECT count(*) AS n FROM scheduled WHERE kind = 'payroll.run'"
     ).fetchone()
-    assert again is not None and int(again["n"]) == 4
+    assert again is not None and int(again["n"]) == len(ORGS)
     books_balance(conn)
 
 
@@ -214,14 +207,22 @@ def test_no_timetrack_no_timesheets_no_payday(conn: Connection[DictRow]) -> None
             "SELECT org_id, payload FROM events WHERE kind = 'payroll.paid'"
         ).fetchall()
     }
-    # Halloran and the cafe keep their hours in TimeTrack; the others do not.
-    assert lateness["tallybird"] == lateness["ledgerline"] == 0
-    assert lateness["halloran"] >= 60 and lateness["thirdrail"] >= 60
+    # The firms whose hours live in Tallybird's TimeTrack are late; the ones on
+    # paper, or on Quill's, are not. Which is which is data (CORE-0012).
+    on_it = {
+        org.id for org in ORGS if modules_of(org.id, "timetrack") == ("timetrack",)
+    }
+    assert 2 <= len(on_it) < len(ORGS)
+    for org in ORGS:
+        if org.id in on_it:
+            assert lateness[org.id] >= 60, org.id
+        else:
+            assert lateness[org.id] == 0, org.id
 
     held = conn.execute(
         "SELECT org_id, causes FROM events WHERE kind = 'payroll.held' ORDER BY seq"
     ).fetchall()
-    assert {str(h["org_id"]) for h in held} == {"halloran", "thirdrail"}
+    assert {str(h["org_id"]) for h in held} == on_it
     outage = conn.execute(
         "SELECT seq FROM events WHERE kind = 'incident.started' "
         "AND payload->>'module_id' = 'timetrack' AND sim_time = %s",
@@ -251,7 +252,7 @@ def test_wages_cannot_be_paid_from_an_empty_account(
     """Whether the money exists is a ledger fact. No policy is asked, no wages
     leave, and the cafe's account never goes below zero."""
 
-    monkeypatch.setitem(flows.WEEKLY_WAGE_CENTS, "barista", 90_000_00)
+    monkeypatch.setitem(orgs.ROLES, "barista", RoleSpec("barista", 90_000_00))
     run(conn, days=5, encounters=False, variant="unaffordable-wages")
 
     cafe = conn.execute(
@@ -271,7 +272,7 @@ def test_wages_cannot_be_paid_from_an_empty_account(
     others = conn.execute(
         "SELECT count(*) AS n FROM events WHERE kind = 'payroll.paid'"
     ).fetchone()
-    assert others is not None and int(others["n"]) == 3
+    assert others is not None and int(others["n"]) == len(ORGS) - 1
     books_balance(conn)
 
 
@@ -284,7 +285,9 @@ def test_books_close_when_the_month_can_be_stated(conn: Connection[DictRow]) -> 
         "SELECT org_id, seq, payload FROM events WHERE kind = 'close.completed' "
         "ORDER BY org_id"
     ).fetchall()
-    assert [str(c["org_id"]) for c in closed] == ["halloran", "tallybird", "thirdrail"]
+    clients = sorted(org.id for org in clients_of("ledgerline"))
+    assert len(clients) >= 3
+    assert [str(c["org_id"]) for c in closed] == clients
     for close in closed:
         # The accountant's fee goes out because the work was done: an invoice
         # from Ledgerline that cites the close, booked as a receivable.
@@ -295,7 +298,7 @@ def test_books_close_when_the_month_can_be_stated(conn: Connection[DictRow]) -> 
         ).fetchone()
         assert fee is not None, close["org_id"]
         assert fee["payload"]["to"] == close["org_id"]
-        assert fee["payload"]["amount_cents"] == flows.CLOSE_FEE_CENTS[close["org_id"]]
+        assert fee["payload"]["amount_cents"] == BY_ID[close["org_id"]].close_fee_cents
     books_balance(conn)
 
 
@@ -376,10 +379,12 @@ def test_lunch_ordered_is_lunch_delivered_billed_and_carried(
         assert when.time_of_day == 12 * 3600
         assert delivery["payload"]["amount_cents"] == order["payload"]["amount_cents"]
 
+        caterer = BY_ID[str(order["org_id"])].caterer
+        assert caterer is not None
         bill = conn.execute(
             "SELECT payload FROM events WHERE kind = 'invoice.issued' "
-            "AND org_id = 'thirdrail' AND %s = ANY(causes)",
-            (delivery["seq"],),
+            "AND org_id = %s AND %s = ANY(causes)",
+            (caterer, delivery["seq"]),
         ).fetchone()
         assert bill is not None and bill["payload"]["to"] == order["org_id"]
 
@@ -389,11 +394,7 @@ def test_lunch_ordered_is_lunch_delivered_billed_and_carried(
         carried = conn.execute(
             "SELECT payload FROM events WHERE kind = 'agent.moved' "
             "AND actor_id = %s AND sim_time = %s AND payload->>'to_zone' = %s",
-            (
-                delivery["actor_id"],
-                delivery["sim_time"],
-                ORG_ZONE[str(order["org_id"])].value,
-            ),
+            (delivery["actor_id"], delivery["sim_time"], order["org_id"]),
         ).fetchone()
         assert carried is not None, (order["org_id"], delivery["actor_id"])
 

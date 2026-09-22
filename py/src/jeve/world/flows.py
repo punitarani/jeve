@@ -23,23 +23,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from jeve.core.clock import DAY, TICK, SimTime, next_office_open
+from jeve.core.orgs import BY_ID, module_owner, modules_of, wage
 from jeve.decide.policy import DecisionContext
 from jeve.world import scheduler
 
 if TYPE_CHECKING:
     from jeve.world.engine import Engine, TickReport
-
-# Weekly wage by role, in cents. A rule, like every price in this world.
-WEEKLY_WAGE_CENTS: dict[str, int] = {
-    "founder": 2_400_00, "eng_lead": 2_200_00, "engineer": 1_900_00,
-    "sre": 2_000_00, "support_lead": 1_500_00, "support": 1_200_00,
-    "account_manager": 1_500_00, "partner": 3_000_00,
-    "senior_associate": 2_300_00, "junior_associate": 1_500_00,
-    "paralegal": 1_100_00, "office_manager": 1_200_00, "principal": 2_400_00,
-    "senior_accountant": 1_800_00, "staff_accountant": 1_300_00,
-    "payroll": 1_200_00, "client_admin": 1_100_00, "owner": 900_00,
-    "shift_lead": 800_00, "barista": 600_00, "baker": 700_00, "weekend": 300_00,
-}  # fmt: skip
 
 # What a credit is worth, as a share of the month's fee for the broken module.
 CREDIT_SHARE: dict[str, float] = {"none": 0.0, "partial": 0.25, "full_month": 1.0}
@@ -67,9 +56,10 @@ def credits(
     minutes: int,
     escalated: bool,
 ) -> None:
-    """Tallybird's account manager decides what each affected firm is owed."""
+    """The vendor's account manager decides what each affected firm is owed."""
 
-    manager = _person(engine, "account_manager", "tallybird")
+    vendor = module_owner(module_id)
+    manager = _person(engine, "account_manager", vendor)
     if manager is None:
         return
     incident = engine.conn.execute(
@@ -115,10 +105,10 @@ def credits(
         # A credit is applied against what the firm still owes for the service.
         # Money is never conjured: no unpaid invoice, nothing to credit against.
         invoice = engine.conn.execute(
-            "SELECT id, amount_cents FROM invoices WHERE from_org_id = 'tallybird' "
+            "SELECT id, amount_cents FROM invoices WHERE from_org_id = %s "
             "AND to_org_id = %s AND kind = 'subscription' AND paid_sim IS NULL "
             "ORDER BY due_sim, id LIMIT 1",
-            (firm["org_id"],),
+            (vendor, firm["org_id"]),
         ).fetchone()
         if invoice is None:
             continue
@@ -148,8 +138,8 @@ def credits(
         # A credit note: the reverse of the entry that booked the invoice.
         engine.post(
             report.sim_time,
-            f"tallybird credits {firm['org_id']} for the {module_id} outage",
-            [("tallybird.receivable", -amount), ("tallybird.revenue", amount)],
+            f"{vendor} credits {firm['org_id']} for the {module_id} outage",
+            [(f"{vendor}.receivable", -amount), (f"{vendor}.revenue", amount)],
             seq,
         )
         if settles:
@@ -173,13 +163,19 @@ def credits(
 def payroll(
     engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
 ) -> None:
-    """Friday's wages. Ledgerline runs payroll for every firm in town."""
+    """Friday's wages. The firm's accountant runs its payroll; a firm with no
+    accountant runs its own, from whoever pays its bills."""
 
-    clerk = _person(engine, "payroll", "ledgerline")
+    accountant = BY_ID[org_id].accountant
+    clerk = (
+        _person(engine, "payroll", accountant)
+        if accountant is not None
+        else engine.payer_of(org_id)
+    )
     staff = engine.conn.execute(
         "SELECT role FROM persons WHERE org_id = %s AND kind = 'staff'", (org_id,)
     ).fetchall()
-    total = sum(WEEKLY_WAGE_CENTS.get(str(row["role"]), 1_000_00) for row in staff)
+    total = sum(wage(str(row["role"])) for row in staff)
     if clerk is None or total <= 0:
         return
 
@@ -187,17 +183,15 @@ def payroll(
     if cash < 2 * total:
         _warn_of_insolvency(engine, report, org_id, cash=cash, weekly_wages=total)
 
-    # Timesheets come out of TimeTrack, for the firms that use it.
-    uses_timetrack = engine.conn.execute(
-        "SELECT 1 FROM subscriptions WHERE org_id = %s AND module_id = 'timetrack' "
-        "AND active",
-        (org_id,),
-    ).fetchone()
+    # Timesheets come out of the time-tracking software, for the firms that
+    # keep their hours in one — whichever vendor's it is.
+    timetrack = list(modules_of(org_id, "timetrack"))
     outage = None
-    if uses_timetrack is not None:
+    if timetrack:
         outage = engine.conn.execute(
-            "SELECT cause_event_seq FROM incidents WHERE module_id = 'timetrack' "
-            "AND ended_sim IS NULL ORDER BY id DESC LIMIT 1"
+            "SELECT cause_event_seq FROM incidents WHERE module_id = ANY(%s) "
+            "AND ended_sim IS NULL ORDER BY id DESC LIMIT 1",
+            (timetrack,),
         ).fetchone()
 
     made = engine.decide(
@@ -209,6 +203,7 @@ def payroll(
             kind="payroll.release",
             facts={
                 "employer": org_id,
+                "own_books": accountant is None,
                 "can_afford": cash >= total,
                 "cash_multiple": cash / total,
                 "timesheets_available": outage is None,
@@ -254,10 +249,11 @@ def payroll(
         return
 
     causes = [int(held_seq)] if held_seq else []
-    if held_seq:
+    if held_seq and timetrack:
         ended = engine.conn.execute(
             "SELECT seq FROM events WHERE kind = 'incident.ended' "
-            "AND payload->>'module_id' = 'timetrack' ORDER BY seq DESC LIMIT 1"
+            "AND payload->>'module_id' = ANY(%s) ORDER BY seq DESC LIMIT 1",
+            (timetrack,),
         ).fetchone()
         if ended is not None:
             causes.append(int(ended["seq"]))
@@ -346,11 +342,6 @@ def _warn_of_insolvency(
 
 # -- flow 9: the monthly close -----------------------------------------------
 
-CLOSE_FEE_CENTS: dict[str, int] = {
-    "halloran": 1_200_00,
-    "tallybird": 900_00,
-    "thirdrail": 450_00,
-}
 CLOSE_ATTEMPTS = 5
 
 
@@ -358,15 +349,19 @@ CLOSE_ATTEMPTS = 5
 def close_books(
     engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
 ) -> None:
-    """Ledgerline closes a client's month — if the month can be stated yet.
+    """The client's accountant closes its month — if the month can be stated yet.
 
     A firm whose month-end invoices are stuck behind an outage has no revenue
     figure to close on. So an outage at the software vendor delays the
     accountant's sign-off at a third firm, and the accountant's own fee with it.
     """
 
-    role = "senior_accountant" if org_id != "thirdrail" else "staff_accountant"
-    accountant = _person(engine, role, "ledgerline")
+    client = BY_ID[org_id]
+    if client.accountant is None or client.accountant == org_id:
+        return
+    # A shop's books are a junior's job; a firm that bills clients gets a senior.
+    role = "staff_accountant" if client.archetype == "retail" else "senior_accountant"
+    accountant = _person(engine, role, client.accountant)
     if accountant is None:
         return
     # Stuck means: a month-end run was blocked and nothing has gone out since.
@@ -383,7 +378,8 @@ def close_books(
     if blocked_seq is not None:
         sent = engine.conn.execute(
             "SELECT 1 FROM events WHERE kind = 'invoice.issued' AND org_id = %s "
-            "AND seq > %s AND payload->>'invoice_kind' = 'services' LIMIT 1",
+            "AND seq > %s AND payload->>'invoice_kind' IN ('services', 'milestone') "
+            "LIMIT 1",
             (org_id, blocked_seq),
         ).fetchone()
         stuck = blocked_seq if sent is None else None
@@ -472,9 +468,9 @@ def close_books(
     # The accountant's fee goes out when the work is done, and not before.
     engine.bill(
         report,
-        from_org="ledgerline",
+        from_org=client.accountant,
         to_org=org_id,
-        amount=CLOSE_FEE_CENTS.get(org_id, 600_00),
+        amount=client.close_fee_cents,
         terms_days=14,
         kind="services",
         causes=[closed],
@@ -487,7 +483,6 @@ def close_books(
 # -- flow 10: catering -------------------------------------------------------
 
 CATERING_CENTS: dict[str, int] = {"small": 180_00, "large": 420_00}
-CATERING_BUYERS = ("office_manager", "client_admin", "founder")
 
 
 @scheduler.job("catering.consider", office_hours_only=True)
@@ -496,12 +491,13 @@ def consider_catering(
 ) -> None:
     """Does the firm order lunch in from the cafe for tomorrow?"""
 
+    org = BY_ID[org_id]
     buyer = engine.conn.execute(
         "SELECT id, role, traits FROM persons WHERE org_id = %s AND role = ANY(%s) "
-        "ORDER BY id LIMIT 1",
-        (org_id, list(CATERING_BUYERS)),
+        "ORDER BY array_position(%s::text[], role), id LIMIT 1",
+        (org_id, list(org.buyer_roles), list(org.buyer_roles)),
     ).fetchone()
-    if buyer is None:
+    if buyer is None or org.caterer is None:
         return
     cash = engine.cash_of(f"{org_id}.cash")
     mood = engine.conn.execute(
@@ -564,22 +560,24 @@ def deliver_catering(
     """
 
     from jeve.world import space
-    from jeve.world.map import ORG_ZONE
 
+    caterer = BY_ID[org_id].caterer
+    if caterer is None:
+        return
     size = str(payload.get("size", "small"))
     amount = CATERING_CENTS.get(size, CATERING_CENTS["small"])
     carrier = space.send(
         engine,
         report,
-        org="thirdrail",
-        to=ORG_ZONE[org_id],
-        prefer=("baker", "barista", "weekend", "shift_lead"),
+        org=caterer,
+        to=org_id,
+        prefer=("baker", "kitchen", "barista", "manager"),
     )
     delivered = engine.emit(
         report,
         "catering.delivered",
         actor_id=carrier,
-        org_id="thirdrail",
+        org_id=caterer,
         causes=[int(payload["ordered"])] if payload.get("ordered") else [],
         payload={
             "to_org_id": org_id,
@@ -591,7 +589,7 @@ def deliver_catering(
     )
     engine.bill(
         report,
-        from_org="thirdrail",
+        from_org=caterer,
         to_org=org_id,
         amount=amount,
         terms_days=7,

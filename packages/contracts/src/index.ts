@@ -27,10 +27,23 @@ export const Clock = z.object({
 });
 export type Clock = z.infer<typeof Clock>;
 
+/** A firm's colours (CORE-0012): what its building and its people are drawn in. Served rather than hardcoded so a thirteenth firm needs no client change. */
+export const Palette = z.object({
+  wall: z.string(),
+  floor: z.string(),
+  body: z.string(),
+  accent: z.string(),
+});
+export type Palette = z.infer<typeof Palette>;
+
 export const Org = z.object({
   id: z.string(),
   name: z.string(),
-  kind: z.enum(["software", "law", "accounting", "cafe"]),
+  /** what the firm is: software, law, cafe, gym... */
+  kind: z.string(),
+  /** which flows it takes part in: vendor, professional_services, retail, landlord, supplier or bank (CORE-0012) */
+  archetype: z.string(),
+  palette: Palette,
   cash_cents: z.number().int(),
   receivable_cents: z.number().int(),
 });
@@ -116,6 +129,8 @@ export type CausalChain = z.infer<typeof CausalChain>;
 export const Person = z.object({
   id: z.string(),
   org_id: z.string().nullable(),
+  /** null for a counterparty */
+  team_id: z.string().nullable(),
   name: z.string(),
   role: z.string(),
   kind: z.enum(["staff", "counterparty"]),
@@ -184,27 +199,67 @@ export const DecisionsByKind = z.object({
 });
 export type DecisionsByKind = z.infer<typeof DecisionsByKind>;
 
-/** One building's footprint. `door` is the walkable tile in its wall. */
+/** One building's footprint. `door` is the walkable tile in its wall; the zone is the firm's id (WORLD-0006). */
 export const Building = z.object({
-  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  zone: z.string(),
   org_id: z.string(),
   name: z.string(),
+  kind: z.string(),
+  archetype: z.string(),
+  palette: Palette,
   x0: z.number().int(),
   y0: z.number().int(),
   x1: z.number().int(),
   y1: z.number().int(),
   door: z.tuple([z.number().int(), z.number().int()]),
+  /** the door is in the south wall; false means the north wall */
+  faces_south: z.boolean(),
+  floors: z.number().int(),
+  /** the stair's tile, the same on every floor of the building */
+  stair: z.tuple([z.number().int(), z.number().int()]),
 });
 export type Building = z.infer<typeof Building>;
+
+/** One upper floor of a building, furnished on its own: a local grid over the footprint, `tiles[y - y0][x - x0]`, walls on the edge and no door. */
+export const Storey = z.object({
+  zone: z.string(),
+  floor: z.number().int(),
+  x0: z.number().int(),
+  y0: z.number().int(),
+  tiles: z.array(z.array(z.enum(["grass", "plaza", "path", "wall", "floor", "door", "desk", "counter", "table", "tree", "fountain", "chair", "bench", "sofa", "stair", "whiteboard", "server_rack", "bookshelf", "conference", "reception", "filing", "partition", "kitchen", "kitchenette", "shelf", "rack", "equipment", "dental_chair", "teller", "plant", "planter", "lamp", "void"]))),
+});
+export type Storey = z.infer<typeof Storey>;
+
+/** A team is a floor (CORE-0012): who sits together, and how many of them are there now. */
+export const Team = z.object({
+  id: z.string(),
+  org_id: z.string(),
+  name: z.string(),
+  floor: z.number().int(),
+  layout: z.string(),
+  headcount: z.number().int(),
+  /** how many of the team are on their floor now */
+  present: z.number().int(),
+});
+export type Team = z.infer<typeof Team>;
+
+/** GET /teams — every team of every firm, with who is on their floor now. */
+export const TeamsResponse = z.object({
+  teams: z.array(Team),
+});
+export type TeamsResponse = z.infer<typeof TeamsResponse>;
 
 /** GET /world/map — the whole town, as data. Static for a page's life. */
 export const TownMap = z.object({
   width: z.number().int(),
   height: z.number().int(),
-  tiles: z.array(z.array(z.enum(["grass", "plaza", "path", "wall", "floor", "door", "desk", "counter", "table", "tree", "fountain", "chair", "bench", "whiteboard", "server_rack", "bookshelf", "conference", "reception", "filing", "partition", "kitchen", "plant", "planter", "lamp"]))),
-  zones: z.array(z.array(z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]))),
+  tiles: z.array(z.array(z.enum(["grass", "plaza", "path", "wall", "floor", "door", "desk", "counter", "table", "tree", "fountain", "chair", "bench", "sofa", "stair", "whiteboard", "server_rack", "bookshelf", "conference", "reception", "filing", "partition", "kitchen", "kitchenette", "shelf", "rack", "equipment", "dental_chair", "teller", "plant", "planter", "lamp", "void"]))),
+  zones: z.array(z.array(z.string())),
   buildings: z.array(Building),
+  storeys: z.array(Storey),
+  /** where a sampled crowd may stand, by zone: every social firm's ground floor and the plaza */
   crowd_spots: z.record(z.string(), z.array(z.tuple([z.number().int(), z.number().int()]))),
+  /** the tiles somebody sits on, keyed `zone/floor` */
   seats: z.record(z.string(), z.array(z.tuple([z.number().int(), z.number().int()]))),
 });
 export type TownMap = z.infer<typeof TownMap>;
@@ -214,11 +269,14 @@ export const Agent = z.object({
   id: z.string(),
   name: z.string(),
   org_id: z.string(),
+  team_id: z.string(),
   role: z.string(),
-  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  zone: z.string(),
+  floor: z.number().int(),
   x: z.number().int().nullable(),
   y: z.number().int().nullable(),
-  path: z.array(z.tuple([z.number().int(), z.number().int()])),
+  /** (x, y, floor) nodes, this tick's walk, both ends included */
+  path: z.array(z.tuple([z.number().int(), z.number().int(), z.number().int()])),
   moved_tick: z.number().int(),
   mood: z.number().int(),
 });
@@ -257,7 +315,7 @@ export const EncounterBrief = z.object({
   label: z.string(),
   with_id: z.string(),
   with_name: z.string(),
-  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  zone: z.string(),
   topic: z.string(),
   initiated: z.boolean(),
   led_to: z.array(z.string()),
@@ -270,8 +328,11 @@ export const AgentDetail = z.object({
   name: z.string(),
   org_id: z.string(),
   org_name: z.string(),
+  team_id: z.string(),
+  team_name: z.string(),
   role: z.string(),
-  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  zone: z.string(),
+  floor: z.number().int(),
   mood: z.number().int(),
   traits: z.record(z.string(), z.number()),
   trait_words: z.record(z.string(), z.string()),
@@ -284,8 +345,12 @@ export type AgentDetail = z.infer<typeof AgentDetail>;
 export const OrgDetail = z.object({
   id: z.string(),
   name: z.string(),
-  kind: z.enum(["software", "law", "accounting", "cafe"]),
-  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  kind: z.string(),
+  archetype: z.string(),
+  palette: Palette,
+  zone: z.string(),
+  floors: z.number().int(),
+  teams: z.array(Team),
   cash_cents: z.number().int(),
   receivable_cents: z.number().int(),
   staff_present: z.number().int(),
@@ -352,6 +417,14 @@ export const ORG_COLORS: Record<string, string> = {
   tallybird: "#7c9cff",
   halloran: "#c9a227",
   ledgerline: "#5bb98c",
+  keystone: "#b58a5c",
   thirdrail: "#e0757c",
+  brightwater: "#6fc0d8",
+  meridian: "#9a8ee0",
+  commonwealth: "#5a93b3",
+  pemberton: "#d9944a",
+  quill: "#5fb3b5",
+  ironworks: "#8b939c",
+  northfield: "#93b55a",
 };
 export * from "./world";

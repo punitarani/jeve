@@ -14,6 +14,7 @@ from psycopg.rows import DictRow
 
 from jeve import db
 from jeve.core.clock import DAY, at
+from jeve.core.orgs import BY_ID
 from jeve.decide.policy import DecisionContext, RulesPolicy
 from jeve.sim import advance
 from jeve.world import scheduler
@@ -76,7 +77,7 @@ def test_an_invoice_is_the_same_amount_whenever_it_goes_out(
     assert engine.engaged_clients("halloran", 0) == first
     # Another month is other clients, and other work.
     assert engine.engaged_clients("halloran", 1) != first
-    assert 3 <= len(first) <= 25
+    assert 3 <= len(first) <= BY_ID["halloran"].counterparties
     conn.rollback()
 
 
@@ -91,8 +92,8 @@ def test_two_decisions_by_one_person_in_one_batch_are_consecutive(
 
     seed(conn, root_seed=ROOT_SEED)
     engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED)
-    payer = "halloran.office_manager.12"
-    other = "ledgerline.client_admin.17"
+    payer = "halloran.front_office.office_manager.0"
+    other = "ledgerline.client_services.client_admin.0"
 
     def bill(person: str, days: int) -> DecisionContext:
         return DecisionContext(

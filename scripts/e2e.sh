@@ -19,6 +19,10 @@ cd "$ROOT"
 API_PORT="${JEVE_API_PORT:-8010}"
 WEB_PORT="${JEVE_WEB_PORT:-3010}"
 DAYS="${JEVE_DAYS:-5}"
+# Between a change to the wire bytes and the recording that follows, the
+# cassette is absent and strict replay has nothing to answer with; the browser
+# flow is still worth running, on rules, for free.
+POLICY="${JEVE_E2E_POLICY:-jev}"
 LOGS="$(mktemp -d "${TMPDIR:-/tmp}/jeve-e2e.XXXXXX")"
 API_PID=""; WEB_PID=""; SIM_PID=""
 
@@ -80,7 +84,7 @@ CI=true corepack pnpm install --frozen-lockfile --silent
 say "3/6  offline checks"
 make lint types test decisions
 
-say "4/6  the world, decided by Jev (${CALLS})"
+say "4/6  the world, decided by ${POLICY} (${CALLS})"
 # Flat out to Friday lunchtime, when people are out and about. The last
 # afternoon is left for a *paced* daemon to run while the browser watches, so
 # "the hero advances on its own" is tested against a process that is really
@@ -88,7 +92,7 @@ say "4/6  the world, decided by Jev (${CALLS})"
 # and its replay end in the same place.
 PACED_FROM=$(( 4 * 86400 + 13 * 3600 ))
 "${UVRUN[@]}" python -m jeve.sim --seed-world --until "$PACED_FROM" --day-minutes 0 \
-  --policy jev --calls "$CALLS" --stats "$LOGS/run-1.json" --verbose | tee "$LOGS/fixture.log"
+  --policy "$POLICY" --calls "$CALLS" --stats "$LOGS/run-1.json" --verbose | tee "$LOGS/fixture.log"
 
 say "5/6  api + web + browser flow"
 # Use the API application entry point
@@ -119,7 +123,7 @@ curl -sf "http://localhost:${WEB_PORT}/" >/dev/null || { tail -30 "$LOGS/web.log
 
 # The last afternoon, at four real seconds a tick, while the browser looks on.
 "${UVRUN[@]}" python -m jeve.sim --until-day "$DAYS" --day-minutes 6.4 \
-  --policy jev --calls "$CALLS" --stats "$LOGS/run-2.json" --verbose \
+  --policy "$POLICY" --calls "$CALLS" --stats "$LOGS/run-2.json" --verbose \
   > "$LOGS/daemon.log" 2>&1 &
 SIM_PID=$!
 

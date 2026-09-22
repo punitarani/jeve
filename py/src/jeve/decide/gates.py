@@ -72,10 +72,10 @@ def _catering_order(ctx: DecisionContext) -> Settled | None:
     return None
 
 
-def _cafe_purchase(ctx: DecisionContext) -> Settled | None:
+def _retail_purchase(ctx: DecisionContext) -> Settled | None:
     if not ctx.facts.get("can_afford", True):
         return {"buy": False, "reason": "no_money"}
-    if _number(ctx.facts.get("queue_length")) <= 0 and not ctx.facts.get("pos_down"):
+    if _number(ctx.facts.get("queue_length")) <= 0 and not ctx.facts.get("till_down"):
         # Nobody ahead of them and the till works: someone who walked into a
         # cafe and was served at once has bought a coffee. Asking a model to
         # confirm that was the most-asked, least-informative question in the
@@ -90,7 +90,7 @@ GATES: dict[str, Gate] = {
     "ticket.confirm": _ticket_confirm,
     "payroll.release": _payroll_release,
     "catering.order": _catering_order,
-    "cafe.purchase": _cafe_purchase,
+    "retail.purchase": _retail_purchase,
 }
 
 

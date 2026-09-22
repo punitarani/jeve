@@ -33,7 +33,7 @@ from psycopg.rows import DictRow, dict_row
 from jeve import db
 from jeve.config import find_repo_root
 from jeve.core.clock import DAY, SimTime
-from jeve.core.orgs import ORGS
+from jeve.core.orgs import ORGS, retailers
 from jeve.sim import daemon
 from jeve.world.seed_world import ROOT_SEED, seed
 
@@ -107,12 +107,14 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
         (28 * DAY,),
     )
     expected_months = 1 + (days - 4) // 28 if days >= 4 else 0
+    clients = sum(1 for org in ORGS if org.accountant is not None)
     out.append(
         Check(
             "months recur",
-            months >= expected_months and (days < 34 or closes >= 4),
+            months >= expected_months
+            and (days < 34 or closes >= clients * expected_months),
             f"{months} month-end(s) in {days} days (expected {expected_months}); "
-            f"{closes} monthly close(s) completed",
+            f"{closes} monthly close(s) completed for {clients} clients",
         )
     )
 
@@ -155,7 +157,7 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
             "wages come back as demand",
             days < 5 or (wages > 0 and spent > 0),
             f"households were paid ${wages / 100:,.0f} and spent ${spent / 100:,.0f} "
-            "at the cafe",
+            "at the tills",
         )
     )
 
@@ -210,15 +212,35 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
     ).fetchall()
     reach = {str(r["org_id"]): int(r["n"]) for r in reached}
     acts = {str(r["org_id"]): int(r["n"]) for r in acted}
-    floor = 20 if days >= 32 else 5
+    share = 0.2 if days >= 32 else 0.05
+    served = [org for org in ORGS if org.counterparties]
     out.append(
         Check(
             "the economy reaches more than one month's clients",
-            all(reach.get(org.id, 0) >= floor for org in ORGS),
+            all(reach.get(org.id, 0) >= share * org.counterparties for org in served),
             ", ".join(
                 f"{org.id} {reach.get(org.id, 0)} reached / {acts.get(org.id, 0)} "
-                "decided, of 100"
-                for org in ORGS
+                f"decided, of {org.counterparties}"
+                for org in served
+            ),
+        )
+    )
+
+    # Every till rang: a retailer whose customers never arrive is a curve
+    # nobody wired up, not a quiet week.
+    sales = {
+        str(r["org_id"]): int(r["n"])
+        for r in conn.execute(
+            "SELECT org_id, count(*) AS n FROM events WHERE kind = 'retail.sale' "
+            "GROUP BY org_id"
+        ).fetchall()
+    }
+    out.append(
+        Check(
+            "every retailer sold something",
+            all(sales.get(org.id, 0) > 0 for org in retailers()),
+            ", ".join(
+                f"{org.id} {sales.get(org.id, 0)} sale(s)" for org in retailers()
             ),
         )
     )
@@ -349,7 +371,8 @@ def compare(with_outage: Connection[DictRow], calm: Connection[DictRow]) -> list
     ) -> dict[tuple[str, str, int], tuple[int, int]]:
         rows = conn.execute(
             "SELECT from_org_id, COALESCE(to_person_id, to_org_id) AS payer, "
-            " amount_cents, issued_sim FROM invoices WHERE kind = 'services' "
+            " amount_cents, issued_sim FROM invoices "
+            " WHERE kind IN ('services', 'milestone') "
             "AND issued_sim >= 0 AND to_person_id IS NOT NULL ORDER BY id"
         ).fetchall()
         seen: dict[tuple[str, str, int], tuple[int, int]] = {}

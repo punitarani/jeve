@@ -1,8 +1,11 @@
 # jeve
 
-A continuously-running simulation of a small interconnected economy: four firms
-on one street — Tallybird Software (whose product the others use), Halloran &
-Pike LLP, Ledgerline Accounting, Third Rail Cafe.
+A continuously-running simulation of a small interconnected economy: twelve
+firms in one district, 225 staff on 27 floors — two software vendors whose
+products the others run on, a law firm, an accountancy, a landlord, a cafe, a
+dental clinic, an architecture studio, a credit union, a hardware store, a gym
+and a provisions supplier. The roster is one spec, `py/src/jeve/core/orgs.py`
+(CORE-0012); nothing else may name a firm.
 
 The research question: how much of a Smallville/Concordia-style agent loop can
 be replaced by *typed decisions* — boolean-with-probability, choice-from-enum,
@@ -225,6 +228,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: contracts, tooling, agent-decided
 
 `py/src/jeve/api/contracts.py` is the one source of truth for what the API serves: real pydantic models inside the `jeve` package, where `mypy --strict` and the layering test see them. `tools/contract-gen/generate_zod.py` renders `packages/contracts/src/index.ts` from them; `test_api.py` validates live endpoint responses against the same models, so the models cannot drift from the SQL without a failing test. Field descriptions and docstrings carry the comments into the generated file — no override table. A field the API omits rather than sends as JSON null is `X | None` with a default (`.optional()`); a key that is present and null is required `X | None` (`.nullable()`).
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### CORE-0012: Orgs, teams, roles and modules are one spec in core; nothing else names a firm
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/core/orgs.py`, `py/src/jeve/core/names.py`, `py/src/jeve/core/clock.py`, `py/tests/test_orgs.py`, `py/migrations/0009_district.sql`, `tools/contract-gen/generate_zod.py`  
+**Tags**: world, data, roster, agent-decided
+
+`jeve.core.orgs` describes each firm once — what it is called, what it is, how a question set refers to it, who works there and on which floor, what hours it keeps, what it subscribes to, what it sells, who keeps its books, who its landlord and supplier and caterer are — and every other layer reads the spec; a firm's id may appear in code only in that file, in the seed's name overrides, and in tests.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 
@@ -501,6 +516,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: economy, flows, soak, agent-decided
 
 - **Tickets end.** An answered ticket is confirmed by its reporter (a decision) once the module is back, or closes by rule after two days. The same person hitting the same module within three days reopens it rather than filing anew. - **Months recur.** `month.end`, `close.run`, payroll and catering reschedule themselves; scheduled work is a registry of handlers, each marked `office_hours_only` or not, replacing a nine-branch `if`. - **Every bill is answered once a day.** From two days before it is due, each unpaid invoice gets one `payment.timing` question per sim-day, at an hour that belongs to the payer (CORE-0009), sampled once — not a per-tick hazard. The per-tick `LIMIT` windows go, and with them 1,591 `payment.deferred` events that recorded a die being rolled. A bill seven days late is chased by its issuer (`chase.invoice`, where `vocality` finally reaches a question). Clients in the four prompter quintiles pay by standing instruction on the due date: a gate, not a question. - **Wages come back.** Staff are paid into a household account and spend from it at the cafe. Households are accounts without an org, funded by an opening balance against `external`; payroll is four legs. - **The books open mid-story.** The seed includes last month's invoices falling due in the first week, so collection is visible inside a ten-day run. Initial conditions, not outcomes. - **Gates are written once** (`decide/gates.py`) and read by both policies: not due, cannot afford, already open. - **`make soak`** runs 35 days on rules and asserts invariants, not outcomes: the ledger balances; tickets opened in week five; a second month-end and its close; no receivable older than sixty days unanswered; every firm that trends to zero has an `insolvency.warning` that names why; every counterparty segment acts. It writes `ops/soak.md`. If behaviour sinks a firm, that is reported.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0006: A district of storeys — zones are buildings, teams are floors, encounters are per floor
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/world/map.py`, `py/src/jeve/world/space.py`, `py/src/jeve/world/seed_world.py`, `py/migrations/0009_district.sql`, `py/tests/test_layouts.py`, `py/tests/test_space.py`, `py/src/jeve/api/contracts.py`  
+**Tags**: space, map, floors, encounters, agent-decided
+
+A zone is a building, named by its firm's id, plus `plaza` and `home`; a team is a floor of it; a place someone can be is a node `(x, y, floor)`; people meet on a floor, not in a firm.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

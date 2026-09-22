@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 
 from jeve.api.contracts import MODELS
+from jeve.core.orgs import ORGS
 
 OUTPUT = (
     Path(__file__).resolve().parent.parent.parent
@@ -123,14 +124,13 @@ import { z } from "zod";
         out += "});\n"
         out += f"export type {model.__name__} = z.infer<typeof {model.__name__}>;\n\n"
 
-    out += """export const ORG_COLORS: Record<string, string> = {
-  tallybird: "#7c9cff",
-  halloran: "#c9a227",
-  ledgerline: "#5bb98c",
-  thirdrail: "#e0757c",
-};
-export * from "./world";
-"""
+    # The roster's colours (CORE-0012), for the parts of the page that paint a
+    # firm before any response has arrived. Everything spatial reads the
+    # palette off the wire instead.
+    out += "export const ORG_COLORS: Record<string, string> = {\n"
+    for org in ORGS:
+        out += f'  {org.id}: "{org.palette.body}",\n'
+    out += "};\nexport * from \"./world\";\n"
     OUTPUT.write_text(out)
     print(f"wrote {OUTPUT}")
 

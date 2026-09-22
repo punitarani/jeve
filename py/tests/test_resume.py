@@ -52,7 +52,7 @@ TABLES = {
     "payments": "id",
     "incidents": "id",
     "scheduled": "id",
-    "cafe_sales": "id",
+    "retail_sales": "id",
     "persons": "id",
     "modules": "id",
     "outage_notices": "incident_id, person_id",

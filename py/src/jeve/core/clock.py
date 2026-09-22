@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from jeve.core.orgs import ORGS, Hours
+
 SECOND = 1
 MINUTE = 60
 HOUR = 3600
@@ -19,9 +21,20 @@ TICK = 15 * MINUTE
 
 WORK_START = 9 * HOUR
 WORK_END = 17 * HOUR
-CAFE_OPEN = 7 * HOUR
-CAFE_CLOSE = 18 * HOUR
-"""An hour after the offices: people stop in on the way home."""
+"""Office hours: when the flows that need the offices run (WORLD-0005)."""
+
+# The district's day is the union of every firm's hours (CORE-0012): the cafe
+# and the gym open before the offices and trade on Saturday, so "anything
+# open" is wider than "the offices are open" and comes from the roster, not
+# from a second list of who opens when.
+DISTRICT_OPEN = min(org.hours.open for org in ORGS) * HOUR
+DISTRICT_CLOSE = max(org.hours.close for org in ORGS) * HOUR
+SATURDAY_OPEN = (
+    min((org.hours.open for org in ORGS if org.hours.saturday), default=24) * HOUR
+)
+SATURDAY_CLOSE = (
+    max((org.hours.close for org in ORGS if org.hours.saturday), default=0) * HOUR
+)
 
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -58,10 +71,12 @@ class SimTime:
     def in_office_hours(self) -> bool:
         return self.is_workday and WORK_START <= self.time_of_day < WORK_END
 
-    @property
-    def cafe_open(self) -> bool:
-        # The cafe also works Saturday; Sunday it is shut.
-        return self.weekday <= 5 and CAFE_OPEN <= self.time_of_day < CAFE_CLOSE
+    def open_for(self, hours: Hours) -> bool:
+        """Whether a firm keeping `hours` is open at this moment."""
+
+        if self.weekday == 6 or (self.weekday == 5 and not hours.saturday):
+            return False
+        return hours.open * HOUR <= self.time_of_day < hours.close * HOUR
 
     @property
     def anything_open(self) -> bool:
@@ -71,7 +86,11 @@ class SimTime:
         next change to what a night is would have had to find all five.
         """
 
-        return self.in_office_hours or self.cafe_open
+        if self.weekday == 6:
+            return False
+        if self.weekday == 5:
+            return SATURDAY_OPEN <= self.time_of_day < SATURDAY_CLOSE
+        return DISTRICT_OPEN <= self.time_of_day < DISTRICT_CLOSE
 
     def label(self) -> str:
         hours, rest = divmod(self.time_of_day, HOUR)
@@ -102,7 +121,7 @@ def next_office_open(seconds: int) -> int:
 
 
 def next_open(seconds: int) -> int:
-    """The next moment *anything* is open — an office or the cafe — or now.
+    """The next moment *anything* is open — an office, the cafe, the gym — or now.
 
     Not the same as `next_office_open`: the cafe opens two hours before the
     offices and trades on Saturday. Skipping dead time to the next *office*

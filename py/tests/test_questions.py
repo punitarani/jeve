@@ -25,7 +25,7 @@ ASKING: dict[str, dict[str, object]] = {
     "ticket.triage": {"subject": "exports fail", "module_down": True, "backlog": 12},
     "ticket.answer": {"backlog": 12},
     "payment.timing": {"days_until_due": -4, "can_afford": True, "runway_days": 9},
-    "cafe.purchase": {"pos_down": True, "queue_length": 3},
+    "retail.purchase": {"org": "thirdrail", "till_down": True, "queue_length": 3},
     "ticket.confirm": {"module_down": False, "days_since_answer": 1},
     "chase.invoice": {"org": "halloran", "days_late": 9, "large": True},
     "credit.decision": {
@@ -45,14 +45,26 @@ ASKING: dict[str, dict[str, object]] = {
     },
     "agent.tick": {
         "org": "halloran",
-        "here": "cafe",
-        "own_zone": "law_office",
+        "team": "halloran.partners",
+        "here": "thirdrail",
+        "floor": 0,
+        "own_zone": "halloran",
+        "own_floor": 2,
+        "at_workplace": False,
         "present": [
-            {"id": "tallybird.sre.4", "org": "tallybird", "role": "sre"},
-            {"id": "thirdrail.barista.20", "org": "thirdrail", "role": "barista"},
+            {"id": "tallybird.engineering.sre.1", "org": "tallybird", "role": "sre"},
+            {
+                "id": "thirdrail.front_of_house.barista.3",
+                "org": "thirdrail",
+                "role": "barista",
+            },
         ],
         "outage": "invoicing",
+        "vendor": "tallybird",
         "can_raise": True,
+        "lobby": True,
+        "social": {"cafe": "thirdrail", "gym": "ironworks"},
+        "minds_counter": False,
     },
 }
 TRAITS: dict[str, object] = {
@@ -153,9 +165,9 @@ def test_hard_constraints_are_gates_not_questions() -> None:
     still_down = ctx("ticket.confirm", {"module_down": True})
     assert gates.settle(still_down) == {"confirm": False, "reason": "still_down"}
     # Served at once, till working: they bought a coffee. Not worth a question.
-    no_line = ctx("cafe.purchase", {"queue_length": 0, "pos_down": False})
+    no_line = ctx("retail.purchase", {"queue_length": 0, "till_down": False})
     assert gates.settle(no_line) == {"buy": True, "reason": "no_line"}
-    assert gates.settle(ctx("cafe.purchase", {"queue_length": 3})) is None
+    assert gates.settle(ctx("retail.purchase", {"queue_length": 3})) is None
 
 
 def test_a_gate_costs_neither_policy_any_luck() -> None:
@@ -199,10 +211,10 @@ def test_people_in_the_room_are_described_not_named() -> None:
     assert prepared.state is not None
     here = prepared.state["who_is_here"]
     assert here == {
-        "person_a": "a sre from the software company",
+        "person_a": "a site reliability engineer from the software company",
         "person_b": "a barista from the cafe",
     }
-    assert "tallybird.sre.4" not in str(prepared.state)
+    assert "tallybird.engineering.sre.1" not in str(prepared.state)
     keys = [ask.key for ask in prepared.asks]
     assert keys == [
         "next_zone",

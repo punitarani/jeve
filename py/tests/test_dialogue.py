@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from jeve import db
 from jeve.api import app as api
 from jeve.core.clock import at
+from jeve.core.orgs import ORGS
 from jeve.decide.policy import RulesPolicy
 from jeve.decide.recorder import insert_call
 from jeve.gen import dialogue
@@ -70,15 +71,14 @@ def test_without_a_key_the_typed_record_stands_alone(
     typed = body["typed"]
     assert typed["seq"] == encounter_seq
     assert len(typed["between"]) == 2
-    assert typed["zone"] in ("cafe", "plaza", "software_office", "law_office",
-                             "accounting_office")  # fmt: skip
+    assert typed["zone"] in {org.id for org in ORGS} | {"plaza"}
     assert typed["topic"]
 
 
 def test_only_an_encounter_has_dialogue(client: TestClient) -> None:
     with db.connect() as conn:
         row = conn.execute(
-            "SELECT seq FROM events WHERE kind = 'cafe.sale' LIMIT 1"
+            "SELECT seq FROM events WHERE kind = 'retail.sale' LIMIT 1"
         ).fetchone()
     assert row is not None
     assert client.get(f"/encounters/{row['seq']}/dialogue").status_code == 404
@@ -137,7 +137,7 @@ def test_the_cache_key_is_the_typed_fields_not_the_event() -> None:
     base = dialogue.Encounter(
         seq=10, a_name="Ann Lee", a_role="partner", a_org="halloran",
         b_name="Bo Ruiz", b_role="sre", b_org="tallybird",
-        zone="cafe", topic="the_outage", mood=1, escalated=True,
+        zone="thirdrail", topic="the_outage", mood=1, escalated=True,
     )  # fmt: skip
     same_but_later = replace(base, seq=999)
     calmer = replace(base, mood=3)
@@ -150,7 +150,7 @@ def test_the_prompt_carries_only_typed_facts() -> None:
     encounter = dialogue.Encounter(
         seq=1, a_name="Ann Lee", a_role="partner", a_org="halloran",
         b_name="Bo Ruiz", b_role="sre", b_org="tallybird",
-        zone="cafe", topic="the_outage", mood=0, escalated=True,
+        zone="thirdrail", topic="the_outage", mood=0, escalated=True,
     )  # fmt: skip
     system, user = dialogue.messages_for(encounter)
     assert "invent no names, numbers" in system.content

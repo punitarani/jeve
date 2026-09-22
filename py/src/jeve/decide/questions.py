@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from jeve.core.clock import SimTime
+from jeve.core.orgs import ORGS, role_words
 from jeve.decide.policy import DecisionContext
 from jeve.llm.protocol import Choice, Noul, NoulCriteria, Score
 
@@ -439,25 +440,26 @@ _BUY = Ask(
 )
 
 
-def _prepare_cafe(ctx: DecisionContext) -> Prepared:
+def _prepare_retail(ctx: DecisionContext) -> Prepared:
+    place = PLACE_WORDS.get(str(ctx.facts.get("org", "")), "a neighbourhood shop")
     return Prepared(
         ctx.kind,
         asks=(_BUY,),
         state={
-            "person": "someone who has just walked into a neighbourhood cafe",
+            "person": f"someone who has just walked into {place}",
             "temperament": trait_words("patience", ctx.traits.get("patience")),
             "line": queue_words(ctx.facts.get("queue_length")),
             "till": (
-                "The card reader is broken; the cafe is taking cash only and "
+                "The card reader is broken; they are taking cash only and "
                 "service is slow."
-                if ctx.facts.get("pos_down")
-                else "The cafe is running normally and taking cards."
+                if ctx.facts.get("till_down")
+                else "The place is running normally and taking cards."
             ),
         },
     )
 
 
-def _interpret_cafe(
+def _interpret_retail(
     ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
 ) -> Outcome:
     if not got["buy"].value:
@@ -472,18 +474,16 @@ def _interpret_cafe(
 
 # -- agent.tick: where next, and whether to stop and talk (WORLD-0003) --------
 
-ORG_WORDS: dict[str, str] = {
-    "tallybird": "the software company",
-    "halloran": "the law firm",
-    "ledgerline": "the accounting firm",
-    "thirdrail": "the cafe",
-}
-_PLACE_WORDS: dict[str, str] = {
-    "software_office": "the software company's office",
-    "law_office": "the law firm's office",
-    "accounting_office": "the accounting firm's office",
-    "cafe": "the neighbourhood cafe",
+# How a question set names a firm and being there: from the roster
+# (CORE-0012), never the brand. Wording is a cache key, so these are data
+# that changes rarely, not prose that is tidied.
+ORG_WORDS: dict[str, str] = {org.id: org.words for org in ORGS}
+PLACE_WORDS: dict[str, str] = {org.id: org.place_words for org in ORGS} | {
     "plaza": "the plaza outside, by the fountain",
+}
+_SOCIAL_WORDS: dict[str, str] = {
+    "cafe": "Walk over to the cafe for a coffee or something to eat.",
+    "gym": "Go to the gym for a workout.",
 }
 MOODS: tuple[str, ...] = (
     "Stressed and short-tempered.",
@@ -501,7 +501,7 @@ def slot(index: int) -> str:
 
 
 def describe(person: dict[str, object]) -> str:
-    role = str(person.get("role", "employee")).replace("_", " ")
+    role = role_words(str(person.get("role", "employee")))
     return f"a {role} from {ORG_WORDS.get(str(person.get('org')), 'another firm')}"
 
 
@@ -512,16 +512,39 @@ def _present(ctx: DecisionContext) -> list[dict[str, object]]:
     )
 
 
-def _next_zone(org: str) -> Ask:
+def _social(ctx: DecisionContext) -> dict[str, str]:
+    """Where the staff of other firms go on their own time: kind -> firm id."""
+
+    social = ctx.facts.get("social")
+    return (
+        {str(k): str(v) for k, v in social.items()} if isinstance(social, dict) else {}
+    )
+
+
+def destination(ctx: DecisionContext) -> Ask:
+    """Where next. The options are the places this person could go from here:
+    their desk, their building's lobby, the district's cafe or gym, the plaza,
+    and — only when their software is down — the vendor that sells it."""
+
+    org = str(ctx.facts.get("org", ""))
+    here = str(ctx.facts.get("here", ""))
+    vendor = ctx.facts.get("vendor")
     criteria: dict[str, str] = {
         "stay": "Stay where they are for the next fifteen minutes.",
         "own_workplace": "Go back to their own workplace and get on with work.",
-        "cafe": "Walk over to the cafe for a coffee or something to eat.",
-        "plaza": "Step out into the plaza for some air.",
     }
-    if org != "tallybird":
-        criteria["software_office"] = (
-            "Walk over to the software company's office to speak to them in person."
+    if ctx.facts.get("lobby"):
+        criteria["lobby"] = (
+            "Go down to the lobby of their own building, by the kitchenette."
+        )
+    for kind in _social(ctx):
+        if kind in _SOCIAL_WORDS:
+            criteria[kind] = _SOCIAL_WORDS[kind]
+    criteria["plaza"] = "Step out into the plaza for some air."
+    if isinstance(vendor, str) and vendor not in (org, here):
+        criteria["visit"] = (
+            f"Walk over to {ORG_WORDS.get(vendor, 'the vendor')}'s office to "
+            "speak to them in person about the outage."
         )
     criteria["other"] = "Something else."
     return Ask(
@@ -569,28 +592,34 @@ _RAISE = Ask(
 )
 
 
+def where_words(ctx: DecisionContext) -> str:
+    here = str(ctx.facts.get("here", ""))
+    if ctx.facts.get("at_workplace"):
+        return "at their own workplace"
+    if here == ctx.facts.get("own_zone"):
+        return "in the lobby of their own building, by the kitchenette"
+    return f"in {PLACE_WORDS.get(here, here)}"
+
+
 def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
     org = str(ctx.facts.get("org", ""))
-    here = str(ctx.facts.get("here", ""))
-    at_own = here == ctx.facts.get("own_zone")
     present = _present(ctx)
     outage = ctx.facts.get("outage")
 
     state: dict[str, object] = {
-        "person": f"a {ctx.role.replace('_', ' ')} at {ORG_WORDS.get(org, 'a firm')}",
+        "person": f"a {role_words(ctx.role)} at {ORG_WORDS.get(org, 'a firm')}",
         "temperament": trait_words("sociability", ctx.traits.get("sociability")),
         "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
         "time": time_of_day_words(ctx.sim_time),
-        "where": (
-            "at their own workplace" if at_own else f"in {_PLACE_WORDS.get(here, here)}"
-        ),
+        "where": where_words(ctx),
         "on_their_mind": (
-            f"The {outage} software has been down and it is disrupting the day."
+            "A piece of software the firm depends on has been down and it is "
+            "disrupting the day."
             if outage
             else "Nothing unusual; an ordinary working day."
         ),
     }
-    asks: list[Ask] = [_next_zone(org), _MOOD]
+    asks: list[Ask] = [destination(ctx), _MOOD]
     if present:
         state["who_is_here"] = {slot(i): describe(p) for i, p in enumerate(present)}
         topics: dict[str, str] = {
@@ -637,10 +666,7 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
 def _interpret_agent_tick(
     ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
 ) -> Outcome:
-    here = str(ctx.facts.get("here", ""))
-    own = str(ctx.facts.get("own_zone", here))
-    choice = str(got["next_zone"].value)
-    next_zone = {"stay": here, "other": here, "own_workplace": own}.get(choice, choice)
+    next_zone, next_floor = resolve_destination(ctx, str(got["next_zone"].value))
 
     present = _present(ctx)
     with_id: str | None = None
@@ -652,6 +678,7 @@ def _interpret_agent_tick(
     return Outcome(
         {
             "next_zone": next_zone,
+            "next_floor": next_floor,
             "interact": with_id is not None,
             "with": with_id,
             "topic": str(got["topic"].value) if with_id and "topic" in got else None,
@@ -662,6 +689,29 @@ def _interpret_agent_tick(
         },
         {},
     )
+
+
+def resolve_destination(ctx: DecisionContext, choice: str) -> tuple[str, int]:
+    """A destination's key, as chosen, to the zone and floor it means. Both
+    policies use this, so a place is a place whoever decided."""
+
+    here = str(ctx.facts.get("here", ""))
+    floor = int(_number(ctx.facts.get("floor")))
+    own = str(ctx.facts.get("own_zone", here))
+    own_floor = int(_number(ctx.facts.get("own_floor")))
+    social = _social(ctx)
+    vendor = ctx.facts.get("vendor")
+    if choice == "own_workplace":
+        return own, own_floor
+    if choice == "lobby":
+        return own, 0
+    if choice == "plaza":
+        return "plaza", 0
+    if choice in social:
+        return social[choice], 0
+    if choice == "visit" and isinstance(vendor, str):
+        return vendor, 0
+    return here, floor
 
 
 # -- credit.decision: what an outage is worth (WORLD-0004) -------------------
@@ -757,7 +807,9 @@ def _prepare_payroll(ctx: DecisionContext) -> Prepared:
         asks=(_RELEASE,),
         state={
             "person": (
-                "a payroll clerk at an accounting firm, running a client's payroll"
+                "the person who runs payroll at a small firm, for its own staff"
+                if ctx.facts.get("own_books")
+                else "a payroll clerk at an accounting firm, running a client's payroll"
             ),
             "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
             "timesheets": (
@@ -984,7 +1036,7 @@ QUESTION_SETS: dict[str, QuestionSet] = {
         QuestionSet("ticket.triage", _prepare_triage, _interpret_triage),
         QuestionSet("ticket.answer", _prepare_answer, _interpret_answer),
         QuestionSet("payment.timing", _prepare_payment, _interpret_payment),
-        QuestionSet("cafe.purchase", _prepare_cafe, _interpret_cafe),
+        QuestionSet("retail.purchase", _prepare_retail, _interpret_retail),
         QuestionSet("agent.tick", _prepare_agent_tick, _interpret_agent_tick),
         QuestionSet("credit.decision", _prepare_credit, _interpret_credit),
         QuestionSet("payroll.release", _prepare_payroll, _interpret_payroll),
