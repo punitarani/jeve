@@ -95,8 +95,10 @@ test("a person's decisions show what was chosen and the draw behind it", async (
 }) => {
   const select = page.getByTestId("person-select");
   await expect(select).toBeVisible();
+  await select.click();
 
-  const options = await select.locator("option").allTextContents();
+  // Base UI renders the select's items as a listbox overlay, not <option>s.
+  const options = await page.getByRole("option").allTextContents();
   expect(options.length).toBe(24);
 
   // Pick someone who actually decides in the flows that are wired up.
@@ -104,7 +106,7 @@ test("a person's decisions show what was chosen and the draw behind it", async (
     (o) => o.includes("office_manager") || o.includes("support"),
   );
   expect(decider, "no role in the fixture makes decisions").toBeTruthy();
-  await select.selectOption({ label: decider! });
+  await page.getByRole("option", { name: decider! }).click();
 
   const rows = page.getByTestId("decision-row");
   await expect(rows.first()).toBeVisible({ timeout: 10_000 });
@@ -161,6 +163,36 @@ test("encounters start filtered out, and the chip puts them back", async ({
       timeout: 10_000,
     })
     .toBe(0);
+});
+
+test("the kinds menu toggles kinds without closing on each pick", async ({
+  page,
+}) => {
+  // The dropdown is the same filter the chips drive, one control instead of
+  // one chip per kind. The menu must stay open between picks.
+  await page.getByRole("button", { name: "event kinds" }).click();
+  const item = page.getByTestId("menu-kind-payment.made");
+  await expect(item).toBeVisible();
+  await expect(item).toHaveAttribute("aria-checked", "true");
+
+  const before = await page.locator(".ev").count();
+  await item.click();
+  await expect(item).toHaveAttribute("aria-checked", "false");
+  await expect(item).toBeVisible(); // still open
+  await expect
+    .poll(async () => page.locator(".ev").count(), { timeout: 10_000 })
+    .toBeLessThan(before);
+
+  // "show all kinds" resets the filter and leaves the menu open.
+  await page.getByTestId("menu-kind-payment.made").click();
+  await page.getByTestId("menu-filter-none").click();
+  await expect(page.locator(".ev")).toHaveCount(0, { timeout: 10_000 });
+  await page.getByTestId("menu-filter-all").click();
+  await expect
+    .poll(async () => page.locator(".ev").count(), { timeout: 10_000 })
+    .toBeGreaterThan(0);
+  await page.keyboard.press("Escape");
+  await expect(item).not.toBeVisible();
 });
 
 test("a filtered-out kind still shows inside a cascade", async ({ page }) => {

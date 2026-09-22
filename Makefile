@@ -17,12 +17,12 @@ help: ## Show this
 .PHONY: check
 check: lint types test decisions ## Everything that must pass, offline
 
+# api/sim lint are per-app ruff views of the same package. Web has no
+# eslint config — its static gate is tsc strict under `make types`.
 .PHONY: lint
 lint: ## ruff check + format check
 	@echo "Linting Python..."
 	npx nx run py:lint
-	# api/sim lint are per-app ruff views of the same package. Web has no
-	# eslint config — its static gate is tsc strict under `make types`.
 	@echo "Linting app views..."
 	npx nx run-many -t lint --projects=api,sim
 
@@ -33,14 +33,14 @@ types: ## mypy --strict, and tsc over the web app
 	@echo "Type checking TypeScript..."
 	npx nx run-many -t typecheck --projects=api,sim,web
 
+# --parallel=1: api and sim tests share the dev database, and sim's daemon
+# subprocesses hold the writer lock — run in parallel and api's seeding
+# fixture loses the lock race to a daemon that is still finishing a tick.
 .PHONY: test
 test: ## pytest, no network
 	@echo "Testing Python..."
 	npx nx run py:test
 	@echo "Testing applications..."
-	# --parallel=1: api and sim tests share the dev database, and sim's daemon
-	# subprocesses hold the writer lock — run in parallel and api's seeding
-	# fixture loses the lock race to a daemon that is still finishing a tick.
 	npx nx run-many -t test --projects=api,sim,web --parallel=1
 
 .PHONY: decisions

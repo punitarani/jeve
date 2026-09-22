@@ -1,26 +1,138 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* The site has exactly one theme and it is dark. The --bg/--panel/--line
+   tokens are the palette everything else (the town renderer, the tone map)
+   already reads; the shadcn tokens are aliases over them, so a component and a
+   hand-rolled row never disagree about a colour. */
 :root {
   --bg: #0e1116;
   --panel: #161b22;
   --line: #262d36;
   --text: #dfe5ec;
-  --muted: #8b96a5;
   --good: #5bb98c;
   --warn: #c9a227;
   --bad: #e0757c;
   --mark: #a78bfa;
   --neutral: #55606e;
+
+  --background: var(--bg);
+  --foreground: var(--text);
+  --card: var(--panel);
+  --card-foreground: var(--text);
+  --popover: #1a2129;
+  --popover-foreground: var(--text);
+  --primary: var(--mark);
+  --primary-foreground: #15121d;
+  --secondary: #1d232c;
+  --secondary-foreground: var(--text);
+  --muted: #1d232c;
+  --muted-foreground: #8b96a5;
+  --accent: #232b36;
+  --accent-foreground: var(--text);
+  --destructive: var(--bad);
+  --destructive-foreground: #1d1113;
+  --border: var(--line);
+  --input: var(--line);
+  --ring: var(--mark);
+  --chart-1: var(--mark);
+  --chart-2: var(--good);
+  --chart-3: var(--warn);
+  --chart-4: var(--bad);
+  --chart-5: var(--neutral);
+  --radius: 0.5rem;
+  --sidebar: var(--panel);
+  --sidebar-foreground: var(--text);
+  --sidebar-primary: var(--mark);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--secondary);
+  --sidebar-accent-foreground: var(--text);
+  --sidebar-border: var(--line);
+  --sidebar-ring: var(--ring);
 }
 
-* { box-sizing: border-box; }
+@theme inline {
+  --font-sans: ui-monospace, "SF Mono", Menlo, monospace;
+  --font-heading: ui-monospace, "SF Mono", Menlo, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  /* Tailwind's preflight zeroes element margins; the prose blocks below were
+     written against the browser default. Restore a tight paragraph gap. */
+  p {
+    margin: 8px 0;
+  }
+}
 
 body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 a { color: inherit; }
+
+/* One scrollbar look for the whole app — thin, on-palette, so the page and
+   every .lane/table/ScrollArea scroll the same way instead of flashing the
+   OS's light chrome on the dark theme. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--neutral) transparent;
+}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--neutral); }
 
 .strip {
   display: flex;
@@ -36,9 +148,9 @@ a { color: inherit; }
 }
 
 .strip b { font-size: 16px; letter-spacing: 0.5px; }
-.muted { color: var(--muted); }
+.muted { color: var(--muted-foreground); }
 
-.grid {
+.dash-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
@@ -46,76 +158,36 @@ a { color: inherit; }
   align-items: start;
 }
 
-@media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .dash-grid { grid-template-columns: 1fr; } }
 
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 14px 16px;
+/* Phone widths: the strip wraps onto several rows and the panels are already
+   stacked — what remains is giving them the viewport's full width. */
+@media (max-width: 640px) {
+  .strip { gap: 4px 14px; padding: 8px 12px; }
+  .dash-grid { padding: 10px 12px; gap: 12px; }
+  .page-pad { padding: 20px; }
+  .section-pad { padding: 0 12px 20px; }
+  /* shadcn cards pad for desktop; halve it rather than squeeze the content */
+  [data-slot="card-header"], [data-slot="card-content"],
+  [data-slot="card-footer"] { padding-inline: 12px; }
 }
 
-.panel h2 {
-  margin: 0 0 10px;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--muted);
-  font-weight: 600;
-}
-
-.orgrow {
-  display: grid;
-  grid-template-columns: 1.4fr repeat(3, 1fr);
-  gap: 8px;
-  padding: 7px 0;
-  border-top: 1px solid var(--line);
-}
-
-.orgrow:first-of-type { border-top: 0; }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .page-pad { padding: 32px; }
+.page-pad h1 { font-size: 22px; margin: 0 0 10px; }
+.page-pad p { margin: 10px 0; }
 .pre-wrap { white-space: pre-wrap; }
 .fineprint { font-size: 12px; margin: 0; }
 .section-pad { padding: 0 18px 24px; }
 .push-right { margin-left: auto; }
-.swatch-sm { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 8px; }
-select.pick {
-  background: #0e1116;
-  color: inherit;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 4px 8px;
-  font: inherit;
-  width: 100%;
-  margin-bottom: 10px;
-}
-
-.pill {
-  display: inline-block;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  border: 1px solid var(--line);
-}
-
-.up { color: var(--good); border-color: var(--good); }
-.down { color: var(--bad); border-color: var(--bad); }
-
-/* The event-kind filter above the timeline. `.pill` already supplies the
-   rounded border, padding and 11px size; `.chip` adds what a <button> needs
-   to stop looking like one. Off state is aria-pressed, not a class. */
-.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 10px; }
-.chip { cursor: pointer; background: transparent; color: inherit; font: inherit; font-size: 11px; }
-.chip:hover { border-color: var(--text); }
-.chip[aria-pressed="false"] { opacity: 0.45; }
+.swatch-sm { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 8px; flex: none; }
 
 .lane { display: flex; flex-direction: column; gap: 2px; max-height: 60vh; overflow-y: auto; }
 
 .ev {
   display: grid;
-  grid-template-columns: 96px 118px 1fr auto;
+  grid-template-columns: 96px 118px minmax(0, 1fr) auto;
   gap: 10px;
   padding: 3px 6px;
   border-radius: 4px;
@@ -136,14 +208,25 @@ select.pick {
 .ev.mark { border-left-color: var(--mark); }
 .ev.dim { opacity: 0.25; }
 
-.depth { color: var(--muted); font-size: 11px; }
+.depth { color: var(--muted-foreground); font-size: 11px; }
 
-table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: 4px 6px; border-top: 1px solid var(--line); font-size: 12px; }
-th { color: var(--muted); font-weight: 600; }
-
-.bar { height: 8px; background: var(--mark); border-radius: 2px; display: inline-block; }
-button.link { background: none; border: 0; color: var(--mark); cursor: pointer; padding: 0; font: inherit; }
+/* Phone widths: four columns of fixed data cannot shrink to 340 px, so the
+   row folds — when/org/seq on line 1, the description on its own line.
+   minmax(0,…) above is the same fix for the desktop grid: a `1fr` track is
+   minmax(auto,1fr), and the summary's min-content is what pushed the whole
+   page into a horizontal scroll. */
+@media (max-width: 640px) {
+  .ev {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "when org depth" "line line line";
+    gap: 2px 10px;
+    padding: 5px 6px;
+  }
+  .ev > :nth-child(1) { grid-area: when; }
+  .ev > :nth-child(2) { grid-area: org; }
+  .ev > :nth-child(3) { grid-area: line; min-width: 0; }
+  .ev > :nth-child(4) { grid-area: depth; justify-self: end; }
+}
 
 /* -- the voxel world (WEB-0002) ------------------------------------------ */
 
@@ -168,12 +251,13 @@ button.link { background: none; border: 0; color: var(--mark); cursor: pointer; 
   pointer-events: none;
 }
 .hero-caption b { font-size: 18px; letter-spacing: 0.5px; }
-.hero-meta { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+.hero-meta { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .hero-link { pointer-events: auto; color: var(--mark); text-decoration: none; }
 .hero-link:hover { text-decoration: underline; }
-.pill.good { border-color: var(--good); color: var(--good); }
 
-.world-page { display: flex; flex-direction: column; height: 100vh; }
+/* dvh tracks the mobile URL bar collapsing, so the explorer stops jumping
+   when the bar hides. vh stays as the fallback for older engines. */
+.world-page { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .world-body { display: flex; flex: 1; min-height: 0; }
 .world-canvas {
   position: relative;
@@ -186,8 +270,7 @@ button.link { background: none; border: 0; color: var(--mark); cursor: pointer; 
 .world-side {
   width: 380px;
   flex: none;
-  overflow-y: auto;
-  padding: 12px;
+  overflow: hidden;
   border-left: 1px solid var(--line);
   background: var(--bg);
 }
@@ -197,38 +280,25 @@ button.link { background: none; border: 0; color: var(--mark); cursor: pointer; 
   font-size: 11px;
   letter-spacing: 0.8px;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--muted-foreground);
 }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 .traits { margin: 0; padding: 0; list-style: none; font-size: 12px; }
 .traits li { padding: 2px 0; }
 .dist { margin: 8px 0 12px; }
 .dist-name { font-size: 12px; margin-bottom: 4px; }
-.dist-row { display: grid; grid-template-columns: 118px 1fr 38px; gap: 8px; align-items: center; font-size: 12px; }
-.dist-label { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dist-track { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
-.dist-fill { display: block; height: 100%; background: var(--mark); }
+.dist-row { display: grid; grid-template-columns: 118px minmax(0, 1fr) 38px; gap: 8px; align-items: center; font-size: 12px; }
+.dist-label { color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dist-p { text-align: right; font-variant-numeric: tabular-nums; }
 .chosen { font-size: 12px; color: var(--good); }
-.fields { display: grid; grid-template-columns: 110px 1fr; gap: 4px 10px; margin: 0; font-size: 12px; }
-.fields dt { color: var(--muted); }
+.fields { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: 12px; }
+.fields dt { color: var(--muted-foreground); }
 .fields dd { margin: 0; }
 @media (max-width: 900px) {
   .world-body { flex-direction: column; }
-  .world-side { width: auto; border-left: 0; border-top: 1px solid var(--line); max-height: 45vh; }
+  .world-side { width: auto; height: 45vh; border-left: 0; border-top: 1px solid var(--line); }
 }
 
-.link-button {
-  background: none;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 4px 10px;
-  color: var(--mark);
-  font: inherit;
-  cursor: pointer;
-}
-.link-button:hover:not(:disabled) { border-color: var(--mark); }
-.link-button:disabled { color: var(--muted); cursor: wait; }
 .prose { margin-top: 8px; padding: 8px 10px; border-left: 2px solid var(--mark); font-size: 12.5px; }
 .prose p { margin: 4px 0; }
 .prose-note { font-size: 11px; }

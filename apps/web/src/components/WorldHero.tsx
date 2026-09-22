@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import { API } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
 
 /**
  * The landing-page hero: the town, running, with no controls.
@@ -58,13 +59,17 @@ export function WorldHero() {
             {status?.visible ?? 0} out · {status?.walking ?? 0} walking
           </span>
           {status?.live ? (
-            <span className="pill good" data-testid="hero-live">
+            <Badge
+              variant="outline"
+              className="border-[var(--good)] text-[var(--good)]"
+              data-testid="hero-live"
+            >
               live
-            </span>
+            </Badge>
           ) : (
-            <span className="pill" data-testid="hero-replaying">
+            <Badge variant="outline" data-testid="hero-replaying">
               {status?.replaying ? "quiet — replaying the last hour" : "connecting"}
-            </span>
+            </Badge>
           )}
           <Link href="/world" className="hero-link" data-testid="open-world">
             open the world →

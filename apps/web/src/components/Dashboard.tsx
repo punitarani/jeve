@@ -9,10 +9,39 @@
  * is what selecting an event and seeing what it caused provides.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ListFilter } from "lucide-react";
+import { toast } from "sonner";
 import type { SimEvent, WorldState } from "@jeve/contracts";
-import { ORG_COLORS } from "@jeve/contracts";
 import { fetchCausal, fetchState, money } from "@/lib/api";
-import { EVENT_TONE } from "@/lib/tone";
+import { EVENT_TONE, ORG_COLORS } from "@/lib/tone";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+	Card,
+	CardAction,
+	CardContent,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card";
+import {
+	DropdownMenu,
+	DropdownMenuCheckboxItem,
+	DropdownMenuContent,
+	DropdownMenuGroup,
+	DropdownMenuItem,
+	DropdownMenuLabel,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+	Table,
+	TableBody,
+	TableCell,
+	TableHead,
+	TableHeader,
+	TableRow,
+} from "@/components/ui/table";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Timeline } from "./Timeline";
 import { PersonPanel } from "./PersonPanel";
 
@@ -73,6 +102,9 @@ export function Dashboard({
 				setChain(depths);
 			} catch {
 				setChain(null);
+				toast.error("Could not load the causal chain.", {
+					description: `event #${seq} stays selected; its cascade is not highlighted`,
+				});
 			}
 		},
 		[selected],
@@ -110,6 +142,8 @@ export function Dashboard({
 		[events, org, hidden, chain],
 	);
 
+	const shownKinds = kinds.map(([kind]) => kind).filter((k) => !hidden.has(k));
+
 	return (
 		<main>
 			<header className="strip" data-testid="status-strip">
@@ -119,13 +153,17 @@ export function Dashboard({
 				<span className="muted">{state.clock.status}</span>
 				<span>
 					{down.length === 0 ? (
-						<span className="pill up" data-testid="modules-ok">
+						<Badge
+							variant="outline"
+							className="border-[var(--good)] text-[var(--good)]"
+							data-testid="modules-ok"
+						>
 							all modules up
-						</span>
+						</Badge>
 					) : (
-						<span className="pill down" data-testid="modules-down">
+						<Badge variant="destructive" data-testid="modules-down">
 							{down.map((m) => m.name).join(", ")} down
-						</span>
+						</Badge>
 					)}
 				</span>
 				<span className="muted">
@@ -137,109 +175,224 @@ export function Dashboard({
 				</span>
 			</header>
 
-			<div className="grid">
-				<section className="panel">
-					<h2>Orgs</h2>
-					<div className="orgrow muted">
-						<span>Org</span>
-						<span className="num">Cash</span>
-						<span className="num">Receivable</span>
-						<span className="num">Filter</span>
-					</div>
-					{state.orgs.map((o) => (
-						<div className="orgrow" key={o.id} data-testid={`org-${o.id}`}>
-							<span>
-								<span
-									className="swatch-sm"
-									style={{ background: ORG_COLORS[o.id] ?? "#888" }}
-								/>
-								{o.name}
-							</span>
-							<span className="num">{money(o.cash_cents)}</span>
-							<span className="num">{money(o.receivable_cents)}</span>
-							<span className="num">
-								<button
-									className="link"
-									onClick={() => setOrg(org === o.id ? null : o.id)}
-								>
-									{org === o.id ? "clear" : "only"}
-								</button>
-							</span>
-						</div>
-					))}
-					<p className="muted fineprint">
-						Money is held in integer cents and every movement is a balanced
-						double-entry transaction the database checks.
-					</p>
-				</section>
+			<div className="dash-grid">
+				<Card size="sm">
+					<CardHeader>
+						<CardTitle className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+							Orgs
+						</CardTitle>
+					</CardHeader>
+					<CardContent>
+						<Table>
+							<TableHeader>
+								<TableRow className="text-muted-foreground hover:bg-transparent">
+									<TableHead className="h-auto px-1.5 py-1 text-xs whitespace-normal">
+										Org
+									</TableHead>
+									<TableHead className="num h-auto px-1.5 py-1 text-xs">
+										Cash
+									</TableHead>
+									<TableHead className="num h-auto px-1.5 py-1 text-xs">
+										Receivable
+									</TableHead>
+									<TableHead className="num h-auto px-1.5 py-1 text-xs">
+										Filter
+									</TableHead>
+								</TableRow>
+							</TableHeader>
+							<TableBody>
+								{state.orgs.map((o) => (
+									<TableRow
+										key={o.id}
+										className="border-b-0 hover:bg-transparent"
+										data-testid={`org-${o.id}`}
+									>
+										{/* whitespace-normal: the only text column — wrapping the name keeps
+										    all four columns inside a phone-width card. */}
+										<TableCell className="whitespace-normal px-1.5 py-1.5">
+											<span
+												className="swatch-sm"
+												style={{ background: ORG_COLORS[o.id] ?? "#888" }}
+											/>
+											{o.name}
+										</TableCell>
+										<TableCell className="num px-1.5 py-1.5">
+											{money(o.cash_cents)}
+										</TableCell>
+										<TableCell className="num px-1.5 py-1.5">
+											{money(o.receivable_cents)}
+										</TableCell>
+										<TableCell className="num px-1.5 py-1.5">
+											<Button
+												variant="link"
+												size="xs"
+												className="h-auto p-0 text-[var(--mark)]"
+												onClick={() => setOrg(org === o.id ? null : o.id)}
+											>
+												{org === o.id ? "clear" : "only"}
+											</Button>
+										</TableCell>
+									</TableRow>
+								))}
+							</TableBody>
+						</Table>
+						<p className="muted fineprint">
+							Money is held in integer cents and every movement is a balanced
+							double-entry transaction the database checks.
+						</p>
+					</CardContent>
+				</Card>
 
 				<PersonPanel />
 			</div>
 
 			<div className="section-pad">
-				<section className="panel">
-					<h2>
-						Causal timeline — {visible.length}
-						{visible.length !== events.length && <> of {events.length}</>} events
-						{selected !== null && (
-							<>
-								{" "}
-								· showing the cascade around #{selected}{" "}
-								<button className="link" onClick={() => select(selected)}>
-									clear
-								</button>
-							</>
-						)}
-					</h2>
-					{kinds.length > 0 && (
-						<div className="chips" data-testid="kind-filter">
-							{kinds.map(([kind, n]) => (
-								<button
-									key={kind}
-									type="button"
-									className="pill chip"
-									aria-pressed={!hidden.has(kind)}
-									data-testid={`kind-${kind}`}
-									onClick={() => toggleKind(kind)}
+				<Card size="sm">
+					<CardHeader>
+						<CardTitle className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+							Causal timeline — {visible.length}
+							{visible.length !== events.length && <> of {events.length}</>}{" "}
+							events
+							{selected !== null && (
+								<>
+									{" "}
+									· showing the cascade around #{selected}{" "}
+									<Button
+										variant="link"
+										size="xs"
+										className="h-auto p-0 normal-case tracking-normal text-[var(--mark)]"
+										onClick={() => select(selected)}
+									>
+										clear
+									</Button>
+								</>
+							)}
+						</CardTitle>
+						<CardAction>
+							<DropdownMenu>
+								<DropdownMenuTrigger
+									render={
+										<Button variant="outline" size="xs">
+											<ListFilter />
+											event kinds
+										</Button>
+									}
+								/>
+								<DropdownMenuContent align="end" className="w-56">
+									{/* Base UI: GroupLabel needs its items inside a Menu.Group. */}
+									<DropdownMenuGroup>
+										<DropdownMenuLabel>
+											Kinds on the timeline
+										</DropdownMenuLabel>
+										{kinds.map(([kind, n]) => (
+											<DropdownMenuCheckboxItem
+												key={kind}
+												checked={!hidden.has(kind)}
+												closeOnClick={false}
+												onCheckedChange={() => toggleKind(kind)}
+												data-testid={`menu-kind-${kind}`}
+											>
+												<span
+													className="swatch-sm"
+													style={{
+														background: `var(--${EVENT_TONE[kind] ?? "neutral"})`,
+													}}
+												/>
+												{kind}
+												<span className="ml-auto text-muted-foreground">{n}</span>
+											</DropdownMenuCheckboxItem>
+										))}
+									</DropdownMenuGroup>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem
+										closeOnClick={false}
+										onClick={() => setHidden(new Set())}
+										data-testid="menu-filter-all"
+									>
+										show all kinds
+									</DropdownMenuItem>
+									<DropdownMenuItem
+										closeOnClick={false}
+										onClick={() =>
+											setHidden(new Set(kinds.map(([kind]) => kind)))
+										}
+										data-testid="menu-filter-none"
+									>
+										hide all kinds
+									</DropdownMenuItem>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						</CardAction>
+					</CardHeader>
+					<CardContent>
+						{kinds.length > 0 && (
+							<ToggleGroup
+								multiple
+								value={shownKinds}
+								onValueChange={(next) =>
+									setHidden(
+										new Set(
+											kinds
+												.map(([kind]) => kind)
+												.filter((kind) => !next.includes(kind)),
+										),
+									)
+								}
+								spacing={6}
+								className="mb-2.5 w-full flex-wrap"
+								data-testid="kind-filter"
+							>
+								{kinds.map(([kind, n]) => (
+									<ToggleGroupItem
+										key={kind}
+										value={kind}
+										size="sm"
+										className="h-5 rounded-full border border-border px-2 text-[11px] font-normal opacity-45 aria-pressed:opacity-100 hover:border-foreground hover:bg-transparent"
+										data-testid={`kind-${kind}`}
+									>
+										<span
+											className="swatch-sm"
+											style={{
+												background: `var(--${EVENT_TONE[kind] ?? "neutral"})`,
+											}}
+										/>
+										{kind} <span className="text-muted-foreground">{n}</span>
+									</ToggleGroupItem>
+								))}
+								{/* Not "clear": the cascade's clear button is found by name.
+								    These two carry testids because Playwright matches an
+								    accessible name as a substring, and "tallybird" contains
+								    "all" — every org row answers to that query too. */}
+								<Button
+									variant="link"
+									size="xs"
+									className="h-5 p-0 text-[11px] text-[var(--mark)]"
+									data-testid="filter-all"
+									onClick={() => setHidden(new Set())}
 								>
-									<span
-										className="swatch-sm"
-										style={{
-											background: `var(--${EVENT_TONE[kind] ?? "neutral"})`,
-										}}
-									/>
-									{kind} <span className="muted">{n}</span>
-								</button>
-							))}
-							{/* Not "clear": the cascade's clear button is found by name.
-							    These two carry testids because Playwright matches an
-							    accessible name as a substring, and "tallybird" contains
-							    "all" — every org row answers to that query too. */}
-							<button
-								type="button"
-								className="link"
-								data-testid="filter-all"
-								onClick={() => setHidden(new Set())}
-							>
-								all
-							</button>
-							<button
-								type="button"
-								className="link"
-								data-testid="filter-none"
-								onClick={() => setHidden(new Set(kinds.map(([kind]) => kind)))}
-							>
-								none
-							</button>
-						</div>
-					)}
-					<Timeline
-						events={visible}
-						selected={selected}
-						chain={chain}
-						onSelect={select}
-					/>
-				</section>
+									all
+								</Button>
+								<Button
+									variant="link"
+									size="xs"
+									className="h-5 p-0 text-[11px] text-[var(--mark)]"
+									data-testid="filter-none"
+									onClick={() =>
+										setHidden(new Set(kinds.map(([kind]) => kind)))
+									}
+								>
+									none
+								</Button>
+							</ToggleGroup>
+						)}
+						<Timeline
+							events={visible}
+							selected={selected}
+							chain={chain}
+							onSelect={select}
+						/>
+					</CardContent>
+				</Card>
 			</div>
 		</main>
 	);

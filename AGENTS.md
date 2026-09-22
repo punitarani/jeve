@@ -410,6 +410,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### WEB-0006: UI components are shadcn on Base UI primitives over the app palette
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `apps/web/src/components/**`, `apps/web/src/app/globals.css`, `apps/web/src/app/layout.tsx`, `apps/web/components.json`, `apps/web/postcss.config.mjs`, `apps/web/package.json`  
+**Tags**: ui, dependencies, agent-decided
+
+The component layer is **shadcn (Base UI preset, nova style), vendored into `src/components/ui/`**, with the app's palette kept as the single token source:
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### WORLD-0001: Build and tune the world on rules before wiring in any model
 
 **Status**: accepted (2026-09-20)  
