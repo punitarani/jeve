@@ -816,6 +816,231 @@ export function buildVoxels(map: TownMap): Voxel[] {
     voxels.push({ x: cx, y: 0.75, z: cz, sx: 0.34, sy: 0.7, sz: 0.34, color: "#aaa595", ao: OPEN });
     voxels.push({ x: cx, y: 1.2, z: cz, sx: 0.2, sy: 0.3, sz: 0.2, color: "#9fd4f2", ao: OPEN });
   }
+
+  // -- the outskirts ---------------------------------------------------------
+  //
+  // Past the last real tile the town runs out into the country: the avenues
+  // that meet the edge keep going as lanes that wander, thin to a rut, and
+  // dissolve in the grass; groves and thickets stand where a coarse noise says
+  // they should; and the field pales toward the horizon with distance, so the
+  // renderer's fog is finishing something already fading rather than hiding an
+  // edge. None of this is in `map.tiles` — nobody walks out there; it only
+  // has to look like somewhere.
+  const grass = GROUND.grass ?? "#6fae58";
+  const HAZE = "#9db49b";
+  /**
+   * Aerial haze baked into the field: none at the town's edge, most of the way
+   * gone by ~46 tiles out. Fixed, unlike the sky — a voxel's colour is baked
+   * once — so the renderer's fog still carries the time of day.
+   */
+  const hazeAt = (reach: number): number => {
+    const t = Math.min(1, Math.max(0, (reach - 2) / 44));
+    return t * t * (3 - 2 * t) * 0.72;
+  };
+  /** Distance in tiles from a cell's nearest corner to the map rectangle. */
+  const gap = (lo: number, size: number, span: number): number =>
+    lo + size <= 0 ? 1 - lo - size : lo >= span ? lo - span + 1 : 0;
+  const reachOf = (tx: number, ty: number): number =>
+    Math.max(gap(tx, 1, map.width), gap(ty, 1, map.height));
+  /**
+   * A coarse value noise says where the country is lumpy: trees arrive as
+   * groves and hedge lines rather than a scatter of one-offs.
+   */
+  const noiseAt = (x: number, y: number, cell: number, salt: number): number => {
+    const gx = x / cell;
+    const gy = y / cell;
+    const x0 = Math.floor(gx);
+    const y0 = Math.floor(gy);
+    const fx = gx - x0;
+    const fy = gy - y0;
+    const sx = fx * fx * (3 - 2 * fx);
+    const sy = fy * fy * (3 - 2 * fy);
+    const n00 = hash2(x0, y0, salt);
+    const n10 = hash2(x0 + 1, y0, salt);
+    const n01 = hash2(x0, y0 + 1, salt);
+    const n11 = hash2(x0 + 1, y0 + 1, salt);
+    return n00 + (n10 - n00) * sx + (n01 - n00) * sy + (n00 - n10 - n01 + n11) * sx * sy;
+  };
+  // One slab beneath it all, centred on the town, deeper than any pan limit
+  // plus a screen of ground, and already into the haze so where the tiles end
+  // is not an edge. Its top sits a hair under the tiles' tops — no z-fighting.
+  voxels.push({
+    x: (map.width - 1) / 2,
+    y: -0.12,
+    z: (map.height - 1) / 2,
+    sx: 480,
+    sy: 0.2,
+    sz: 480,
+    color: blend(grass, HAZE, 0.72),
+    ao: OPEN,
+  });
+
+  // The lanes: wherever a path tile meets the edge it becomes a country lane.
+  // Straight off the avenue, then wandering on slow noise — two tracks wide,
+  // then one, then a speckle that dissolves into the field.
+  const LANE_LEN = 54;
+  const road = new Map<string, number>(); // "tx,ty" -> lane step
+  const posts: { x: number; z: number }[] = [];
+  const lanterns: { x: number; z: number }[] = [];
+  const lane = (
+    base: number,
+    fixed: number,
+    dx: number,
+    dy: number,
+    width: number,
+    salt: number,
+  ): void => {
+    let prev: number[] = [];
+    for (let s = 1; s <= LANE_LEN; s++) {
+      const wander = s <= 6 ? 0 : (noiseAt(s, 0, 7, salt) - 0.5) * Math.min(2.6, (s - 6) * 0.15);
+      const w = Math.min(width, s <= 10 ? 2 : s <= 30 ? 1 : 0);
+      const now: number[] =
+        w === 2
+          ? [Math.floor(base + wander), Math.floor(base + wander) + 1]
+          : w === 1 || hash2(s, 0, salt + 91) < ((LANE_LEN - s) / (LANE_LEN - 30)) * 0.85
+            ? [Math.round(base + wander)]
+            : [];
+      // Previous step's cells too, so a bend never leaves a diagonal gap.
+      for (const lat of new Set([...now, ...(w > 0 ? prev : [])])) {
+        const tx = dx === 0 ? lat : fixed + dx * s;
+        const ty = dy === 0 ? lat : fixed + dy * s;
+        const key = `${tx},${ty}`;
+        if (!road.has(key)) road.set(key, s);
+      }
+      prev = now;
+      // A verge fence and a lantern while the lane is still two tracks wide.
+      const lo = Math.floor(base + wander);
+      if (w === 2 && s >= 8 && s <= 24 && s % 3 === 1) {
+        for (const side of [lo - 1, lo + 2]) {
+          if (hash2(s, side, 97) > 0.75) continue;
+          posts.push(dx === 0 ? { x: side, z: fixed + dy * s } : { x: fixed + dx * s, z: side });
+        }
+      }
+      if (w === 2 && s === 12) {
+        lanterns.push(dx === 0 ? { x: lo - 1, z: fixed + dy * s } : { x: fixed + dx * s, z: lo - 1 });
+      }
+    }
+  };
+  // Where the paths leave: consecutive exit tiles are one lane, centred.
+  const exits = (cells: number[], run: (first: number, width: number) => void): void => {
+    let start = 0;
+    for (let i = 1; i < cells.length; i++) {
+      if (cells[i] !== (cells[i - 1] ?? 0) + 1) {
+        run(cells[start] ?? 0, i - start);
+        start = i;
+      }
+    }
+    if (cells.length > 0) run(cells[start] ?? 0, cells.length - start);
+  };
+  {
+    const north: number[] = [];
+    const south: number[] = [];
+    const west: number[] = [];
+    const east: number[] = [];
+    for (let x = 0; x < map.width; x++) {
+      if (kindAt(x, 0) === "path") north.push(x);
+      if (kindAt(x, map.height - 1) === "path") south.push(x);
+    }
+    for (let y = 0; y < map.height; y++) {
+      if (kindAt(0, y) === "path") west.push(y);
+      if (kindAt(map.width - 1, y) === "path") east.push(y);
+    }
+    exits(north, (first, width) => lane(first + width / 2 - 0.5, 0, 0, -1, width, 11));
+    exits(south, (first, width) => lane(first + width / 2 - 0.5, map.height - 1, 0, 1, width, 12));
+    exits(west, (first, width) => lane(first + width / 2 - 0.5, 0, -1, 0, width, 13));
+    exits(east, (first, width) => lane(first + width / 2 - 0.5, map.width - 1, 1, 0, width, 14));
+  }
+  for (const { x, z } of posts) {
+    if (road.has(`${x},${z}`)) continue;
+    box(null, x, 0.28, z, 0.13, 0.55, 0.13, blend("#6f4d31", HAZE, hazeAt(reachOf(x, z)) * 0.5));
+  }
+  for (const { x, z } of lanterns) {
+    if (road.has(`${x},${z}`)) continue;
+    box(null, x, 0.6, z, 0.14, 1.2, 0.14, "#4a4033");
+    glow("lamp", x, 1.34, z, 0.26, 0.2, 0.26, "#ffdf9a");
+    glow("pool", x, 0.02, z, 4, 0, 4, "#d9923f");
+  }
+
+  // The field is emitted in 4x4 cells on one lattice, so it can go coarser
+  // with distance and never leave a seam: real tiles near the town, one box
+  // doing four further out, and past ~46 tiles the underlay alone carries it —
+  // which is the point: by then it is all haze anyway.
+  const OUTSKIRTS = 52;
+  const CELL = 4;
+  const inMap = (tx: number, ty: number, size: number): boolean =>
+    tx + size > 0 && tx < map.width && ty + size > 0 && ty < map.height;
+  const emit = (tx: number, ty: number, unit: number, reach: number): void => {
+    if (inMap(tx, ty, unit)) return;
+    if (unit > 1) {
+      let onRoad = false;
+      for (let a = 0; a < unit && !onRoad; a++) {
+        for (let b = 0; b < unit; b++) {
+          if (road.has(`${tx + a},${ty + b}`)) onRoad = true;
+        }
+      }
+      if (onRoad) {
+        for (let a = 0; a < unit; a++) for (let b = 0; b < unit; b++) emit(tx + a, ty + b, 1, reach);
+        return;
+      }
+    }
+    const cx = tx + unit / 2 - 0.5;
+    const cz = ty + unit / 2 - 0.5;
+    const haze = hazeAt(reach);
+    const step = road.get(`${tx},${ty}`);
+    if (unit === 1 && step !== undefined) {
+      // Pale where the avenue hands off, worn to dirt, then dissolving back
+      // into the field it crosses.
+      const base = blend("#ded3ba", "#b39d76", Math.min(1, step / 18));
+      const fading = Math.min(1, Math.max(0, (step - 26) / (LANE_LEN - 30))) * 0.7;
+      const dirt = blend(jitter(base, 0.05, tx, ty, 7), blend(grass, HAZE, haze * 0.8), fading);
+      box(null, tx, -0.1, ty, 1, 0.2, 1, dirt);
+      return;
+    }
+    // Meadow, mottled in patches by the same noise that decides the groves.
+    const mottle = noiseAt(tx, ty, 13, 51);
+    let base = jitter(grass, 0.08, tx, ty, 1);
+    if (mottle > 0.64) base = shade(base, -0.07);
+    else if (mottle < 0.34) base = blend(base, "#83bd68", 0.35);
+    box(null, cx, -0.1, cz, unit, 0.2, unit, blend(base, HAZE, haze));
+    if (step !== undefined || reach > 34) return;
+    const forest = noiseAt(tx, ty, 11, 41);
+    const h = hash2(tx, ty, 61);
+    if ((forest > 0.58 && h < (forest - 0.56) * 1.5) || (forest <= 0.44 && h < 0.004)) {
+      // The town's own three-box tree, hazed by distance like the grass under it.
+      const size = 0.85 + hash2(tx, ty, 9) * 0.4;
+      const leaf = blend(jitter("#3d8a4b", 0.1, tx, ty, 4), HAZE, haze * 0.55);
+      const trunk = blend("#6f4d31", HAZE, haze * 0.55);
+      box(null, cx, 0.5 * size, cz, 0.26, 1.0 * size, 0.26, trunk);
+      box(null, cx, 1.3 * size, cz, 1.1 * size, 0.8 * size, 1.1 * size, leaf);
+      box(null, cx, 1.95 * size, cz, 0.68 * size, 0.5 * size, 0.68 * size, shade(leaf, 0.14));
+    } else if (forest > 0.5 && h < 0.11) {
+      // Thicket edge: bushes where the grove thins out.
+      const shrub = blend("#35703f", HAZE, haze * 0.55);
+      box(null, cx + (hash2(tx, ty, 26) - 0.5) * 0.4, 0.18, cz + (hash2(tx, ty, 27) - 0.5) * 0.4, 0.7, 0.36, 0.7, shrub);
+      box(null, cx, 0.34, cz, 0.45, 0.32, 0.45, shade(shrub, 0.12));
+    } else if (unit === 1 && reach <= 18 && hash2(tx, ty, 63) < 0.1) {
+      // A tuft or a flower, as on the town's lawns — detail is for up close.
+      const ox = (hash2(tx, ty, 22) - 0.5) * 0.6;
+      const oz = (hash2(tx, ty, 23) - 0.5) * 0.6;
+      const flower = hash2(tx, ty, 24) > 0.7;
+      box(null, tx + ox, 0.06, ty + oz, 0.16, 0.12, 0.16, flower ? "#f2e27a" : "#4f9447");
+    } else if (unit === 1 && hash2(tx, ty, 65) < 0.005) {
+      box(null, cx + 0.2, 0.09, cz - 0.15, 0.3, 0.18, 0.26, blend("#9aa0a4", HAZE, haze));
+    }
+  };
+  for (let my = -OUTSKIRTS; my < map.height + OUTSKIRTS; my += CELL) {
+    for (let mx = -OUTSKIRTS; mx < map.width + OUTSKIRTS; mx += CELL) {
+      const reach = Math.max(gap(mx, CELL, map.width), gap(my, CELL, map.height));
+      if (reach === 0 || reach > 46) continue; // inside the map, or pure underlay
+      const unit = reach <= 6 ? 1 : 2;
+      for (let sy = 0; sy < CELL; sy += unit) {
+        for (let sx = 0; sx < CELL; sx += unit) {
+          emit(mx + sx, my + sy, unit, reach);
+        }
+      }
+    }
+  }
+
   return voxels;
 }
 

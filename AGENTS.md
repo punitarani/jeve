@@ -158,6 +158,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### API-0002: Page the seq cursor both ways, and read the timeline newest first
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `py/src/jeve/api/app.py`, `py/src/jeve/api/contracts.py`, `apps/web/src/lib/api.ts`, `apps/web/src/components/Dashboard.tsx`  
+**Tags**: api, web, pagination, agent-decided
+
+`/events` takes `before=<seq>` as well as `after=<seq>`, and every page carries a cursor at each end — `seq` (newest) and `oldest` — plus `more`, which says whether another page exists in the direction this one travelled. Rows come back ascending whichever way the window was taken; the timeline reverses once, where it renders.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### CORE-0001: Record architecture decisions as immutable per-file records
 
 **Status**: accepted (2026-09-20)  
@@ -417,6 +429,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: nextjs, cloudflare, deployment, agent-decided
 
 `next.config.ts` sets `output: "export"`. `page.tsx` renders a static shell; a client component fetches `fetchState`/`fetchLatestEvents` on mount and the "API is not reachable" copy becomes a client-side state. `NEXT_PUBLIC_JEVE_API` is inlined at build time, so changing it means rebuilding. `wrangler.toml` is assets-only (`directory = "out"`, no `main`, no `binding`).
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WEB-0006: UI components are shadcn on Base UI primitives over the app palette
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `apps/web/src/components/**`, `apps/web/src/app/globals.css`, `apps/web/src/app/layout.tsx`, `apps/web/components.json`, `apps/web/postcss.config.mjs`, `apps/web/package.json`  
+**Tags**: ui, dependencies, agent-decided
+
+The component layer is **shadcn (Base UI preset, nova style), vendored into `src/components/ui/`**, with the app's palette kept as the single token source:
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

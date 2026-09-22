@@ -46,6 +46,25 @@ const MAX_SELECTED = 8;
 const ISO_ELEVATION = Math.atan(1 / Math.SQRT2); // true isometric: ~35.26 degrees
 const ISO_AZIMUTH = Math.PI / 4;
 const CAMERA_DISTANCE = 80;
+/**
+ * A long ramp: haze starts just past the town and the far meadow is gone by
+ * its end. The camera sits at CAMERA_DISTANCE, so these are depths, and an
+ * orthographic camera reads them almost as tiles from the target.
+ */
+const FOG_NEAR = 104;
+const FOG_FAR = 215;
+/** How far past the map's edge the camera may be dragged, in tiles. */
+const PAN_MARGIN = 15;
+/** Thin drifting clouds over the meadow, in the town's own box idiom. */
+const CLOUD_COUNT = 26;
+const CLOUD_RADIUS = 85;
+/** A cloud's lobes: offsets and scales against the puff's own size. */
+const CLOUD_LOBES: [number, number, number, number, number, number][] = [
+  [0, 0, 0, 1, 1, 1],
+  [0.55, -0.45, 0.3, 0.55, 0.6, 0.55],
+  [-0.5, 0.35, -0.3, 0.6, 0.55, 0.5],
+  [0.1, 0.45, -0.55, 0.45, 0.45, 0.4],
+];
 
 export type ViewTarget = { x: number; z: number; span: number };
 
@@ -154,6 +173,11 @@ export class WorldView {
   private skyTexture: THREE.DataTexture | null = null;
   private townCentre = new THREE.Vector3();
   private townRadius = 30;
+  private clouds: THREE.InstancedMesh | null = null;
+  private cloudSpots: { x: number; z: number; y: number; sx: number; sy: number; sz: number; speed: number }[] = [];
+  /** Where the camera's target may go, in tiles: the map plus a margin. */
+  private panX: [number, number] = [-PAN_MARGIN, PAN_MARGIN];
+  private panZ: [number, number] = [-PAN_MARGIN, PAN_MARGIN];
 
   // Time of day, eased: a tick moves the clock a quarter of an hour at once,
   // and a sun that jumped would make every shadow in town twitch.
@@ -259,6 +283,12 @@ export class WorldView {
     this.buildGlow(voxels.filter((v) => v.glow !== undefined));
     this.buildPeople();
     this.buildSky();
+    this.buildClouds(map);
+    // Haze, not a wall: the meadow melts into the horizon colour, repainted
+    // with the sky every time the light moves.
+    this.scene.fog = new THREE.Fog(0xffffff, FOG_NEAR, FOG_FAR);
+    this.panX = [-PAN_MARGIN, map.width - 1 + PAN_MARGIN];
+    this.panZ = [-PAN_MARGIN, map.height - 1 + PAN_MARGIN];
     this.debugHandle();
   }
 
@@ -459,6 +489,41 @@ export class WorldView {
   }
 
   /**
+   * Little puffs of flat white boxes drifting east over the meadow. A single
+   * slab reads as a glass pane over the field, so each cloud is a few boxes
+   * clustered — a slab with lobes, in the town's own box idiom. They sell the
+   * fog as weather: a cloud slides through the haze where the ground is
+   * already gone, and the world reads as somewhere rather than a slab.
+   * Tinted from the sky once a frame; fogged like everything else.
+   */
+  private buildClouds(map: TownMap): void {
+    const material = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.45,
+      toneMapped: false,
+    });
+    const clouds = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      material,
+      CLOUD_COUNT * CLOUD_LOBES.length,
+    );
+    clouds.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    clouds.frustumCulled = false;
+    this.cloudSpots = Array.from({ length: CLOUD_COUNT }, (_, i) => ({
+      x: map.width / 2 + (hash2(i, 3, 71) - 0.5) * 2 * CLOUD_RADIUS,
+      z: map.height / 2 + (hash2(i, 5, 72) - 0.5) * 2 * CLOUD_RADIUS,
+      y: 10.5 + hash2(i, 7, 73) * 5.5,
+      sx: 5 + hash2(i, 11, 74) * 9,
+      sy: 1 + hash2(i, 13, 75) * 0.4,
+      sz: 3.5 + hash2(i, 17, 76) * 3,
+      speed: 0.9 + hash2(i, 19, 77) * 1.1,
+    }));
+    this.clouds = clouds;
+    this.scene.add(clouds);
+  }
+
+  /**
    * Which way somebody on a tile should face when nobody has said.
    *
    * A seat faces the desk or table it is drawn up to. Anybody standing next to
@@ -553,6 +618,21 @@ export class WorldView {
     if (this.renderer !== null) this.renderer.toneMappingExposure = sky.exposure;
     this.paintSky(sky);
     this.paintGlow(sky);
+    if (this.scene.fog !== null) {
+      // Fog is the sky at the horizon: the bottom of the gradient lifted a
+      // little towards the top, so whatever it eats it eats into sky.
+      this.scene.fog.color.copy(
+        this.color.set(sky.bottom).lerp(this.colorB.set(sky.top), 0.35),
+      );
+    }
+    if (this.clouds !== null) {
+      // Unlit, so tinted by hand: near-white by day, settling into the murk
+      // with the lamps.
+      const material = this.clouds.material as THREE.MeshBasicMaterial;
+      material.color.copy(
+        this.color.set("#ffffff").lerp(this.colorB.set(sky.bottom), 0.2 + 0.5 * sky.lamps),
+      );
+    }
   }
 
   private aimSun(sun: THREE.DirectionalLight, direction: [number, number, number]): void {
@@ -948,6 +1028,7 @@ export class WorldView {
 
     if (this.controls !== null) {
       this.controls.update();
+      this.clampPan();
     } else {
       const k = 0.035;
       this.eased.x += (this.target.x - this.eased.x) * k;
@@ -959,9 +1040,48 @@ export class WorldView {
     if (this.people !== null) {
       this.light(dt);
       this.drawPeople(now, dt);
+      this.driftClouds(dt);
     }
     this.renderer?.render(this.scene, this.camera);
     this.measure(now, moving);
+  }
+
+  /**
+   * The edge of the world: the target may roam the map plus a margin of
+   * meadow — far enough to feel the haze and the clouds, not so far that the
+   * town leaves the screen for good. The camera is shifted by the same delta
+   * so the view stops dead instead of hopping back.
+   */
+  private clampPan(): void {
+    const controls = this.controls;
+    if (controls === null) return;
+    const target = controls.target;
+    const x = Math.min(this.panX[1], Math.max(this.panX[0], target.x));
+    const z = Math.min(this.panZ[1], Math.max(this.panZ[0], target.z));
+    if (x === target.x && z === target.z) return;
+    this.camera.position.x += x - target.x;
+    this.camera.position.z += z - target.z;
+    target.x = x;
+    target.z = z;
+  }
+
+  /** Move every cloud a little east; one that leaves the field re-enters upwind. */
+  private driftClouds(dt: number): void {
+    const clouds = this.clouds;
+    if (clouds === null) return;
+    const centre = this.townCentre.x;
+    const seconds = dt / 1000;
+    this.cloudSpots.forEach((cloud, i) => {
+      cloud.x += cloud.speed * seconds;
+      if (cloud.x - centre > CLOUD_RADIUS) cloud.x -= CLOUD_RADIUS * 2;
+      CLOUD_LOBES.forEach(([dx, dy, dz, kx, ky, kz], l) => {
+        this.local
+          .makeScale(cloud.sx * kx, cloud.sy * ky, cloud.sz * kz)
+          .setPosition(cloud.x + dx * cloud.sx, cloud.y + dy, cloud.z + dz * cloud.sz);
+        clouds.setMatrixAt(i * CLOUD_LOBES.length + l, this.local);
+      });
+    });
+    clouds.instanceMatrix.needsUpdate = true;
   }
 
   private measure(now: number, moving: number): void {

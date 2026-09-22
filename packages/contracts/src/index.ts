@@ -52,6 +52,8 @@ export const Health = z.object({
   last_error: z.string().nullable(),
   /** The status says a process should be alive and the heartbeat says none is. */
   stale: z.boolean(),
+  /** Whether this deployment carries a BRAINTRUST_API_KEY (LLM-0008). False means nothing is traced, silently and by design. True means the key is present, not that Braintrust is accepting the spans — the SDK reports a rejected key or project only on the daemon's stderr. */
+  tracing: z.boolean(),
 });
 export type Health = z.infer<typeof Health>;
 
@@ -95,7 +97,12 @@ export type SimEvent = z.infer<typeof SimEvent>;
 
 export const EventPage = z.object({
   events: z.array(SimEvent),
+  /** the newest seq in this page: the cursor for `after` */
   seq: z.number().int(),
+  /** the oldest seq in this page: the cursor for `before`; 0 when empty */
+  oldest: z.number().int(),
+  /** whether another page exists in the direction this one travelled */
+  more: z.boolean(),
 });
 export type EventPage = z.infer<typeof EventPage>;
 

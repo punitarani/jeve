@@ -37,8 +37,8 @@ dist/
 # Node
 node_modules/
 .next/
-.next-e2e/
-.next-shots/
+# JEVE_NEXT_DIST picks the export dir (e2e, visual probes); cover them all.
+.next-*/
 next-env.d.ts
 out/
 .turbo/

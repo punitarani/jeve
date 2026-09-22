@@ -148,6 +148,51 @@ def test_a_sink_that_fails_only_on_log_still_lets_the_body_finish(
     tracing.reset()
 
 
+# -- which project the spans are told to land in --------------------------
+
+
+def _init_logger_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Capture `init_logger`'s kwargs. Constructing the sink opens no socket."""
+
+    import braintrust
+
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(braintrust, "init_logger", lambda **kw: calls.append(kw))
+    return calls
+
+
+def test_an_id_is_sent_alone_so_the_sdk_looks_it_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never both. Both is the branch that skips validation.
+
+    `braintrust._compute_logger_metadata` branches on which argument is None.
+    An id alone is resolved with `get_project_id`, so a stale or foreign one
+    fails at login. Sent *alongside* a name it takes a third branch that
+    trusts the id verbatim, never calls the API, and leaves every row to be
+    rejected server-side and dropped on a background thread where nothing we
+    write can see it.
+    """
+
+    calls = _init_logger_calls(monkeypatch)
+    tracing._BraintrustSink(project_id="7f1ad66e-c91d", api_key="sk-test")
+
+    assert calls == [{"project_id": "7f1ad66e-c91d", "api_key": "sk-test"}]
+    assert "project" not in calls[0]
+
+
+def test_no_id_sends_the_name_alone_so_the_sdk_creates_or_resolves_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key on its own is enough to trace; spans land in `jeve`."""
+
+    calls = _init_logger_calls(monkeypatch)
+    tracing._BraintrustSink(project_id=None, api_key="sk-test")
+
+    assert calls == [{"project": "jeve", "api_key": "sk-test"}]
+    assert "project_id" not in calls[0]
+
+
 # -- against the real SDK, offline ----------------------------------------
 
 

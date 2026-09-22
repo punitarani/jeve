@@ -237,7 +237,8 @@ is doing, asleep for the night included, so silence this long means no process."
 
 
 def _health(meta: dict[str, Any]) -> dict[str, object]:
-    """Is anybody driving? `status` is the daemon's word; this is the evidence.
+    """Is anybody driving, and is anyone watching? `status` is the daemon's
+    word; this is the evidence.
 
     A status of `running` written by a process that has since been killed stays
     `running` for ever. The heartbeat is what lets a reader tell.
@@ -255,6 +256,13 @@ def _health(meta: dict[str, Any]) -> dict[str, object]:
         "lag_s": round(float(meta["lag_s"]), 2),
         "last_error": meta["last_error"],
         "stale": expected_alive and (age is None or float(age) > STALE_AFTER_S),
+        # Read from settings rather than `tracing.enabled()`: that would
+        # configure tracing — importing the SDK, building a logger — as a side
+        # effect of a read endpoint. `api` and `sim` are one Fly app and share
+        # its secrets, so this answers "does the deployment have the key"
+        # honestly, which is the question that went unanswered for an hour
+        # when the key sat in Doppler and never reached Fly (LLM-0008).
+        "tracing": bool(load_settings().braintrust_api_key),
     }
 
 
@@ -271,6 +279,7 @@ BACKGROUND_EVENTS = ("agent.moved", "cafe.sale", "cafe.walkout")
 @app.get("/events")
 def events(
     after: int = Query(0, ge=0),
+    before: int | None = Query(None, ge=1, description="older than this seq"),
     limit: int = Query(200, ge=1, le=1000),
     kind: str | None = None,
     org: str | None = None,
@@ -278,8 +287,19 @@ def events(
     background: bool = Query(False, description="include movement and retail"),
     latest: bool = Query(False, description="the newest `limit` instead of the oldest"),
 ) -> dict[str, object]:
+    """A window of the log, always oldest first, with a cursor at each end.
+
+    `after` walks forwards and `before` walks backwards, so one integer pages
+    in either direction (API-0002). The rows are sorted ascending whichever way
+    the window was taken: the wire order is a property of the endpoint, not of
+    the query, and the timeline reverses at the point it renders.
+    """
+
     clauses = ["seq > %s"]
     params: list[Any] = [after]
+    if before is not None:
+        clauses.append("seq < %s")
+        params.append(before)
     wanted = [k for k in (kinds or kind or "").split(",") if k]
     if wanted:
         clauses.append("kind = ANY(%s)")
@@ -290,17 +310,28 @@ def events(
     if org:
         clauses.append("org_id = %s")
         params.append(org)
-    params.append(limit)
-    order = "DESC" if latest else "ASC"
+    # One row past the window, to answer "is there more?" without spending a
+    # round trip at the end of history discovering there is not.
+    params.append(limit + 1)
+    order = "DESC" if latest or before is not None else "ASC"
     rows = _rows(
         f"SELECT seq, sim_time, tick_seq, kind, actor_id, org_id, payload, causes "
         f"FROM events WHERE {' AND '.join(clauses)} ORDER BY seq {order} LIMIT %s",
         tuple(params),
     )
+    # The probe row is the one beyond the window in whichever direction the
+    # query travelled, so it is always the last — trim before the re-sort.
+    more = len(rows) > limit
+    del rows[limit:]
     rows.sort(key=lambda row: int(row["seq"]))
     for row in rows:
         row["label"] = SimTime(int(row["sim_time"])).label()
-    return {"events": rows, "seq": rows[-1]["seq"] if rows else after}
+    return {
+        "events": rows,
+        "seq": rows[-1]["seq"] if rows else after,
+        "oldest": rows[0]["seq"] if rows else 0,
+        "more": more,
+    }
 
 
 @app.get("/causal/{seq}")
