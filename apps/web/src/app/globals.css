@@ -271,6 +271,7 @@ a { color: inherit; }
    when the bar hides. vh stays as the fallback for older engines. */
 .world-page { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .world-body { display: flex; flex: 1; min-height: 0; }
+.world-stage { flex: 1; min-width: 0; display: flex; align-items: stretch; }
 .world-canvas {
   position: relative;
   flex: 1;
@@ -279,6 +280,47 @@ a { color: inherit; }
   cursor: grab;
 }
 .world-canvas:active { cursor: grabbing; }
+
+/* The level cut (WEB-0007), as a lift's buttons: the top storey at the top,
+   the ground at the foot, and nothing pressed until somebody wants to see
+   inside. In a gutter beside the canvas rather than floating over it — a
+   control over the town eats the click meant for the building beneath it. */
+.level-cut {
+  align-self: center;
+  margin: 0 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--bg) 78%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.18);
+}
+.level-cut button {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.level-cut button:hover { background: color-mix(in oklab, var(--mark) 22%, transparent); color: var(--fg); }
+.level-cut button[aria-pressed="true"] { background: var(--mark); color: var(--bg); }
+.level-cut .level-cut-clear {
+  margin-top: 2px;
+  border-top: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+  border-radius: 0 0 8px 8px;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+}
+.level-cut .level-cut-clear[aria-pressed="true"] { background: transparent; color: var(--muted-foreground); }
 .world-side {
   width: 380px;
   flex: none;

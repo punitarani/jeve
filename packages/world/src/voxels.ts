@@ -496,13 +496,26 @@ function occlusion(
 
 // -- the town ---------------------------------------------------------------
 
+/** How far the country runs past the last tile, as a fraction of the map's
+ * longer side. A wider district gets a wider country. */
+export const OUTSKIRTS_REACH = 0.7;
+/**
+ * What a CPU rasteriser gets instead. The meadow is most of the boxes and
+ * nobody walks on it, so a software renderer draws a shallower country rather
+ * than none: a town on bare ground is the one thing that reads as broken, and
+ * every screenshot this machine takes is of a town on bare ground (WEB-0003).
+ */
+export const OUTSKIRTS_REACH_SOFTWARE = 0.25;
+
 /**
  * Every static box in the town, every storey of it. y is up; x and z are the
- * tile grid. `outskirts` is the country past the last tile: a third of all the
- * boxes and nothing anyone walks on, so a CPU rasteriser is spared it
- * (WEB-0003) and draws the district a third faster.
+ * tile grid. `outskirts` is how far the country past the last tile runs, as a
+ * fraction of the map's longer side; 0 leaves the town on bare ground.
  */
-export function buildVoxels(map: TownMap, { outskirts = true } = {}): Voxel[] {
+export function buildVoxels(
+  map: TownMap,
+  { outskirts = OUTSKIRTS_REACH }: { outskirts?: number } = {},
+): Voxel[] {
   const voxels: Voxel[] = [];
   const byZone = new Map<string, Building>(map.buildings.map((b) => [b.zone, b]));
   const ground = groundKinds(map);
@@ -1134,8 +1147,8 @@ export function buildVoxels(map: TownMap, { outskirts = true } = {}): Voxel[] {
   // edge. None of this is in `map.tiles` — nobody walks out there; it only
   // has to look like somewhere. How far it runs is a fraction of the map's
   // longer side, so a wider district gets a wider country.
-  if (!outskirts) return voxels;
-  const OUTSKIRTS = Math.round(0.7 * Math.max(map.width, map.height));
+  if (outskirts <= 0) return voxels;
+  const OUTSKIRTS = Math.max(8, Math.round(outskirts * Math.max(map.width, map.height)));
   const grass = GROUND.grass ?? "#6fae58";
   const HAZE = "#9db49b";
   /** A lit box in the field, standing on nothing that shades it. */
@@ -1147,7 +1160,7 @@ export function buildVoxels(map: TownMap, { outskirts = true } = {}): Voxel[] {
    * colour is baked once — so the renderer's fog still carries the time of day.
    */
   const hazeAt = (reach: number): number => {
-    const t = Math.min(1, Math.max(0, (reach - 2) / (OUTSKIRTS - 8)));
+    const t = Math.min(1, Math.max(0, (reach - 2) / Math.max(1, OUTSKIRTS - 8)));
     return t * t * (3 - 2 * t) * 0.72;
   };
   /** Distance in tiles from a cell's nearest corner to the map rectangle. */
@@ -1184,6 +1197,13 @@ export function buildVoxels(map: TownMap, { outskirts = true } = {}): Voxel[] {
   // Straight off the avenue, then wandering on slow noise — two tracks wide,
   // then one, then a speckle that dissolves into the field.
   const LANE_LEN = OUTSKIRTS + 2;
+  // Where the lane thins, as a share of its own length rather than a count of
+  // steps: at the full reach these are the 6, 10 and 30 they always were, and
+  // a shallow country still gets the whole shape instead of a lane cut off.
+  const WANDER_AT = Math.max(2, Math.round(LANE_LEN * 0.104));
+  const TWO_TRACKS = Math.max(WANDER_AT + 1, Math.round(LANE_LEN * 0.172));
+  const ONE_TRACK = Math.max(TWO_TRACKS + 2, Math.round(LANE_LEN * 0.517));
+  const DISSOLVE = Math.max(1, LANE_LEN - ONE_TRACK);
   const road = new Map<string, number>(); // "tx,ty" -> lane step
   const posts: { x: number; z: number }[] = [];
   const lanterns: { x: number; z: number }[] = [];
@@ -1197,12 +1217,15 @@ export function buildVoxels(map: TownMap, { outskirts = true } = {}): Voxel[] {
   ): void => {
     let prev: number[] = [];
     for (let s = 1; s <= LANE_LEN; s++) {
-      const wander = s <= 6 ? 0 : (noiseAt(s, 0, 7, salt) - 0.5) * Math.min(2.6, (s - 6) * 0.15);
-      const w = Math.min(width, s <= 10 ? 2 : s <= 30 ? 1 : 0);
+      const wander =
+        s <= WANDER_AT
+          ? 0
+          : (noiseAt(s, 0, 7, salt) - 0.5) * Math.min(2.6, (s - WANDER_AT) * 0.15);
+      const w = Math.min(width, s <= TWO_TRACKS ? 2 : s <= ONE_TRACK ? 1 : 0);
       const now: number[] =
         w === 2
           ? [Math.floor(base + wander), Math.floor(base + wander) + 1]
-          : w === 1 || hash2(s, 0, salt + 91) < ((LANE_LEN - s) / (LANE_LEN - 30)) * 0.85
+          : w === 1 || hash2(s, 0, salt + 91) < ((LANE_LEN - s) / DISSOLVE) * 0.85
             ? [Math.round(base + wander)]
             : [];
       // Previous step's cells too, so a bend never leaves a diagonal gap.
@@ -1298,7 +1321,7 @@ export function buildVoxels(map: TownMap, { outskirts = true } = {}): Voxel[] {
       // Pale where the avenue hands off, worn to dirt, then dissolving back
       // into the field it crosses.
       const base = blend("#ded3ba", "#b39d76", Math.min(1, step / 18));
-      const fading = Math.min(1, Math.max(0, (step - 26) / (LANE_LEN - 30))) * 0.7;
+      const fading = Math.min(1, Math.max(0, (step - (ONE_TRACK - 4)) / DISSOLVE)) * 0.7;
       const dirt = blend(jitter(base, 0.05, tx, ty, 7), blend(grass, HAZE, haze * 0.8), fading);
       field(tx, -0.1, ty, 1, 0.2, 1, dirt);
       return;

@@ -36,6 +36,8 @@ import {
   SURFACES,
   TROUSER_TONES,
   buildVoxels,
+  OUTSKIRTS_REACH,
+  OUTSKIRTS_REACH_SOFTWARE,
   facingAt,
   fountainOf,
   groundKinds,
@@ -349,9 +351,12 @@ export class WorldView {
 
     // Each storey gets meshes of its own, so a level cut can hide the floors
     // above one without touching the rest.
-    // A software rasteriser pays per box, and the meadow past the map is a
-    // third of them: it draws the town and not the country (WEB-0003).
-    const voxels = buildVoxels(map, { outskirts: this.software === null });
+    // A software rasteriser pays per box, and the meadow past the map is most
+    // of them: it gets a shallower country, not none (WEB-0003). A district
+    // standing on bare ground is the one thing that reads as broken.
+    const voxels = buildVoxels(map, {
+      outskirts: this.software === null ? OUTSKIRTS_REACH : OUTSKIRTS_REACH_SOFTWARE,
+    });
     const floors = [...new Set(voxels.map((v) => v.floor))].sort((a, b) => a - b);
     this.falloff = this.falloffTexture();
     for (const floor of floors) {

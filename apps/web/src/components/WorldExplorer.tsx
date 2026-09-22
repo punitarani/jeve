@@ -26,12 +26,8 @@ import {
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 const MOODS = ["stressed", "flat", "content", "upbeat"];
-
-/** The level-cut control's value for a cut: "all" for none, else the floor. */
-const cutValue = (cut: number | null): string => (cut === null ? "all" : String(cut));
 
 /** Floors are counted from the ground, as a lift button would. */
 function floorWord(floor: number): string {
@@ -116,59 +112,58 @@ export function WorldExplorer() {
 				<span className="muted">
 					drag to pan · scroll to zoom · click anyone
 				</span>
-				<span className="inline-flex items-center gap-2">
-					<span className="muted">cut at</span>
-					{/* One pressed item, always: a second press on the pressed one
-					    would report an empty value, and is ignored. */}
-					<ToggleGroup
-						variant="outline"
-						size="sm"
-						spacing={0}
-						value={[cutValue(cut)]}
-						onValueChange={(next) => {
-							const value = next[0];
-							if (value === undefined) return;
-							applyCut(value === "all" ? null : Number(value));
-						}}
-						aria-label="storeys shown"
-						data-testid="level-cut"
-					>
-						<ToggleGroupItem
-							value="all"
-							className="h-6 px-2 text-[11px] font-normal"
-							data-testid="level-cut-all"
-						>
-							All
-						</ToggleGroupItem>
-						{levels.map((floor) => (
-							<ToggleGroupItem
-								key={floor}
-								value={String(floor)}
-								className="h-6 px-2 text-[11px] font-normal"
-								data-testid={`level-cut-${floor}`}
-							>
-								{floor}
-							</ToggleGroupItem>
-						))}
-						<ToggleGroupItem
-							value="0"
-							className="h-6 px-2 text-[11px] font-normal"
-							data-testid="level-cut-0"
-						>
-							G
-						</ToggleGroupItem>
-					</ToggleGroup>
-				</span>
 				<Link href="/" className="muted push-right">
 					← timeline
 				</Link>
 			</header>
 			<div className="world-body">
-				<div
-					ref={container}
-					className="world-canvas"
-					data-testid="world-view"
-				/>
+				<div className="world-stage">
+					{floors > 1 && (
+						<div
+							className="level-cut"
+							role="group"
+							aria-label="storeys shown"
+							data-testid="level-cut"
+						>
+							{levels.map((floor) => (
+								<button
+									key={floor}
+									type="button"
+									aria-pressed={cut === floor}
+									title={`hide everything above ${floorWord(floor)}`}
+									onClick={() => applyCut(cut === floor ? null : floor)}
+									data-testid={`level-cut-${floor}`}
+								>
+									{floor}
+								</button>
+							))}
+							<button
+								type="button"
+								aria-pressed={cut === 0}
+								title="the ground floor only"
+								onClick={() => applyCut(cut === 0 ? null : 0)}
+								data-testid="level-cut-0"
+							>
+								G
+							</button>
+							<button
+								type="button"
+								className="level-cut-clear"
+								aria-pressed={cut === null}
+								title="every storey"
+								onClick={() => applyCut(null)}
+								data-testid="level-cut-all"
+							>
+								All
+							</button>
+						</div>
+					)}
+					<div
+						ref={container}
+						className="world-canvas"
+						data-testid="world-view"
+					/>
+				</div>
 				<aside className="world-side">
 					<ScrollArea className="h-full">
 						<div className="p-3">
