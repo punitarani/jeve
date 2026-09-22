@@ -86,12 +86,12 @@ db-down: ## Stop Postgres, keep the data
 	docker compose down
 
 .PHONY: fixture
-fixture: ## Run the golden fixture. POLICY=jev|rules CALLS=replay|record
-	npx nx run sim:fixture --args="$(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS))"
+fixture: ## Run the golden fixture. POLICY=jev|rules CALLS=replay|record EPISODES=1
+	npx nx run sim:fixture --args="$(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS)) $(if $(EPISODES),--episodes)"
 
 .PHONY: soak
-soak: ## 35 sim-days on rules, on its own database; checks invariants, writes ops/soak.md. POLICY= CALLS= DAYS= COUNTERFACTUAL=1
-	$(UV) python scripts/soak.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS)) $(if $(COUNTERFACTUAL),--counterfactual)
+soak: ## 35 sim-days on rules, on its own database; checks invariants, writes ops/soak.md. POLICY= CALLS= DAYS= COUNTERFACTUAL=1 EPISODES=1
+	$(UV) python scripts/soak.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS)) $(if $(COUNTERFACTUAL),--counterfactual) $(if $(EPISODES),--episodes)
 
 .PHONY: episodes
 episodes: ## Does giving a meeting rounds change anything? Two arms, one seed, free. DAYS= SEEDS=

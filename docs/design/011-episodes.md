@@ -169,7 +169,7 @@ work, and it is why episodes ship switched off.
 
 - **Off by default.** `episode.round` asks questions the golden cassette does not
   hold, so `make e2e` with episodes on would miss in strict replay. Recording
-  them is `LIVE=1 make e2e` with `--episodes`, and it spends money.
+  them is `make fixture CALLS=record EPISODES=1`, and it spends money.
 - **The caps are judgements.** Three rounds, four participants, twelve a day, two
   sim-hours of cooldown. Chosen mean so that a binding cap shows up in
   `exit_reason` rather than hiding.
