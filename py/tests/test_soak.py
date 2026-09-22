@@ -1,7 +1,10 @@
-"""`make soak`, as a test: thirty-five days, and it is still a world.
+"""`make soak`, as a test: three weeks, and it is still a world.
 
 Nothing ran past eight days until the audit did, and over thirty the world
 wound down. This is the horizon that would have caught it (WORLD-0005).
+`make soak` keeps the full thirty-five days; at 225 staff the suite runs
+twenty-one, both arms, which is past the second payday, the first close and
+the first written-off bill, in half the time.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from jeve.sim import soak
 pytestmark = pytest.mark.timeout(900)
 
 
-def test_thirty_five_days_on_rules_hold_every_invariant(tmp_path: Path) -> None:
+def test_three_weeks_on_rules_hold_every_invariant(tmp_path: Path) -> None:
     try:
         with db.connect() as conn:
             conn.execute("SELECT 1")
@@ -26,7 +29,7 @@ def test_thirty_five_days_on_rules_hold_every_invariant(tmp_path: Path) -> None:
 
     report = tmp_path / "soak.md"
     code = soak.main(
-        ["--days", "35", "--counterfactual", "--report", str(report), "--database",
+        ["--days", "21", "--counterfactual", "--report", str(report), "--database",
          "jeve_soak_test"]
     )  # fmt: skip
     text = report.read_text()
