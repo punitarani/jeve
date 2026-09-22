@@ -493,6 +493,16 @@ MOODS: tuple[str, ...] = (
 )
 
 
+CANDIDATES = 6
+"""How many of the people here are offered as somebody to talk to."""
+GROUPS = 5
+"""How many firms' worth of people are named when the room is described."""
+_NUMBERS = (
+    "no", "one", "two", "three", "four", "five",
+    "six", "seven", "eight", "nine", "ten",
+)  # fmt: skip
+
+
 def slot(index: int) -> str:
     """A neutral label for someone present. Names and ids are noise to Jev,
     and would stop two identical rooms sharing a call."""
@@ -500,9 +510,23 @@ def slot(index: int) -> str:
     return f"person_{chr(ord('a') + index)}"
 
 
+def _article(words: str) -> str:
+    return "an" if words[:1] in "aeiou" else "a"
+
+
 def describe(person: dict[str, object]) -> str:
     role = role_words(str(person.get("role", "employee")))
-    return f"a {role} from {ORG_WORDS.get(str(person.get('org')), 'another firm')}"
+    firm = ORG_WORDS.get(str(person.get("org")), "another firm")
+    return f"{_article(role)} {role} from {firm}"
+
+
+def count_words(n: int, words: str) -> str:
+    """`a paralegal`, `two engineers`, `fourteen support agents`."""
+
+    if n == 1:
+        return f"{_article(words)} {words}"
+    plural = words if words.endswith("s") else f"{words}s"
+    return f"{_NUMBERS[n] if n < len(_NUMBERS) else n} {plural}"
 
 
 def _present(ctx: DecisionContext) -> list[dict[str, object]]:
@@ -510,6 +534,85 @@ def _present(ctx: DecisionContext) -> list[dict[str, object]]:
     return (
         [p for p in present if isinstance(p, dict)] if isinstance(present, list) else []
     )
+
+
+def _priority(person: dict[str, object], *, own_org: str, vendor: object) -> int:
+    """Whom it matters most to notice: the vendor whose product is down,
+    then colleagues from other floors, then everybody else."""
+
+    org = str(person.get("org"))
+    if vendor is not None and org == vendor:
+        return 0
+    return 1 if org == own_org else 2
+
+
+def candidates(
+    present: list[dict[str, object]], *, own_org: str, vendor: object
+) -> list[str]:
+    """Who is offered as somebody to talk to: at most `CANDIDATES` of the
+    people here, the vendor's staff first, then colleagues, then the rest in
+    a stable order. The one function both policies and the world use, so the
+    labels a model chooses from and the people the rules twin picks among are
+    the same short list (DECIDE-0005)."""
+
+    ranked = sorted(
+        present,
+        key=lambda p: (_priority(p, own_org=own_org, vendor=vendor), str(p.get("id"))),
+    )
+    return [str(p["id"]) for p in ranked[:CANDIDATES] if "id" in p]
+
+
+def _offered(ctx: DecisionContext) -> list[dict[str, object]]:
+    """The people behind the labels, in label order."""
+
+    present = _present(ctx)
+    ids = ctx.facts.get("candidates")
+    if not isinstance(ids, list):
+        ids = candidates(
+            present,
+            own_org=str(ctx.facts.get("org", "")),
+            vendor=ctx.facts.get("vendor"),
+        )
+    by_id = {str(p.get("id")): p for p in present}
+    return [by_id[str(i)] for i in ids if str(i) in by_id]
+
+
+def roster_words(
+    present: list[dict[str, object]], *, own_org: str, vendor: object
+) -> str:
+    """Who is here, counted rather than listed (DECIDE-0005): `two engineers
+    and a salesperson from the software company; a paralegal from the law
+    firm; and three others`. Bounded however crowded the floor, and the same
+    words for any two rooms with the same people in them by role and firm."""
+
+    by_org: dict[str, dict[str, int]] = {}
+    for person in present:
+        roles = by_org.setdefault(str(person.get("org")), {})
+        role = str(person.get("role", "employee"))
+        roles[role] = roles.get(role, 0) + 1
+    ordered = sorted(
+        by_org,
+        key=lambda org: (
+            0 if org == vendor else 1 if org == own_org else 2,
+            -sum(by_org[org].values()),
+            org,
+        ),
+    )
+    parts: list[str] = []
+    for org in ordered[:GROUPS]:
+        counted = [
+            count_words(n, role_words(role)) for role, n in sorted(by_org[org].items())
+        ]
+        people = (
+            counted[0]
+            if len(counted) == 1
+            else ", ".join(counted[:-1]) + f" and {counted[-1]}"
+        )
+        parts.append(f"{people} from {ORG_WORDS.get(org, 'another firm')}")
+    rest = sum(sum(by_org[org].values()) for org in ordered[GROUPS:])
+    if rest:
+        parts.append(f"and {count_words(rest, 'other')}")
+    return "; ".join(parts) + "."
 
 
 def _social(ctx: DecisionContext) -> dict[str, str]:
@@ -530,7 +633,7 @@ def destination(ctx: DecisionContext) -> Ask:
     here = str(ctx.facts.get("here", ""))
     vendor = ctx.facts.get("vendor")
     criteria: dict[str, str] = {
-        "stay": "Stay where they are for the next fifteen minutes.",
+        "stay": "Stay where they are for now.",
         "own_workplace": "Go back to their own workplace and get on with work.",
     }
     if ctx.facts.get("lobby"):
@@ -551,7 +654,7 @@ def destination(ctx: DecisionContext) -> Ask:
         "next_zone",
         "P",
         Choice(
-            instructions="Where does this person go in the next fifteen minutes?",
+            instructions="Where does this person go next?",
             criteria=dict(criteria),
         ),
     )
@@ -562,8 +665,8 @@ _INTERACT = Ask(
     "P",
     Noul(
         instructions=(
-            "In the next fifteen minutes, does this person stop and have a "
-            "conversation with one of the people listed as being here?"
+            "Does this person stop and have a conversation with one of the "
+            "people who are here?"
         ),
         criteria=_yes_no(
             "They stop and talk with someone who is here.",
@@ -604,6 +707,7 @@ def where_words(ctx: DecisionContext) -> str:
 def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
     org = str(ctx.facts.get("org", ""))
     present = _present(ctx)
+    offered = _offered(ctx)
     outage = ctx.facts.get("outage")
 
     state: dict[str, object] = {
@@ -620,8 +724,10 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
         ),
     }
     asks: list[Ask] = [destination(ctx), _MOOD]
-    if present:
-        state["who_is_here"] = {slot(i): describe(p) for i, p in enumerate(present)}
+    if offered:
+        state["who_is_here"] = roster_words(
+            present, own_org=org, vendor=ctx.facts.get("vendor")
+        )
         topics: dict[str, str] = {
             "work": "Their own work and clients.",
             "money": "Bills and invoices; who owes whom.",
@@ -631,7 +737,7 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
             topics = {"the_outage": "The software outage.", **topics}
         topics["other"] = "Something else."
         people: dict[str, str] = {
-            slot(i): describe(p).capitalize() + "." for i, p in enumerate(present)
+            slot(i): describe(p).capitalize() + "." for i, p in enumerate(offered)
         }
         people["other"] = "Nobody in particular."
         asks += [
@@ -668,11 +774,10 @@ def _interpret_agent_tick(
 ) -> Outcome:
     next_zone, next_floor = resolve_destination(ctx, str(got["next_zone"].value))
 
-    present = _present(ctx)
     with_id: str | None = None
     if "interact" in got and got["interact"].value:
         picked = str(got["with_whom"].value)
-        for index, person in enumerate(present):
+        for index, person in enumerate(_offered(ctx)):
             if slot(index) == picked:
                 with_id = str(person["id"])
     return Outcome(

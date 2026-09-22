@@ -225,28 +225,29 @@ class RulesPolicy:
         """
 
         go, talk, who, about, push = (_uniform(rng) for _ in range(5))
-        present = ctx.facts.get("present")
-        people = (
-            [p for p in present if isinstance(p, dict)]
-            if isinstance(present, list)
-            else []
-        )
+        # The same short list the model chooses from (DECIDE-0005).
+        from jeve.decide.questions import _offered, resolve_destination
+
+        people = _offered(ctx)
         outage = bool(ctx.facts.get("outage"))
         hour = (ctx.sim_time % 86400) // 3600
         lunch = 12 <= hour < 14
         social = ctx.facts.get("social")
         places = list(social) if isinstance(social, dict) else []
 
+        # Asked at decision points, not every tick (WORLD-0007): a desk
+        # decision comes round six or so times a day, so the odds of an
+        # outing are per stretch of work, not per quarter hour.
         if not ctx.facts.get("at_workplace"):
             choice = "own_workplace" if go < 0.5 else "stay"
         elif ctx.facts.get("minds_counter"):
             choice = "stay"  # someone has to mind the counter
         else:
-            out = 0.25 if lunch else 0.04
-            lobby = 0.03 if ctx.facts.get("lobby") else 0.0
+            out = 0.5 if lunch else 0.18
+            lobby = 0.1 if ctx.facts.get("lobby") else 0.0
             if go < out and places:
                 choice = places[int(go / out * len(places))]
-            elif go < out + 0.04:
+            elif go < out + 0.08:
                 choice = "plaza"
             elif go < out + 0.04 + lobby:
                 choice = "lobby"
@@ -254,8 +255,6 @@ class RulesPolicy:
                 choice = "stay"
         # The same table as the model's answers go through: a place is a
         # place whoever decided (WORLD-0006).
-        from jeve.decide.questions import resolve_destination
-
         next_zone, next_floor = resolve_destination(ctx, choice)
 
         sociability = _num(ctx.traits.get("sociability"), 0.5)

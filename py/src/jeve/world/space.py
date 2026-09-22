@@ -1,11 +1,13 @@
 """Space, and why it matters (WORLD-0003, WORLD-0006).
 
-Staff have positions: a zone, a floor, a tile. Each open tick, those of them
-with a decision to make decide where to go next and whether to stop and talk to
-someone who is in the same place. Two people on the same floor of the same
-building is an *encounter*, and an encounter is the only way some things can
-happen: a lawyer whose invoicing is down can press the vendor to fix it only if
-she and someone from the vendor are standing in the same room.
+Staff have positions: a zone, a floor, a tile. At a *decision point* — when
+they arrive, when the stay they chose runs out, when a piece of software they
+use goes down, when someone from its vendor walks in, or at lunch — a person
+decides where to go next and whether to stop and talk to someone who is in the
+same place (WORLD-0007). Two people on the same floor of the same building is
+an *encounter*, and an encounter is the only way some things can happen: a
+lawyer whose invoicing is down can press the vendor to fix it only if she and
+someone from the vendor are standing in the same room.
 
 That is what makes space load-bearing rather than decorative. An escalation
 pulls the end of the outage forward, which moves when blocked invoices go out,
@@ -19,11 +21,17 @@ run into each other. Someone counts as *here* only if being in the same place
 took one of the two leaving their workplace: colleagues at their desks are
 always together, and that is not an encounter.
 
-Order within a tick, and why: everyone decides from where they are *now*;
-encounters resolve among the people co-located now; then everyone moves. Jev
-answers the questions in one request independently, so "where next" cannot
-depend on "whom did I talk to" — and asking both about the present moment is
-what keeps it to one call per person per decision.
+Order within a tick, and why: those who are due decide from where they are
+*now*; encounters resolve among the people co-located now, started by the ones
+who decided; then the ones who decided move, and everybody whose day is over
+goes home. Jev answers the questions in one request independently, so "where
+next" cannot depend on "whom did I talk to" — and asking both about the
+present moment is what keeps it to one call per person per decision.
+
+How long a stay lasts is code, not a question (DECIDE-0001): a band of ticks
+per kind of place, drawn about the person and the moment (CORE-0009). An hour
+or two at the desk; a quarter or half hour anywhere else; long enough at the
+vendor's to say your piece. Nobody goes two hours without being asked.
 """
 
 from __future__ import annotations
@@ -33,10 +41,11 @@ from dataclasses import dataclass
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
-from jeve.core.clock import TICK, SimTime
+from jeve.core.clock import HOUR, TICK, SimTime
 from jeve.core.orgs import BY_ID, ORGS, module_owner, social_places, staff_ids, uses
-from jeve.core.seed import derive_seed
+from jeve.core.seed import derive_rng, derive_seed
 from jeve.decide.policy import DecisionContext
+from jeve.decide.questions import candidates
 from jeve.world.map import HOME, PLAZA, Node, Tile, entry_for, find_path, spot_for, town
 
 if TYPE_CHECKING:
@@ -47,6 +56,17 @@ if TYPE_CHECKING:
 # incident however many people complain.
 ESCALATION_KEEPS = 4
 ESCALATION_FLOOR = 2 * TICK
+
+# How long a stay lasts, in ticks, by the kind of place chosen (WORLD-0007).
+# Drawn in code, never asked: a dwell is pacing, not a judgement. The top of
+# the longest band is the mandatory timer — nobody goes two hours unasked.
+DWELL_TICKS: dict[str, tuple[int, int]] = {
+    "workplace": (4, 8),
+    "about": (1, 2),
+    "visit": (1, 1),
+}
+LUNCH = 12 * HOUR
+"""The one schedule boundary: everyone at work is asked at noon."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +85,9 @@ class Agent:
     uses: frozenset[str]
     """The modules this person's firm depends on — its own products, for a
     vendor's staff — and so the outages they have reason to know about."""
+    due_at: int
+    """Sim time of their next decision point, unless something wakes them."""
+    last_decided: int
 
     @property
     def own_zone(self) -> str:
@@ -101,7 +124,8 @@ def _seating() -> dict[str, tuple[int, int]]:
 
 def load_agents(engine: Engine) -> list[Agent]:
     rows = engine.conn.execute(
-        "SELECT p.id, p.org_id, p.team_id, p.role, p.traits, s.zone, s.floor, s.x, s.y "
+        "SELECT p.id, p.org_id, p.team_id, p.role, p.traits, "
+        "  s.zone, s.floor, s.x, s.y, s.next_decision_sim, s.last_decision_sim "
         "FROM persons p JOIN positions s ON s.person_id = p.id "
         "WHERE p.kind = 'staff' ORDER BY p.id"
     ).fetchall()
@@ -125,6 +149,8 @@ def load_agents(engine: Engine) -> list[Agent]:
                 index=index,
                 own_floor=own_floor,
                 uses=uses(org),
+                due_at=int(row["next_decision_sim"]),
+                last_decided=int(row["last_decision_sim"]),
             )
         )
     return agents
@@ -246,6 +272,13 @@ def _known_outage(agent: Agent, down: list[str]) -> str | None:
 def _facts(agent: Agent, others: list[Agent], outage: str | None) -> dict[str, Any]:
     vendor = module_owner(outage) if outage else None
     org = BY_ID[agent.org]
+    present: list[dict[str, object]] = [
+        {"id": o.id, "org": o.org, "role": o.role} for o in others
+    ]
+    # Everyone here is counted for the model; only a few are offered by name
+    # of a label (DECIDE-0005). The mapping from label to person is here, in
+    # facts, and never in the state that is sent.
+    offered = candidates(present, own_org=agent.org, vendor=vendor)
     return {
         "org": agent.org,
         "team": agent.team,
@@ -254,11 +287,14 @@ def _facts(agent: Agent, others: list[Agent], outage: str | None) -> dict[str, A
         "own_zone": agent.own_zone,
         "own_floor": agent.own_floor,
         "at_workplace": agent.at_workplace,
-        "present": [{"id": o.id, "org": o.org, "role": o.role} for o in others],
+        "present": present,
+        "candidates": offered,
         "outage": outage,
         "vendor": vendor,
         "can_raise": bool(
-            outage and agent.org != vendor and any(o.org == vendor for o in others)
+            outage
+            and agent.org != vendor
+            and any(o.org == vendor for o in others if o.id in offered)
         ),
         "lobby": org.floors > 1,
         "social": {p.kind: p.id for p in social_places() if p.id != agent.org},
@@ -266,18 +302,82 @@ def _facts(agent: Agent, others: list[Agent], outage: str | None) -> dict[str, A
     }
 
 
+def _dwell(
+    engine: Engine, report: TickReport, agent: Agent, zone: str, floor: int
+) -> int:
+    """How many ticks the stay just chosen lasts. About this person and this
+    moment (CORE-0009), and about the kind of place, never the place's name."""
+
+    if zone == agent.org and floor == agent.own_floor:
+        band = "workplace"
+    elif zone in BY_ID and zone != agent.org and not BY_ID[zone].social:
+        band = "visit"
+    else:
+        band = "about"
+    low, high = DWELL_TICKS[band]
+    return derive_rng(engine.root_seed, "dwell", agent.id, report.sim_time).randint(
+        low, high
+    )
+
+
+def _wakes(
+    engine: Engine,
+    report: TickReport,
+    now: SimTime,
+    present: list[Agent],
+    arrived: set[str],
+    down: list[str],
+) -> list[Agent]:
+    """Who has a decision to make this tick (WORLD-0007).
+
+    Arrival; the stay they chose running out; a module they use going down
+    since they last decided; somebody from the vendor of a module they know
+    is down walking onto their floor; and noon. Every one of these is a fact,
+    so the wake is code and the question stays about what to do.
+    """
+
+    earliest = min((a.last_decided for a in present), default=report.sim_time)
+    fresh = [
+        (str(row["module_id"]), int(row["started_sim"]))
+        for row in engine.conn.execute(
+            "SELECT module_id, started_sim FROM incidents WHERE started_sim > %s",
+            (earliest,),
+        ).fetchall()
+    ]
+    vendors_in = {(a.zone, a.floor, a.org) for a in present if a.id in arrived}
+    awake: list[Agent] = []
+    for agent in present:
+        outage = _known_outage(agent, down)
+        if (
+            agent.id in arrived
+            or now.seconds >= agent.due_at
+            or now.time_of_day == LUNCH
+            or any(
+                module in agent.uses and started > agent.last_decided
+                for module, started in fresh
+            )
+            or (
+                outage is not None
+                and (agent.zone, agent.floor, module_owner(outage)) in vendors_in
+                and agent.org != module_owner(outage)
+            )
+        ):
+            awake.append(agent)
+    return awake
+
+
 def run(engine: Engine, report: TickReport, now: SimTime) -> None:
-    """One tick of space: arrive, decide, meet, move."""
+    """One tick of space: arrive, wake, decide, meet, move."""
 
     agents = load_agents(engine)
     taken: set[Node] = {a.node for a in agents if a.node is not None}
 
     # Arrivals. Whether a workplace is open is a fact, not a judgement.
-    arrived: dict[str, Agent] = {}
+    arrived: set[str] = set()
     for agent in agents:
         if agent.zone == HOME and on_shift(agent.org, now):
             _place(engine, report, agent, agent.org, agent.own_floor, taken)
-            arrived[agent.id] = agent
+            arrived.add(agent.id)
     if arrived:
         agents = load_agents(engine)
 
@@ -295,8 +395,9 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
     for agent in present:
         by_place.setdefault((agent.zone, agent.floor), []).append(agent)
 
+    deciding = _wakes(engine, report, now, present, arrived, down)
     contexts: list[DecisionContext] = []
-    for agent in present:
+    for agent in deciding:
         # Colleagues at their own desks are always together; that is not an
         # encounter. Someone counts as "here" only if being in the same place
         # took one of you leaving your workplace.
@@ -321,22 +422,30 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
     made = engine.decide_many(report, contexts)
     by_id = {agent.id: agent for agent in present}
     if engine.encounters:
-        _encounters(engine, report, present, made, by_id, down)
+        _encounters(engine, report, deciding, made, by_id, down)
 
-    # Departures and moves, after everyone has decided from where they stood.
+    # Moves, after everyone who decided did so from where they stood, and the
+    # stay each one chose; then everybody whose day is over goes home.
     closing = SimTime(report.sim_time + TICK)
-    for agent, decision in zip(present, made, strict=True):
-        engine.conn.execute(
-            "UPDATE positions SET mood = %s WHERE person_id = %s",
-            (int(decision.chosen.get("mood", 2)), agent.id),
-        )
-        if not on_shift(agent.org, closing):
-            _place(engine, report, agent, HOME, 0, taken)
-            continue
+    decided = {agent.id for agent in deciding}
+    for agent, decision in zip(deciding, made, strict=True):
         wanted_zone = str(decision.chosen.get("next_zone", agent.zone))
         wanted_floor = int(decision.chosen.get("next_floor", agent.floor))
         if wanted_zone not in (PLAZA, agent.org, *BY_ID) or wanted_zone == HOME:
             wanted_zone, wanted_floor = agent.zone, agent.floor
+        stay = _dwell(engine, report, agent, wanted_zone, wanted_floor)
+        engine.conn.execute(
+            "UPDATE positions SET mood = %s, next_decision_sim = %s, "
+            "last_decision_sim = %s WHERE person_id = %s",
+            (
+                int(decision.chosen.get("mood", 2)),
+                report.sim_time + stay * TICK,
+                report.sim_time,
+                agent.id,
+            ),
+        )
+        if not on_shift(agent.org, closing):
+            continue
         if (wanted_zone, wanted_floor) != (agent.zone, agent.floor):
             if agent.node is not None:
                 taken.discard(agent.node)
@@ -344,13 +453,17 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
                 engine, report, agent, wanted_zone, wanted_floor, taken,
                 decision_id=decision.id,
             )  # fmt: skip
-        elif agent.id not in arrived:
-            # Stayed put: clear last tick's route so a client does not replay it.
-            engine.conn.execute(
-                "UPDATE positions SET path = '[]'::jsonb WHERE person_id = %s "
-                "AND moved_tick < %s",
-                (agent.id, report.tick_seq),
-            )
+    for agent in present:
+        if not on_shift(agent.org, closing):
+            if agent.id in decided and agent.node is not None:
+                taken.discard(agent.node)
+            _place(engine, report, agent, HOME, 0, taken)
+    # Whoever stayed put keeps no route: a client would replay last tick's.
+    engine.conn.execute(
+        "UPDATE positions SET path = '[]'::jsonb WHERE moved_tick < %s "
+        "AND path <> '[]'::jsonb",
+        (report.tick_seq,),
+    )
 
 
 def _encounters(

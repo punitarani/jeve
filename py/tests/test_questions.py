@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from jeve.decide import gates
+from jeve.decide import gates, questions
 from jeve.decide.policy import DecisionContext, RulesPolicy
 from jeve.decide.questions import (
     QUESTION_SETS,
@@ -210,11 +210,18 @@ def test_people_in_the_room_are_described_not_named() -> None:
     prepared = _prepare("agent.tick")
     assert prepared.state is not None
     here = prepared.state["who_is_here"]
-    assert here == {
-        "person_a": "a site reliability engineer from the software company",
-        "person_b": "a barista from the cafe",
-    }
+    assert here == (
+        "a site reliability engineer from the software company; "
+        "a barista from the cafe."
+    )
     assert "tallybird.engineering.sre.1" not in str(prepared.state)
+    whom = next(ask for ask in prepared.asks if ask.key == "with_whom")
+    assert isinstance(whom.question, Choice)
+    assert whom.question.criteria == {
+        "person_a": "A site reliability engineer from the software company.",
+        "person_b": "A barista from the cafe.",
+        "other": "Nobody in particular.",
+    }
     keys = [ask.key for ask in prepared.asks]
     assert keys == [
         "next_zone",
@@ -235,3 +242,90 @@ def test_alone_there_is_nobody_to_ask_about() -> None:
 def test_raising_the_outage_is_only_asked_of_someone_who_can() -> None:
     facts = {**ASKING["agent.tick"], "can_raise": False}
     assert "raise_outage" not in [a.key for a in _prepare("agent.tick", facts).asks]
+
+
+def _crowd(spec: dict[str, tuple[str, int]]) -> list[dict[str, object]]:
+    """`{"tallybird": ("engineer", 3)}` -> three engineers from Tallybird."""
+
+    return [
+        {"id": f"{org}.x.{role}.{i}", "org": org, "role": role}
+        for org, (role, n) in spec.items()
+        for i in range(n)
+    ]
+
+
+def test_a_crowded_floor_is_counted_not_listed() -> None:
+    """DECIDE-0005: the state is bounded however many people are here, and
+    the vendor whose product is down is named first, colleagues second."""
+
+    present = _crowd(
+        {
+            "halloran": ("paralegal", 2),
+            "tallybird": ("engineer", 3),
+            "ledgerline": ("bookkeeper", 4),
+            "thirdrail": ("barista", 1),
+            "meridian": ("architect", 2),
+            "quill": ("support", 1),
+            "ironworks": ("trainer", 5),
+        }
+    )
+    present.append({"id": "tallybird.x.sales.9", "org": "tallybird", "role": "sales"})
+    facts = {**ASKING["agent.tick"], "present": present, "candidates": None}
+    prepared = _prepare("agent.tick", facts)
+    assert prepared.state is not None
+    here = prepared.state["who_is_here"]
+    assert here == (
+        "three engineers and a salesperson from the software company; "
+        "two paralegals from the law firm; five personal trainers from the gym; "
+        "four bookkeepers from the accounting firm; two architects from the "
+        "architecture studio; and two others."
+    )
+    whom = next(ask for ask in prepared.asks if ask.key == "with_whom")
+    assert isinstance(whom.question, Choice)
+    labels = [k for k in whom.question.criteria if k != "other"]
+    assert len(labels) == 6
+    # The vendor's people, then colleagues, then the rest: the order the
+    # interpretation maps the labels back in.
+    offered = questions._offered(
+        DecisionContext(
+            person_id="p",
+            role="r",
+            decision_seq=0,
+            sim_time=0,
+            kind="agent.tick",
+            facts=facts,
+            traits=TRAITS,
+        )
+    )
+    assert [str(p["org"]) for p in offered] == ["tallybird"] * 4 + ["halloran"] * 2
+    assert not any(str(p["id"]) in str(prepared.state) for p in present)
+
+
+def test_two_rooms_with_the_same_people_in_them_share_a_call() -> None:
+    """Different ids, same roles and firms: the same bytes go out, so the
+    call is shared (DECIDE-0004)."""
+
+    one = _prepare(
+        "agent.tick",
+        {**ASKING["agent.tick"], "present": _crowd({"tallybird": ("engineer", 2)})},
+    )
+    other = _prepare(
+        "agent.tick",
+        {
+            **ASKING["agent.tick"],
+            "present": [
+                {
+                    "id": "tallybird.x.engineer.7",
+                    "org": "tallybird",
+                    "role": "engineer",
+                },
+                {
+                    "id": "tallybird.x.engineer.8",
+                    "org": "tallybird",
+                    "role": "engineer",
+                },
+            ],
+        },
+    )
+    assert one.state == other.state
+    assert [a.question for a in one.asks] == [a.question for a in other.asks]

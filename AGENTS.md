@@ -257,6 +257,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### DECIDE-0005: Who is here is counted, not listed — bounded state for agent.tick
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/decide/questions.py`, `py/src/jeve/decide/policy.py`, `py/tests/test_questions.py`  
+**Tags**: questions, cache, cost, agent-decided
+
+The state describes the room as counts by role and firm — "two engineers and a salesperson from the software company; a paralegal from the law firm; and three others" — for at most five firms, and `with_whom` offers at most six people under neutral labels, chosen in code: the vendor's staff first when their product is down, colleagues next, then the rest in a stable order.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### GEN-0001: Dialogue is a projection — rendered on click, cached by content hash, never read back
 
 **Status**: accepted (2026-09-20)  
@@ -528,6 +540,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: space, map, floors, encounters, agent-decided
 
 A zone is a building, named by its firm's id, plus `plaza` and `home`; a team is a floor of it; a place someone can be is a node `(x, y, floor)`; people meet on a floor, not in a firm.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0007: Movement is decided at decision points with a dwell, not every tick
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/world/space.py`, `py/migrations/0010_wake.sql`, `py/tests/test_space.py`  
+**Tags**: space, cadence, cost, agent-decided
+
+A person is asked `agent.tick` when they arrive, when the stay they chose runs out, when a module their firm runs on goes down, when someone from the vendor of a module they know is down walks onto their floor, and at noon; how long a stay lasts is a band of ticks drawn in code about the person and the moment, never a question.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

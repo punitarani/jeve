@@ -21,7 +21,7 @@ from psycopg.rows import DictRow
 
 from jeve import db
 from jeve.core.clock import SimTime, at
-from jeve.core.orgs import HEADCOUNT, ORGS, module_owner, modules_of
+from jeve.core.orgs import BY_ID, HEADCOUNT, ORGS, module_owner, modules_of
 from jeve.decide.policy import RulesPolicy
 from jeve.sim import advance
 from jeve.world.engine import Engine
@@ -353,3 +353,106 @@ def test_only_someone_affected_can_escalate_and_only_to_the_vendor(
             (row["by_org"], row["m"]),
         ).fetchone()
         assert subscribed is not None, row
+
+
+# -- decision points (WORLD-0007) -------------------------------------------
+
+
+def _decisions_by_person_day(conn: Connection[DictRow]) -> list[int]:
+    rows = conn.execute(
+        "SELECT person_id, sim_time / 86400 AS day, count(*) AS n FROM decisions "
+        "WHERE question_set = 'agent.tick' GROUP BY 1, 2"
+    ).fetchall()
+    return [int(r["n"]) for r in rows]
+
+
+def test_people_decide_at_decision_points_not_every_tick(
+    conn: Connection[DictRow],
+) -> None:
+    """Six to sixteen `agent.tick` decisions per person per working day: a
+    handful of stretches at the desk, lunch, the odd outing — not thirty-five
+    quarter-hours. Fewer and the town stands still; more and the tick is the
+    decision point again."""
+
+    run(conn, days=5)
+    counts = _decisions_by_person_day(conn)
+    assert counts
+    mean = sum(counts) / len(counts)
+    assert 6 <= mean <= 16, mean
+    assert max(counts) <= 60
+    # And the town still moves: outings happen, not only arrivals and departures.
+    outings = conn.execute(
+        "SELECT count(*) AS n FROM events WHERE kind = 'agent.moved' "
+        "AND payload->>'from_zone' <> 'home' AND payload->>'to_zone' <> 'home'"
+    ).fetchone()
+    assert outings is not None and int(outings["n"]) > HEADCOUNT
+
+
+def test_nobody_goes_two_hours_without_being_asked(conn: Connection[DictRow]) -> None:
+    """The mandatory timer: the longest dwell band is two hours."""
+
+    run(conn, days=2)
+    gaps = conn.execute(
+        "SELECT max(gap) AS worst FROM ("
+        "  SELECT sim_time - lag(sim_time) OVER ("
+        "    PARTITION BY person_id, sim_time / 86400 ORDER BY sim_time) AS gap "
+        "  FROM decisions WHERE question_set = 'agent.tick') g"
+    ).fetchone()
+    assert gaps is not None and int(gaps["worst"]) <= 2 * 3600
+
+
+def test_noon_wakes_everyone_at_work(conn: Connection[DictRow]) -> None:
+    run(conn, days=1)
+    noon = at(0, 12)
+    at_work = conn.execute(
+        "SELECT count(DISTINCT actor_id) AS n FROM events WHERE kind = 'agent.moved' "
+        "AND sim_time <= %s AND payload->>'to_zone' <> 'home'",
+        (noon,),
+    ).fetchone()
+    asked = conn.execute(
+        "SELECT count(DISTINCT person_id) AS n FROM decisions "
+        "WHERE question_set = 'agent.tick' AND sim_time = %s",
+        (noon,),
+    ).fetchone()
+    assert at_work is not None and asked is not None
+    # Everyone whose firm is open at noon, and nobody's firm shuts for lunch.
+    assert int(asked["n"]) == HEADCOUNT
+    assert int(at_work["n"]) == HEADCOUNT
+
+
+def test_an_outage_wakes_everyone_who_depends_on_the_module(
+    conn: Connection[DictRow],
+) -> None:
+    """The interrupt: a module goes down and, within the tick, everyone whose
+    firm runs on it has been asked what to do about their day."""
+
+    seed(conn, root_seed=ROOT_SEED)
+    engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED)
+    with conn.transaction():
+        conn.execute("DELETE FROM scheduled WHERE kind = 'incident.start'")
+        conn.execute(
+            "INSERT INTO scheduled (due_sim_time, kind, subject_id, payload) "
+            "VALUES (%s, 'incident.start', 'invoicing', %s)",
+            (at(0, 10, 30), '{"severity": 2, "expected_minutes": 180}'),
+        )
+    advance(conn, engine, until=at(0, 10, 45))
+    users = {org.id for org in ORGS if "invoicing" in modules_of(org.id, "invoicing")}
+    asked = {
+        str(r["org_id"])
+        for r in conn.execute(
+            "SELECT DISTINCT p.org_id FROM decisions d "
+            "JOIN persons p ON p.id = d.person_id "
+            "WHERE d.question_set = 'agent.tick' AND d.sim_time = %s",
+            (at(0, 10, 30),),
+        ).fetchall()
+    }
+    assert users <= asked
+    # Every one of them, not a sample.
+    for org in users:
+        woke = conn.execute(
+            "SELECT count(*) AS n FROM decisions d "
+            "JOIN persons p ON p.id = d.person_id "
+            "WHERE d.question_set = 'agent.tick' AND d.sim_time = %s AND p.org_id = %s",
+            (at(0, 10, 30), org),
+        ).fetchone()
+        assert woke is not None and int(woke["n"]) == BY_ID[org].headcount, org
