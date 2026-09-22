@@ -41,10 +41,18 @@ class Settings(BaseModel):
     cors_origins: tuple[str, ...] = ()
     dialogue_generate: bool = True
 
-    # OBS-0001: telemetry. An unset token is the supported off state — no
-    # exporter is built, no thread starts, no socket opens. Axiom routes logs
-    # by X-Axiom-Dataset and metrics by X-Axiom-Metrics-Dataset, so the two
-    # datasets are two settings; one shared OTLP header could not express it.
+    # LLM-0008: what a model call *said* — prompt, completion, served model.
+    # The key is the only switch — absent, `jeve.tracing` never imports the
+    # SDK and opens no socket, which is what keeps CI and a clean clone offline.
+    braintrust_api_key: str | None = None
+    braintrust_project_id: str | None = None
+    """An id, not a name: a project that gets renamed keeps its spans."""
+
+    # OBS-0001: what the system *did* — traces, metrics and logs for both
+    # processes. Same rule, same reason: an unset token means no exporter, no
+    # thread, no socket. Axiom routes logs by X-Axiom-Dataset and metrics by
+    # X-Axiom-Metrics-Dataset, so the two datasets are two settings; one
+    # shared OTLP header could not express it.
     axiom_token: str | None = None
     axiom_domain: str = "api.axiom.co"
     axiom_dataset: str = "jeve"
@@ -115,6 +123,8 @@ def load_settings(*, ops_dir: Path | None = None) -> Settings:
         ),
         dialogue_generate=os.environ.get("JEVE_DIALOGUE_GENERATE", "on")
         not in ("off", "0", "false"),
+        braintrust_api_key=os.environ.get("BRAINTRUST_API_KEY") or None,
+        braintrust_project_id=os.environ.get("BRAINTRUST_PROJECT_ID") or None,
         axiom_token=os.environ.get("AXIOM_TOKEN") or None,
         axiom_domain=os.environ.get("AXIOM_DOMAIN") or "api.axiom.co",
         axiom_dataset=os.environ.get("AXIOM_DATASET") or "jeve",

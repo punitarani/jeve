@@ -7,6 +7,7 @@ Every test here uses a mock transport. The one real call lives in
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,7 @@ from jeve.llm import (
     Score,
 )
 from jeve.llm.gateway import MAX_ATTEMPTS, parse_decision
+from tests.conftest import RecordingSink
 from tests.test_catalog import DECISION_MODELS, DEFAULT_MODELS
 
 JEV = "typesafe/jev-1.13"
@@ -101,15 +103,15 @@ class Recorder:
 
             self.requests.append(request)
             self.bodies.append(json.loads(request.content))
-            if "decisions" in path:
-                override = self._overrides.get("decisions")
-                if isinstance(override, Iterator):
-                    # A scripted sequence: one reply per attempt.
-                    reply: httpx.Response = next(override)
-                    return reply
-                return override or httpx.Response(200, json=DECISION_BODY)
-            override = self._overrides.get("chat")
-            return override or httpx.Response(200, json=CHAT_BODY)
+            decisions = "decisions" in path
+            override = self._overrides.get("decisions" if decisions else "chat")
+            if isinstance(override, Iterator):
+                # A scripted sequence: one reply per attempt, or per model in
+                # the generative ladder.
+                reply: httpx.Response = next(override)
+                return reply
+            default = DECISION_BODY if decisions else CHAT_BODY
+            return override or httpx.Response(200, json=default)
 
         return httpx.MockTransport(handler)
 
@@ -596,6 +598,163 @@ async def test_the_raw_response_is_available_before_it_is_parsed(
             usage=raw.usage,
         )
     await gateway.aclose()
+
+
+# -- spans (LLM-0008) ------------------------------------------------------
+
+
+async def test_a_decision_call_is_one_llm_span_carrying_the_real_cost(
+    tmp_path: Path, spans: RecordingSink
+) -> None:
+    """The trace and the ledger must never disagree about what a call cost."""
+
+    recorder = Recorder()
+    gateway = await _gateway(tmp_path, recorder)
+    request = _decision_request().model_copy(update={"provider": None})
+
+    await gateway.decide(request)
+    await gateway.aclose()
+
+    span = spans.only("jev.decide")
+    assert span.type == "llm"
+    # Read from the bytes that were posted, not rebuilt from the request.
+    assert span.fields["input"] == json.loads(request.wire_bytes())
+    assert span.fields["output"] == DECISION_BODY["answers"]
+    assert span.fields["metrics"] == {
+        "prompt_tokens": 400,
+        "completion_tokens": 30,
+        "tokens": 430,
+        # OpenRouter's own number, not an estimate from a model registry that
+        # has never heard of jev.
+        "estimated_cost": DECISION_BODY["usage"]["cost"],
+        "latency_s": pytest.approx(span.fields["metrics"]["latency_s"]),
+    }
+    assert span.fields["metadata"]["served_model"] == DECISION_BODY["model"]
+    assert span.fields["metadata"]["provider"] == "TypeSafe"
+    assert span.fields["metadata"]["cost_is_estimated"] is False
+    assert sorted(span.fields["metadata"]["questions"]) == [
+        "queue",
+        "severity",
+        "urgent",
+    ]
+    assert [child.name for child in span.children] == ["openrouter.attempt"]
+
+
+async def test_a_catalogue_priced_call_says_so_on_the_span(
+    tmp_path: Path, spans: RecordingSink
+) -> None:
+    """`usage.cost` is optional upstream. A span must not imply it was there."""
+
+    priced = {**DECISION_BODY, "usage": {"input_tokens": 400, "output_tokens": 30}}
+    recorder = Recorder(decisions=httpx.Response(200, json=priced))
+    gateway = await _gateway(tmp_path, recorder)
+
+    await gateway.decide(_decision_request())
+    await gateway.aclose()
+
+    span = spans.only("jev.decide")
+    assert span.fields["metadata"]["cost_is_estimated"] is True
+    assert span.fields["metrics"]["estimated_cost"] > 0.0
+
+
+async def test_retries_are_children_of_one_llm_span_not_four_of_them(
+    tmp_path: Path, spans: RecordingSink
+) -> None:
+    """Four `llm` spans would count the cost four times; none would hide the
+    52x weather LLM-0006 exists because of."""
+
+    replies = iter(
+        [
+            httpx.Response(503, text="unavailable"),
+            httpx.Response(200, json=DECISION_BODY),
+        ]
+    )
+    recorder = Recorder(decisions=replies)
+    gateway = await _gateway(tmp_path, recorder)
+
+    await gateway.decide(_decision_request())
+    await gateway.aclose()
+
+    call = spans.only("jev.decide")
+    attempts = [child for child in call.children if child.name == "openrouter.attempt"]
+    assert len(attempts) == 2
+    assert attempts[0].fields["metadata"]["outcome"] == "http-503"
+    assert attempts[1].fields["metadata"]["outcome"] == "ok"
+
+
+async def test_a_failed_call_records_the_failure_and_still_raises(
+    tmp_path: Path, spans: RecordingSink
+) -> None:
+    recorder = Recorder(decisions=httpx.Response(501, text="not implemented"))
+    gateway = await _gateway(tmp_path, recorder)
+
+    with pytest.raises(TransportError):
+        await gateway.decide(_decision_request())
+    await gateway.aclose()
+
+    assert "TransportError" in (spans.only("jev.decide").error or "")
+
+
+async def test_prose_is_a_chat_span_with_the_messages_as_input(
+    tmp_path: Path, spans: RecordingSink
+) -> None:
+    recorder = Recorder()
+    gateway = await _gateway(tmp_path, recorder)
+
+    await gateway.complete(
+        ChatRequest(
+            model=GLM,
+            messages=[ChatMessage(role="user", content="Say something.")],
+            max_tokens=64,
+            seed=7,
+        ),
+        purpose="explore",
+    )
+    await gateway.aclose()
+
+    span = spans.only("chat.completion")
+    assert span.type == "llm"
+    assert span.fields["input"] == [{"role": "user", "content": "Say something."}]
+    assert span.fields["output"] == "Noted."
+    assert span.fields["metadata"]["purpose"] == "explore"
+    assert span.fields["metrics"]["prompt_tokens"] == 37
+    assert span.fields["metrics"]["estimated_cost"] == CHAT_BODY["usage"]["cost"]
+
+
+async def test_tracing_off_changes_neither_the_bytes_nor_the_booking(
+    tmp_path: Path,
+) -> None:
+    """CORE-0005/DECIDE-0004: a span is a side effect or it is a bug.
+
+    No `spans` fixture here — this is the default path, the one CI and a clean
+    clone take.
+    """
+
+    recorder = Recorder()
+    gateway = await _gateway(tmp_path, recorder)
+    request = _decision_request().model_copy(update={"provider": None})
+
+    reply = await gateway.decide(request)
+    spend = gateway.guard.state().spend
+    await gateway.aclose()
+
+    assert recorder.requests[-1].content == request.wire_bytes()
+    assert reply.usage.cost_usd == DECISION_BODY["usage"]["cost"]
+    assert spend.settled_usd == pytest.approx(DECISION_BODY["usage"]["cost"])
+
+
+async def test_closing_the_gateway_flushes(
+    tmp_path: Path, spans: RecordingSink
+) -> None:
+    """A script or an API shutdown must not lose its last spans."""
+
+    gateway = await _gateway(tmp_path, Recorder())
+    await gateway.aclose()
+
+    assert spans.flushes == 1
+
+
+# -- traces and metrics (OBS-0001) -----------------------------------------
 
 
 def test_a_decision_call_is_a_span_with_its_cost_and_tokens(

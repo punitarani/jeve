@@ -290,6 +290,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### LLM-0008: trace every model call to braintrust, from one module, off by default
+
+**Status**: accepted (2026-09-21)  
+**Scope**: `py/src/jeve/tracing.py`, `py/src/jeve/llm/gateway.py`, `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/api/app.py`, `py/tests/test_tracing.py`  
+**Tags**: observability, braintrust, llm, agent-decided
+
+Model calls are traced to Braintrust from a single guarded module, `jeve.tracing`, which is a no-op unless `BRAINTRUST_API_KEY` is set.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### OBS-0001: One telemetry seam - OpenTelemetry to Axiom, and nothing at all without a token
 
 **Status**: accepted (2026-09-21)  

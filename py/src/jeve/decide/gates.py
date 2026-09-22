@@ -31,7 +31,10 @@ that there is no question to ask: nobody pays a month early."""
 def _number(value: object, default: float = 0.0) -> float:
     try:
         return float(str(value))
-    except TypeError, ValueError:
+    # ruff 0.16.8's formatter rewrites this tuple to `except A, B:` — a
+    # SyntaxError, and how all three of these got into the tree in the
+    # first place. The skip is what keeps the package importable.
+    except (TypeError, ValueError):  # fmt: skip
         return default
 
 
