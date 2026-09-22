@@ -7,28 +7,13 @@ Written by `make soak`. Invariants, not outcomes: a firm may fail here; it may n
 | invariant | holds | evidence |
 |---|---|---|
 | the ledger balances | yes | sum of all entries = 0 |
-| tickets end, and support is still hearing from people | yes | 50 ticket(s) opened in the last 14 days against 12 incident(s); 0 answered ticket(s) left open more than four days |
-| months recur | yes | 2 month-end(s) in 35 days (expected 2); 6 monthly close(s) completed |
+| tickets end, and support is still hearing from people | yes | 112 ticket(s) opened in the last 14 days against 23 incident(s); 0 answered ticket(s) left open more than four days |
+| months recur | yes | 2 month-end(s) in 35 days (expected 2); 20 monthly close(s) completed for 10 clients |
 | every overdue bill is being answered | yes | 0 overdue bill(s) nobody has been asked about in five days; 0 more than 63 days past due and not written off |
-| wages come back as demand | yes | households were paid $147,800 and spent $4,365 at the cafe |
+| wages come back as demand | yes | households were paid $1,513,250 and spent $61,382 at the tills |
 | a firm running out of money was seen running out, with a cause | yes | none unexplained |
-| the economy reaches more than one month's clients | yes | tallybird 100 reached / 100 decided, of 100, halloran 24 reached / 13 decided, of 100, ledgerline 38 reached / 19 decided, of 100, thirdrail 100 reached / 100 decided, of 100 |
-| the outage moves money without re-rolling it | yes | invoice amounts identical across arms and cash different |
-
-## Counterfactual: the same world without the month-end outage
-
-| | outage | no outage |
-|---|---:|---:|
-| month-end client invoices issued | 41 | 41 |
-| issued in both arms | 41 | 41 |
-| of those, same amount in both arms | 41 | 41 |
-| of those, issued at a different time | 15 | 15 |
-| tallybird cash at the end | $7,900.00 | $8,170.00 |
-| halloran cash at the end | $78,580.91 | $89,825.43 |
-| ledgerline cash at the end | $75,154.50 | $98,004.48 |
-| thirdrail cash at the end | $35,768.76 | $35,059.10 |
-
-**Invoice amounts constant across arms:** yes (41 of 41). **Cash differs across arms:** yes.
+| the economy reaches more than one month's clients | yes | tallybird 100 reached / 100 decided, of 100, halloran 57 reached / 41 decided, of 80, ledgerline 55 reached / 33 decided, of 80, thirdrail 200 reached / 200 decided, of 200, brightwater 119 reached / 119 decided, of 120, meridian 17 reached / 14 decided, of 30, pemberton 150 reached / 150 decided, of 150, quill 60 reached / 60 decided, of 60, ironworks 150 reached / 150 decided, of 150 |
+| every retailer sold something | yes | thirdrail 8661 sale(s), brightwater 609 sale(s), pemberton 1759 sale(s), ironworks 5423 sale(s) |
 
 ## Measures (reported, not asserted)
 
@@ -36,84 +21,81 @@ Written by `make soak`. Invariants, not outcomes: a firm may fail here; it may n
 
 | firm | d0 | d7 | d14 | d21 | d28 | d35 |
 |---|---:|---:|---:|---:|---:|---:|
-| tallybird | $48,000 | $33,820 | $18,860 | $8,620 | $8,260 | $7,900 |
-| halloran | $96,000 | $107,959 | $108,161 | $98,761 | $88,041 | $78,581 |
-| ledgerline | $41,000 | $84,869 | $95,070 | $87,884 | $82,954 | $75,154 |
-| thirdrail | $9,400 | $14,635 | $20,573 | $25,794 | $30,092 | $35,769 |
-| households | $20,000 | $54,535 | $89,012 | $123,563 | $143,455 | $163,435 |
+| tallybird | $420,000 | $425,270 | $429,970 | $439,195 | $443,295 | $447,815 |
+| halloran | $240,000 | $309,588 | $352,114 | $312,799 | $272,419 | $367,367 |
+| ledgerline | $170,000 | $240,752 | $260,743 | $237,663 | $209,703 | $215,720 |
+| keystone | $120,000 | $112,170 | $103,740 | $94,755 | $86,505 | $78,855 |
+| thirdrail | $30,000 | $28,933 | $30,014 | $30,935 | $32,999 | $33,708 |
+| brightwater | $90,000 | $88,472 | $89,883 | $90,599 | $91,324 | $92,908 |
+| meridian | $120,000 | $220,095 | $241,906 | $209,476 | $177,976 | $367,106 |
+| commonwealth | $900,000 | $904,550 | $908,920 | $913,290 | $917,840 | $922,030 |
+| pemberton | $40,000 | $43,359 | $47,041 | $50,714 | $55,265 | $59,348 |
+| quill | $200,000 | $200,280 | $200,400 | $202,758 | $203,058 | $203,178 |
+| ironworks | $28,000 | $36,178 | $44,840 | $53,124 | $62,068 | $70,524 |
+| northfield | $45,000 | $43,120 | $42,020 | $40,230 | $39,130 | $38,030 |
+| households | $180,000 | $470,208 | $760,606 | $1,050,729 | $1,340,877 | $1,631,868 |
 
 ### Receivables
 
 | issuer | issued | paid | chased | written off | outstanding | paid, mean days after due |
 |---|---:|---:|---:|---:|---:|---:|
-| halloran | 26 | 9 | 0 | 0 | $52,642 | +0.0 |
-| ledgerline | 50 | 23 | 0 | 0 | $92,468 | +0.5 |
-| tallybird | 212 | 109 | 0 | 0 | $5,155 | +0.3 |
-| thirdrail | 19 | 15 | 0 | 0 | $1,200 | -0.6 |
+| halloran | 80 | 38 | 0 | 0 | $351,738 | -0.2 |
+| ledgerline | 98 | 55 | 0 | 0 | $183,680 | +0.7 |
+| meridian | 22 | 12 | 0 | 0 | $318,760 | -0.4 |
+| quill | 135 | 70 | 0 | 0 | $3,390 | +0.5 |
+| tallybird | 227 | 120 | 0 | 0 | $5,590 | +0.3 |
+| thirdrail | 43 | 33 | 0 | 0 | $2,280 | -0.1 |
 
 ### Tickets, by week opened
 
 | week | opened | closed | reopened |
 |---:|---:|---:|---:|
-| 0 | 44 | 44 | 1 |
-| 1 | 7 | 7 | 0 |
-| 2 | 40 | 40 | 2 |
-| 3 | 24 | 24 | 1 |
-| 4 | 25 | 23 | 0 |
+| 0 | 45 | 45 | 2 |
+| 1 | 44 | 44 | 11 |
+| 2 | 39 | 39 | 1 |
+| 3 | 52 | 52 | 5 |
+| 4 | 52 | 50 | 2 |
 
 ### Decisions
 
 | question set | decided by | n | share |
 |---|---|---:|---:|
-| `agent.tick` | rules | 22320 | 70.6% |
-| `cafe.purchase` | rules | 7608 | 24.1% |
-| `catering.order` | rules | 30 | 0.1% |
-| `close.signoff` | rules | 6 | 0.0% |
-| `credit.decision` | rules | 46 | 0.1% |
-| `file.ticket` | rules | 347 | 1.1% |
-| `payment.timing` | rules | 253 | 0.8% |
-| `payroll.release` | rules | 24 | 0.1% |
-| `ticket.answer` | rules | 616 | 1.9% |
-| `ticket.confirm` | rules | 224 | 0.7% |
-| `ticket.triage` | rules | 149 | 0.5% |
+| `agent.tick` | rules | 205060 | 90.0% |
+| `catering.order` | rules | 80 | 0.0% |
+| `close.signoff` | rules | 20 | 0.0% |
+| `credit.decision` | rules | 110 | 0.0% |
+| `file.ticket` | rules | 526 | 0.2% |
+| `payment.timing` | rules | 506 | 0.2% |
+| `payroll.release` | rules | 60 | 0.0% |
+| `retail.purchase` | rules | 19733 | 8.7% |
+| `ticket.answer` | rules | 1051 | 0.5% |
+| `ticket.confirm` | rules | 417 | 0.2% |
+| `ticket.triage` | rules | 244 | 0.1% |
 
 ### Events
 
 | kind | n |
 |---|---:|
-| `agent.moved` | 4059 |
-| `cafe.sale` | 6902 |
-| `cafe.walkout` | 706 |
-| `catering.delivered` | 19 |
-| `catering.ordered` | 19 |
-| `close.completed` | 6 |
-| `credit.issued` | 16 |
-| `encounter` | 2072 |
-| `incident.ended` | 28 |
-| `incident.started` | 28 |
-| `insolvency.warning` | 7 |
+| `agent.moved` | 40588 |
+| `catering.delivered` | 43 |
+| `catering.ordered` | 43 |
+| `close.completed` | 20 |
+| `credit.issued` | 44 |
+| `encounter` | 15328 |
+| `incident.ended` | 52 |
+| `incident.started` | 52 |
+| `income.outside` | 30 |
 | `invoice.blocked` | 4 |
-| `invoice.issued` | 68 |
+| `invoice.issued` | 180 |
 | `month.end` | 2 |
-| `payment.deferred` | 41 |
-| `payment.made` | 152 |
-| `payroll.held` | 1 |
-| `payroll.paid` | 18 |
-| `ticket.answered` | 154 |
-| `ticket.closed` | 152 |
-| `ticket.escalated` | 16 |
-| `ticket.opened` | 140 |
-| `ticket.reopened` | 5 |
-| `ticket.triaged` | 149 |
-
-### Insolvency warnings
-
-| when | firm | cash | weekly wages | overdue to them | cause |
-|---|---|---:|---:|---:|---|
-| d18 Fri 10:00 | tallybird | $23,220 | $14,600 | $0 | thin_reserves |
-| d25 Fri 10:00 | tallybird | $8,260 | $14,600 | $0 | thin_reserves |
-| d28 Mon 09:00 | tallybird | $8,260 | $14,600 | $0 | spending_exceeds_income |
-| d29 Tue 09:00 | tallybird | $8,260 | $14,600 | $0 | spending_exceeds_income |
-| d30 Wed 09:00 | tallybird | $8,260 | $14,600 | $0 | spending_exceeds_income |
-| d31 Thu 09:00 | tallybird | $8,080 | $14,600 | $0 | spending_exceeds_income |
-| d32 Fri 09:00 | tallybird | $8,080 | $14,600 | $0 | spending_exceeds_income |
+| `payment.deferred` | 56 |
+| `payment.made` | 322 |
+| `payroll.paid` | 60 |
+| `retail.sale` | 16452 |
+| `retail.walkout` | 3281 |
+| `ticket.answered` | 265 |
+| `ticket.closed` | 263 |
+| `ticket.escalated` | 38 |
+| `ticket.opened` | 232 |
+| `ticket.reopened` | 21 |
+| `ticket.triaged` | 244 |
