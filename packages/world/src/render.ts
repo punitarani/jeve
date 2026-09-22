@@ -51,13 +51,20 @@ const CAMERA_DISTANCE = 80;
  * its end. The camera sits at CAMERA_DISTANCE, so these are depths, and an
  * orthographic camera reads them almost as tiles from the target.
  */
-const FOG_NEAR = 96;
-const FOG_FAR = 190;
+const FOG_NEAR = 104;
+const FOG_FAR = 215;
 /** How far past the map's edge the camera may be dragged, in tiles. */
 const PAN_MARGIN = 15;
-/** Chunky drifting clouds over the meadow, in the town's own box idiom. */
-const CLOUD_COUNT = 40;
+/** Thin drifting clouds over the meadow, in the town's own box idiom. */
+const CLOUD_COUNT = 26;
 const CLOUD_RADIUS = 85;
+/** A cloud's lobes: offsets and scales against the puff's own size. */
+const CLOUD_LOBES: [number, number, number, number, number, number][] = [
+  [0, 0, 0, 1, 1, 1],
+  [0.55, -0.45, 0.3, 0.55, 0.6, 0.55],
+  [-0.5, 0.35, -0.3, 0.6, 0.55, 0.5],
+  [0.1, 0.45, -0.55, 0.45, 0.45, 0.4],
+];
 
 export type ViewTarget = { x: number; z: number; span: number };
 
@@ -482,28 +489,34 @@ export class WorldView {
   }
 
   /**
-   * Flat white boxes drifting east over the meadow, on the wind the lamps
-   * suggest. They sell the fog as weather: a cloud slides through the haze
-   * where the ground is already gone, and the world reads as somewhere rather
-   * than a slab. Tinted from the sky once a frame; fogged like everything else.
+   * Little puffs of flat white boxes drifting east over the meadow. A single
+   * slab reads as a glass pane over the field, so each cloud is a few boxes
+   * clustered — a slab with lobes, in the town's own box idiom. They sell the
+   * fog as weather: a cloud slides through the haze where the ground is
+   * already gone, and the world reads as somewhere rather than a slab.
+   * Tinted from the sky once a frame; fogged like everything else.
    */
   private buildClouds(map: TownMap): void {
     const material = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,
-      opacity: 0.82,
+      opacity: 0.45,
       toneMapped: false,
     });
-    const clouds = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), material, CLOUD_COUNT);
+    const clouds = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      material,
+      CLOUD_COUNT * CLOUD_LOBES.length,
+    );
     clouds.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     clouds.frustumCulled = false;
     this.cloudSpots = Array.from({ length: CLOUD_COUNT }, (_, i) => ({
       x: map.width / 2 + (hash2(i, 3, 71) - 0.5) * 2 * CLOUD_RADIUS,
       z: map.height / 2 + (hash2(i, 5, 72) - 0.5) * 2 * CLOUD_RADIUS,
-      y: 9 + hash2(i, 7, 73) * 5.5,
-      sx: 4 + hash2(i, 11, 74) * 7,
-      sy: 0.4 + hash2(i, 13, 75) * 0.35,
-      sz: 2.5 + hash2(i, 17, 76) * 3,
+      y: 10.5 + hash2(i, 7, 73) * 5.5,
+      sx: 5 + hash2(i, 11, 74) * 9,
+      sy: 1 + hash2(i, 13, 75) * 0.4,
+      sz: 3.5 + hash2(i, 17, 76) * 3,
       speed: 0.9 + hash2(i, 19, 77) * 1.1,
     }));
     this.clouds = clouds;
@@ -1061,8 +1074,12 @@ export class WorldView {
     this.cloudSpots.forEach((cloud, i) => {
       cloud.x += cloud.speed * seconds;
       if (cloud.x - centre > CLOUD_RADIUS) cloud.x -= CLOUD_RADIUS * 2;
-      this.local.makeScale(cloud.sx, cloud.sy, cloud.sz).setPosition(cloud.x, cloud.y, cloud.z);
-      clouds.setMatrixAt(i, this.local);
+      CLOUD_LOBES.forEach(([dx, dy, dz, kx, ky, kz], l) => {
+        this.local
+          .makeScale(cloud.sx * kx, cloud.sy * ky, cloud.sz * kz)
+          .setPosition(cloud.x + dx * cloud.sx, cloud.y + dy, cloud.z + dz * cloud.sz);
+        clouds.setMatrixAt(i * CLOUD_LOBES.length + l, this.local);
+      });
     });
     clouds.instanceMatrix.needsUpdate = true;
   }
