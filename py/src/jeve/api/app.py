@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
@@ -23,9 +24,10 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
 
-from jeve import db, tracing
+from jeve import db, obs, tracing
 from jeve.config import load_settings
 from jeve.core.clock import SimTime
+from jeve.obs import meters
 
 _pool: ConnectionPool[Connection[DictRow]] | None = None
 
@@ -40,15 +42,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """
 
     global _pool
+    obs.start("jeve-api")
     pool = db.connect_pool()
     await asyncio.to_thread(pool.open)
     _pool = pool
+    _register_gauges()
     try:
         yield
     finally:
         _pool = None
         await asyncio.to_thread(pool.close)
         tracing.flush()
+        await asyncio.to_thread(obs.shutdown)
 
 
 app = FastAPI(
@@ -74,6 +79,96 @@ app.add_middleware(
 )
 
 
+class _Tracing:
+    """One span per request, written as plain ASGI on purpose.
+
+    Not `@app.middleware("http")`: Starlette's `BaseHTTPMiddleware` runs the
+    response through an anyio task group, which is a known hazard for
+    `StreamingResponse` — and `/stream` is a nine-hundred-second SSE body.
+    Wrapping `send` touches the status line and nothing else.
+
+    The span ends at `http.response.start`. For the JSON endpoints all the
+    work is done by then; for `/stream` it means a time-to-first-byte span
+    rather than one that stays open for a quarter of an hour.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        method = scope.get("method", "GET")
+        started = time.perf_counter()
+        meters.HTTP_ACTIVE.add(1, {"http.request.method": method})
+        status = 500
+        with obs.span(
+            f"{method} {scope.get('path', '')}",
+            {"http.request.method": method, "url.path": scope.get("path", "")},
+        ) as span:
+
+            async def watched(message: Any) -> None:
+                nonlocal status
+                if message["type"] == "http.response.start":
+                    status = message["status"]
+                await send(message)
+
+            try:
+                await self._app(scope, receive, watched)
+            finally:
+                # Read after routing: Starlette only puts the route on the
+                # scope once it has matched. Without it `/causal/{seq}` would
+                # be one span name and one metric series per event id.
+                route = getattr(scope.get("route"), "path", None) or "/{unmatched}"
+                span.update_name(f"{method} {route}")
+                span.set({"http.route": route, "http.response.status_code": status})
+                attrs: obs.Attrs = {
+                    "http.request.method": method,
+                    "http.route": route,
+                    "http.response.status_code": status,
+                }
+                meters.HTTP_DURATION.record(time.perf_counter() - started, attrs)
+                meters.HTTP_ACTIVE.add(-1, {"http.request.method": method})
+
+
+# Added last, so it is outermost and sees preflights too (add_middleware
+# prepends).
+app.add_middleware(_Tracing)
+
+
+def _register_gauges() -> None:
+    """Publish the sim's health from the API.
+
+    Deliberately from here rather than from the daemon: a dead sim then shows
+    up as a *rising* heartbeat age rather than as a series that simply stops,
+    and "no data" is a far worse alert condition than a number going up.
+    """
+
+    def _meta(column: str) -> float | None:
+        row = _row(
+            "SELECT EXTRACT(EPOCH FROM now() - heartbeat_at) AS age, "
+            "lag_s FROM sim_meta"
+        )
+        if row is None or row.get(column) is None:
+            return None
+        return float(row[column])
+
+    obs.register_gauge(
+        "jeve.sim.heartbeat.age",
+        "s",
+        "Seconds since the daemon last beat.",
+        lambda: _meta("age"),
+    )
+    obs.register_gauge(
+        "jeve.sim.lag",
+        "s",
+        "How far behind its pace the last tick ran.",
+        lambda: _meta("lag_s"),
+    )
+
+
 @contextmanager
 def _db() -> Iterator[Connection[DictRow]]:
     """One pooled, autocommit connection for a read.
@@ -84,12 +179,16 @@ def _db() -> Iterator[Connection[DictRow]]:
     """
 
     if _pool is not None:
-        with _pool.connection() as conn:
-            yield conn
+        waited = time.perf_counter()
+        with obs.span("db.session", {"db.system.name": "postgresql"}):
+            with _pool.connection() as conn:
+                meters.POOL_WAIT.record(time.perf_counter() - waited)
+                yield conn
     else:
         # Tests without a lifespan, and one-off scripts, still work.
-        with db.connect(autocommit=True) as conn:
-            yield conn
+        with obs.span("db.session", {"db.system.name": "postgresql"}):
+            with db.connect(autocommit=True) as conn:
+                yield conn
 
 
 def _conn() -> Iterator[Connection[DictRow]]:
@@ -97,13 +196,44 @@ def _conn() -> Iterator[Connection[DictRow]]:
         yield connection
 
 
+@contextmanager
+def _query(sql: str) -> Iterator[None]:
+    """One span and one timing per statement, where the SQL is known.
+
+    The two list readers funnel through here. Endpoints that hold a connection
+    and run several statements inline — `/state` is the big one — are covered
+    instead by the `db.session` span in `_db()`, which every read opens.
+
+    `db.query.text` is the static SQL. Parameters are never recorded: they are
+    person and org ids.
+    """
+
+    operation = sql.split(None, 1)[0].upper()
+    started = time.perf_counter()
+    with obs.span(
+        "db.query",
+        {
+            "db.system.name": "postgresql",
+            "db.operation.name": operation,
+            "db.query.text": sql,
+        },
+    ):
+        try:
+            yield
+        finally:
+            meters.DB_DURATION.record(
+                time.perf_counter() - started,
+                {"db.system.name": "postgresql", "db.operation.name": operation},
+            )
+
+
 def _rows(sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-    with _db() as conn:
+    with _query(sql), _db() as conn:
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
 
 def _row(sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
-    with _db() as conn:
+    with _query(sql), _db() as conn:
         found = conn.execute(sql, params).fetchone()
         return dict(found) if found else None
 
@@ -988,6 +1118,7 @@ class _StreamHub:
             maxsize=_QUEUE_DEPTH
         )
         self._subs.add(queue)
+        meters.STREAM_SUBSCRIBERS.add(1)
         alive = (
             self._task is not None
             and not self._task.done()
@@ -1002,6 +1133,8 @@ class _StreamHub:
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue[dict[str, Any] | None]) -> None:
+        if queue in self._subs:
+            meters.STREAM_SUBSCRIBERS.add(-1)
         self._subs.discard(queue)
 
     async def _poll(self) -> None:
@@ -1014,9 +1147,14 @@ class _StreamHub:
                     "WHERE seq > %s ORDER BY seq LIMIT %s",
                     (self._high, _BATCH),
                 )
-            except Exception:
-                # A dead database is /health's story to tell; the stream just
-                # waits for it to come back.
+            except Exception as error:
+                # A dead database is /health's story to tell and the stream
+                # still just waits for it to come back — but this used to
+                # swallow the error whole, so a wedged pool looked exactly
+                # like an idle world. Counted now, and named (OBS-0001).
+                meters.STREAM_POLL_ERRORS.add(1, {"error.type": type(error).__name__})
+                with obs.span("stream.poll") as failed:
+                    failed.fail(error)
                 await asyncio.sleep(_POLL_S)
                 continue
             for row in rows:
@@ -1029,6 +1167,7 @@ class _StreamHub:
                         while not queue.empty():
                             queue.get_nowait()
                         queue.put_nowait(_RESYNC)
+                        meters.STREAM_RESYNCS.add(1)
             await asyncio.sleep(_POLL_S)
 
 

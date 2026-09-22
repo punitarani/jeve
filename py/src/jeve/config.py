@@ -41,12 +41,26 @@ class Settings(BaseModel):
     cors_origins: tuple[str, ...] = ()
     dialogue_generate: bool = True
 
-    # LLM-0008: observability. The key is the only switch — absent,
-    # `jeve.tracing` never imports the SDK and opens no socket, which is what
-    # keeps CI and a clean clone offline.
+    # LLM-0008: what a model call *said* — prompt, completion, served model.
+    # The key is the only switch — absent, `jeve.tracing` never imports the
+    # SDK and opens no socket, which is what keeps CI and a clean clone offline.
     braintrust_api_key: str | None = None
     braintrust_project_id: str | None = None
     """An id, not a name: a project that gets renamed keeps its spans."""
+
+    # OBS-0001: what the system *did* — traces, metrics and logs for both
+    # processes. Same rule, same reason: an unset token means no exporter, no
+    # thread, no socket. Axiom routes logs by X-Axiom-Dataset and metrics by
+    # X-Axiom-Metrics-Dataset, so the two datasets are two settings; one
+    # shared OTLP header could not express it.
+    axiom_token: str | None = None
+    axiom_domain: str = "api.axiom.co"
+    axiom_dataset: str = "jeve"
+    axiom_metrics_dataset: str = "jeve-metrics"
+    otel_service: str | None = None
+    otel_sample_ratio: float = 1.0
+    otel_metric_interval_s: int = 60
+    otel_timeout_s: int = 5
 
     @property
     def spend_path(self) -> Path:
@@ -91,17 +105,17 @@ def load_settings(*, ops_dir: Path | None = None) -> Settings:
     else:
         root = find_repo_root() / "ops"
 
-    def _usd(name: str, default: float) -> float:
+    def _number(name: str, default: float) -> float:
         return float(os.environ.get(name) or default)
 
     return Settings(
         openrouter_api_key=os.environ.get("OPENROUTER_API_KEY") or None,
         openrouter_base_url=base_url.rstrip("/"),
         ops_dir=root,
-        run_cap_usd=_usd("JEVE_RUN_CAP_USD", RUN_CAP_USD),
-        explore_ceiling_usd=_usd("JEVE_EXPLORE_CEILING_USD", EXPLORE_CEILING_USD),
-        halt_ceiling_usd=_usd("JEVE_HALT_CEILING_USD", HALT_CEILING_USD),
-        hard_ceiling_usd=_usd("JEVE_HARD_CEILING_USD", HARD_CEILING_USD),
+        run_cap_usd=_number("JEVE_RUN_CAP_USD", RUN_CAP_USD),
+        explore_ceiling_usd=_number("JEVE_EXPLORE_CEILING_USD", EXPLORE_CEILING_USD),
+        halt_ceiling_usd=_number("JEVE_HALT_CEILING_USD", HALT_CEILING_USD),
+        hard_ceiling_usd=_number("JEVE_HARD_CEILING_USD", HARD_CEILING_USD),
         cors_origins=tuple(
             origin.strip()
             for origin in os.environ.get("JEVE_CORS_ORIGINS", "").split(",")
@@ -111,4 +125,14 @@ def load_settings(*, ops_dir: Path | None = None) -> Settings:
         not in ("off", "0", "false"),
         braintrust_api_key=os.environ.get("BRAINTRUST_API_KEY") or None,
         braintrust_project_id=os.environ.get("BRAINTRUST_PROJECT_ID") or None,
+        axiom_token=os.environ.get("AXIOM_TOKEN") or None,
+        axiom_domain=os.environ.get("AXIOM_DOMAIN") or "api.axiom.co",
+        axiom_dataset=os.environ.get("AXIOM_DATASET") or "jeve",
+        axiom_metrics_dataset=(
+            os.environ.get("AXIOM_METRICS_DATASET") or "jeve-metrics"
+        ),
+        otel_service=os.environ.get("JEVE_OTEL_SERVICE") or None,
+        otel_sample_ratio=_number("JEVE_OTEL_SAMPLE_RATIO", 1.0),
+        otel_metric_interval_s=int(_number("JEVE_OTEL_METRIC_INTERVAL_S", 60)),
+        otel_timeout_s=int(_number("JEVE_OTEL_TIMEOUT_S", 5)),
     )

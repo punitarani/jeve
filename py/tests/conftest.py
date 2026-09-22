@@ -18,7 +18,7 @@ import pytest
 from psycopg import Connection, sql
 from psycopg.rows import DictRow
 
-from jeve import db, tracing
+from jeve import db, obs, tracing
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -206,12 +206,44 @@ def spans() -> Iterator[RecordingSink]:
 def _tracing_off(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """No span leaves the process unless a test asks for one.
 
-    Dropping the key rather than only resetting state, because a developer
-    with `BRAINTRUST_API_KEY` exported must still get an offline run: "every
-    module testable without network" is not conditional on someone's shell.
+    Dropping the keys rather than only resetting state, because a developer
+    with `BRAINTRUST_API_KEY` or `AXIOM_TOKEN` exported must still get an
+    offline run: "every module testable without network" is not conditional
+    on someone's shell. Both seams get the same treatment (LLM-0008,
+    OBS-0001) — the tests that want telemetry inject their own sinks.
     """
 
     monkeypatch.delenv("BRAINTRUST_API_KEY", raising=False)
+    monkeypatch.delenv("AXIOM_TOKEN", raising=False)
     tracing.reset()
+    obs.shutdown()
     yield
     tracing.reset()
+    obs.shutdown()
+
+
+# -- metrics (OBS-0001) ----------------------------------------------------
+
+
+def counter_points(data: object, name: str) -> dict[tuple[str, ...], float]:
+    """Sum-metric points from an `InMemoryMetricReader`, keyed by attributes.
+
+    The OTLP data model nests four levels deep and the point type is a union,
+    so reading one number out of it is six lines of narrowing. Written once
+    here rather than at each assertion (OBS-0001).
+    """
+
+    found: dict[tuple[str, ...], float] = {}
+    for resource in getattr(data, "resource_metrics", ()):
+        for scope in resource.scope_metrics:
+            for metric in scope.metrics:
+                if metric.name != name:
+                    continue
+                for point in getattr(metric.data, "data_points", ()):
+                    value = getattr(point, "value", None)
+                    if value is None:
+                        continue
+                    attributes = point.attributes or {}
+                    key = tuple(f"{k}={attributes[k]}" for k in sorted(attributes))
+                    found[key] = float(value)
+    return found

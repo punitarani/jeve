@@ -16,6 +16,7 @@ from jeve.sim import daemon
 from jeve.sim.daemon import Pace
 from jeve.world.engine import Engine
 from jeve.world.seed_world import ROOT_SEED, seed
+from tests.conftest import counter_points
 from tests.test_world import event_log_hash
 
 pytestmark = pytest.mark.timeout(300)
@@ -378,3 +379,68 @@ def test_a_sleeping_daemon_still_has_a_pulse(conn: Connection[DictRow]) -> None:
         "AS alive FROM sim_meta"
     ).fetchone()
     assert row is not None and row["alive"]
+
+
+def test_a_real_run_emits_tick_spans_carrying_sim_time(
+    conn: Connection[DictRow],
+) -> None:
+    """OBS-0001, end to end: the daemon really does produce the spans.
+
+    `tests/test_obs.py` proves the seam works in isolation; this proves it is
+    wired into the loop, that sim time rides as an attribute, and that the
+    outcome counter agrees with the tick count that actually ran.
+    """
+
+    from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from jeve import obs
+    from jeve.config import Settings
+
+    spans = InMemorySpanExporter()
+    reader = InMemoryMetricReader()
+    obs.shutdown()
+    # All three sinks, or the signal we did not inject builds a real OTLP
+    # exporter and this test quietly tries to reach Axiom.
+    obs.start(
+        "jeve-test",
+        settings=Settings(axiom_token="test-token"),
+        span_exporter=spans,
+        metric_reader=reader,
+        log_exporter=InMemoryLogRecordExporter(),  # type: ignore[no-untyped-call]
+    )
+    try:
+        horizon = at(0, 7) + 5 * TICK
+        code = daemon.run(
+            daemon.parse(["--seed-world", *("--until", str(horizon)), *FLAT_OUT])
+        )
+        assert code == 0
+
+        # Metrics are collected on demand, so read them while the stack is up;
+        # spans sit in the batch processor until something flushes it.
+        data = reader.get_metrics_data()
+        obs.shutdown()
+
+        ticks = [s for s in spans.get_finished_spans() if s.name == "sim.tick"]
+        assert ticks, "the loop ran but produced no sim.tick span"
+
+        times = [int(str((s.attributes or {})["jeve.sim_time"])) for s in ticks]
+        # Sim time advances one quantum per tick and never repeats.
+        assert times == sorted(times) and len(set(times)) == len(times)
+
+        first = ticks[0].attributes or {}
+        assert first["jeve.policy"] == "rules"
+        assert "jeve.decisions" in first and "jeve.events" in first
+        # CORE-0003 again, at the point where the two clocks meet: the
+        # timestamp is wall-clock nanoseconds, the attribute is sim-seconds.
+        assert ticks[0].start_time is not None
+        assert ticks[0].start_time > 1_700_000_000_000_000_000
+        assert times[0] < 1_000_000_000
+
+        counted = counter_points(data, "jeve.sim.ticks")
+        assert counted == {("jeve.outcome=ok",): len(ticks)}
+    finally:
+        obs.shutdown()

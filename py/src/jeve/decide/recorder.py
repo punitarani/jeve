@@ -32,6 +32,7 @@ from psycopg.rows import DictRow
 
 from jeve import db
 from jeve.errors import JeveError
+from jeve.obs import meters
 
 type Mode = Literal["record", "replay"]
 
@@ -161,6 +162,8 @@ class Recorder:
         self.stats.lookups += 1
         self.stats.hits += 1 if hit else 0
         self.stats.by_kind[kind] = self.stats.by_kind.get(kind, 0) + 1
+        # OBS-0001: the cache-hit ratio is what decides the bill (DECIDE-0003).
+        meters.LLM_CACHE.add(1, {"jeve.kind": kind, "jeve.hit": hit})
 
 
 def insert_call(conn: Connection[DictRow], row: dict[str, Any]) -> bool:

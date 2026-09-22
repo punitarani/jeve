@@ -5,7 +5,7 @@
 #
 # Deploy with: fly deploy            (both groups, one image, one release)
 # Secrets:     fly secrets set OPENROUTER_API_KEY=... JEVE_DATABASE_URL=... \
-#                JEVE_DATABASE_POOLED_URL=...
+#                JEVE_DATABASE_POOLED_URL=... AXIOM_TOKEN=...
 # Database region: us-east-1 (closest Fly region: iad).
 
 app = "jeve-backend"
@@ -48,6 +48,13 @@ primary_region = "iad"  # Washington D.C. — closest to us-east-1
   # daemon's tick output only on exit, which is ops blindness for a
   # forever-running process.
   PYTHONUNBUFFERED = "1"
+  # OBS-0001: telemetry. The token is a secret (`fly secrets set AXIOM_TOKEN`);
+  # unset it and both groups run with telemetry entirely absent — no exporter,
+  # no thread, no socket. The service name is not set here: the two groups
+  # name themselves `jeve-api` and `jeve-sim` when they call obs.start().
+  AXIOM_DOMAIN = "api.axiom.co"
+  AXIOM_DATASET = "jeve"
+  AXIOM_METRICS_DATASET = "jeve-metrics"
 
 [processes]
   api = "uvicorn jeve.api.app:app --host 0.0.0.0 --port 8000"

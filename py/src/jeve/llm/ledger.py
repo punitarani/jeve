@@ -16,9 +16,8 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +25,36 @@ from pathlib import Path
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-from jeve import db
+from jeve import db, obs
+
+log = obs.logger("jeve.llm")
+
+_LATEST: dict[str, float] = {}
+
+
+def _publish(spend: Spend) -> None:
+    _LATEST["effective"] = spend.effective_usd
+    _LATEST["settled"] = spend.settled_usd
+    _LATEST["reserved"] = spend.reserved_usd
+
+
+def _reader(key: str) -> Callable[[], float | None]:
+    """A gauge callback for one cached figure.
+
+    A factory rather than `lambda key=key:` — the default-argument trick for
+    late binding is a puzzle at the point of use, and this is read by whoever
+    is trying to work out where a number on a chart came from.
+    """
+
+    return lambda: _LATEST.get(key)
+
+
+for _name, _key, _description in (
+    ("jeve.spend.effective", "effective", "Settled plus unsettled reservations."),
+    ("jeve.spend.settled", "settled", "Cost of calls that have come back."),
+    ("jeve.spend.reserved", "reserved", "Worst-case cost of calls in flight."),
+):
+    obs.register_gauge(_name, "USD", _description, _reader(_key))
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +272,12 @@ class SpendLedger:
         return spend
 
     def _write_checkpoint(self, spend: Spend) -> None:
+        # OBS-0001: every write path passes through here with a fresh Spend,
+        # so this is where the gauges get their value. Pushed into a cache
+        # rather than pulled: a gauge callback runs on the metric reader's
+        # thread, and a database round trip there would block collection and
+        # raise inside the exporter when Postgres is the thing that is down.
+        _publish(spend)
         if self._checkpoint is None:
             return
         try:
@@ -254,7 +288,13 @@ class SpendLedger:
             # uid 1001 with /app owned by root) must not kill accounting —
             # this took the daemon down on boot under compose. Warn once and
             # stop trying: permissions do not heal mid-process.
-            print(f"spend checkpoint disabled: {error}", file=sys.stderr)
+            log.warn(
+                f"spend checkpoint disabled: {error}",
+                {
+                    "jeve.error_type": type(error).__name__,
+                    "jeve.path": str(self._checkpoint),
+                },
+            )
             self._checkpoint = None
 
     def _write_checkpoint_unsafe(self, spend: Spend) -> None:

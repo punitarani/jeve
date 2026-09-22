@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import json
 import signal
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +30,7 @@ from types import FrameType
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-from jeve import db
+from jeve import db, obs
 from jeve.core.clock import DAY, TICK, SimTime
 from jeve.decide.jev_policy import JevPolicy
 from jeve.decide.recorder import ReplayMissError, finalize_cassette, load_cassette
@@ -42,6 +41,7 @@ from jeve.errors import (
     ResponseShapeError,
     TransportError,
 )
+from jeve.obs import meters
 from jeve.sim.runner import CASSETTE, Totals, build_policy, policy_from_env
 from jeve.world.engine import Engine, skip_to_next_open
 from jeve.world.seed_world import ROOT_SEED, seed
@@ -55,6 +55,12 @@ and a town that sits empty for fourteen real minutes in every twenty-four is a
 poor thing to watch. The tick rate while anything is open is unaffected."""
 
 DEFAULT_DAILY_BUDGET_USD = 2.00
+
+log = obs.logger("jeve.sim")
+"""OBS-0001: the same line to stdout as before, plus a record to Axiom.
+
+Built at import time, which is before `start()` runs — so it resolves the live
+stack per call rather than caching an emitter that does not exist yet."""
 
 MODEL_WEATHER: tuple[type[BaseException], ...] = (
     TransportError,
@@ -120,6 +126,7 @@ def _status(conn: Connection[DictRow], status: str, error: str | None = None) ->
         (status, error),
     )
     conn.commit()
+    meters.STATUS.add(1, {"jeve.status": status})
 
 
 def _heartbeat(conn: Connection[DictRow], lag_s: float | None = None) -> None:
@@ -182,15 +189,24 @@ def run(args: argparse.Namespace) -> int:
         seeded = conn.execute("SELECT 1 FROM sim_meta").fetchone() is not None
         if args.seed_world or not seeded:
             summary = seed(conn, root_seed=args.seed)
-            print(
+            log.info(
                 f"seeded {summary.orgs} orgs, {summary.persons} persons "
-                f"({summary.staff} staff + {summary.counterparties} counterparties)"
+                f"({summary.staff} staff + {summary.counterparties} counterparties)",
+                {
+                    "jeve.orgs": summary.orgs,
+                    "jeve.persons": summary.persons,
+                    "jeve.staff": summary.staff,
+                    "jeve.counterparties": summary.counterparties,
+                },
             )
         if args.policy == "jev" and args.cassette is not None:
             # In both modes: a recording run must not pay again for what it has.
             loaded = load_cassette(conn, args.cassette)
             conn.commit()
-            print(f"cassette: {loaded} call(s) preloaded from {args.cassette.name}")
+            log.info(
+                f"cassette: {loaded} call(s) preloaded from {args.cassette.name}",
+                {"jeve.calls": loaded, "jeve.cassette": args.cassette.name},
+            )
 
         policy = build_policy(
             args.policy, args.calls, root_seed=args.seed, cassette=args.cassette
@@ -228,7 +244,10 @@ def _loop(
 
         if args.until is not None and now.seconds >= args.until:
             _status(conn, "paused")
-            print(f"reached the horizon at {now}")
+            log.info(
+                f"reached the horizon at {now}",
+                {"jeve.sim_time": now.seconds, "jeve.sim_label": now.label()},
+            )
             if not args.idle:
                 return 0
             # Stay up so the API and the page have a live process to look at;
@@ -260,30 +279,67 @@ def _loop(
                 )
             elif _live_spend(policy) - window_spent_from >= pace.daily_budget_usd:
                 _status(conn, "paused_budget")
-                print(
+                pause_s = pace.window_s - elapsed
+                log.info(
                     f"daily model budget of ${pace.daily_budget_usd:.2f} spent; "
-                    f"pausing {pace.window_s - elapsed:.0f}s until the window rolls"
+                    f"pausing {pause_s:.0f}s until the window rolls",
+                    {
+                        "jeve.budget_usd": pace.daily_budget_usd,
+                        "jeve.pause_s": pause_s,
+                    },
                 )
-                _sleep(pace.window_s - elapsed, stop, conn)
+                meters.WAIT_DURATION.record(pause_s, {"jeve.reason": "daily_budget"})
+                with obs.span("sim.wait", {"jeve.wait_reason": "daily_budget"}):
+                    _sleep(pause_s, stop, conn)
                 _status(conn, "running")
                 continue
 
         started = time.monotonic()
         try:
-            report = engine.tick()
+            # CORE-0003: sim time is an attribute here, never a timestamp. The
+            # SDK stamps the span off the wall clock; `jeve.sim_time` is the
+            # integer the world runs on, and the two must not be confused.
+            with obs.span(
+                "sim.tick",
+                {
+                    "jeve.sim_time": now.seconds,
+                    "jeve.sim_label": now.label(),
+                    "jeve.sim_day": now.day,
+                    "jeve.policy": args.policy,
+                },
+            ) as tick:
+                report = engine.tick()
+                tick.set(
+                    {
+                        "jeve.decisions": report.decisions,
+                        "jeve.events": len(report.events),
+                    }
+                )
         except BudgetExceededError as error:
             _status(conn, "halted", _describe(error))
-            print(f"HALTED: {error}", file=sys.stderr)
+            meters.TICKS.add(1, {"jeve.outcome": "halt"})
+            log.error(
+                f"HALTED: {error}",
+                {"jeve.error_type": type(error).__name__, "jeve.exit_code": 4},
+            )
             return 4
         except ReplayMissError as error:
             _status(conn, "halted", _describe(error))
-            print(f"HALTED: {error}", file=sys.stderr)
+            meters.TICKS.add(1, {"jeve.outcome": "halt"})
+            log.error(
+                f"HALTED: {error}",
+                {"jeve.error_type": type(error).__name__, "jeve.exit_code": 5},
+            )
             return 5
         except ModelVersionDriftError as error:
             # DECIDE-0004: not weather. Waiting cannot fix it and carrying on
             # would mix two models' answers in one world.
             _status(conn, "halted", _describe(error))
-            print(f"HALTED: {error}", file=sys.stderr)
+            meters.TICKS.add(1, {"jeve.outcome": "halt"})
+            log.error(
+                f"HALTED: {error}",
+                {"jeve.error_type": type(error).__name__, "jeve.exit_code": 7},
+            )
             return 7
         except ProviderBudgetError as error:
             # SIM-0003: the upstream cap is spent. Not weather — a two-minute
@@ -297,18 +353,30 @@ def _loop(
             delay = args.budget_wait
             if args.max_wait is not None and waited + delay > args.max_wait:
                 _status(conn, "halted", _describe(error))
-                print(
+                meters.TICKS.add(1, {"jeve.outcome": "halt"})
+                log.error(
                     f"HALTED: upstream budget has been out for {waited:.0f}s: {error}",
-                    file=sys.stderr,
+                    {
+                        "jeve.error_type": type(error).__name__,
+                        "jeve.waited_s": waited,
+                        "jeve.exit_code": 6,
+                    },
                 )
                 return 6
             _status(conn, "waiting_on_budget", _describe(error))
-            print(
+            meters.TICKS.add(1, {"jeve.outcome": "provider_budget"})
+            meters.WAIT_DURATION.record(delay, {"jeve.reason": "provider_budget"})
+            log.warn(
                 f"waiting on the upstream budget: {_describe(error)}; "
                 f"trying this tick again in {delay:.0f}s",
-                file=sys.stderr,
+                {
+                    "jeve.error_type": type(error).__name__,
+                    "jeve.delay_s": delay,
+                    "jeve.waited_s": waited,
+                },
             )
-            _sleep(delay, stop, conn)
+            with obs.span("sim.wait", {"jeve.wait_reason": "provider_budget"}):
+                _sleep(delay, stop, conn)
             continue
         except MODEL_WEATHER as error:
             # SIM-0002 / CORE-0004: a dead model is a paused world, not a dead
@@ -323,22 +391,42 @@ def _loop(
             waited = time.monotonic() - waiting_since
             if args.max_wait is not None and waited + delay > args.max_wait:
                 _status(conn, "halted", _describe(error))
-                print(
+                meters.TICKS.add(1, {"jeve.outcome": "halt"})
+                log.error(
                     f"HALTED: the model has not answered for {waited:.0f}s: {error}",
-                    file=sys.stderr,
+                    {
+                        "jeve.error_type": type(error).__name__,
+                        "jeve.waited_s": waited,
+                        "jeve.failures": failures,
+                        "jeve.exit_code": 6,
+                    },
                 )
                 return 6
             _status(conn, "waiting_on_model", _describe(error))
-            print(
+            meters.TICKS.add(1, {"jeve.outcome": "weather"})
+            meters.WAIT_DURATION.record(delay, {"jeve.reason": "model"})
+            log.warn(
                 f"waiting on the model (failure {failures}): {_describe(error)}; "
                 f"trying this tick again in {delay:.0f}s",
-                file=sys.stderr,
+                {
+                    "jeve.error_type": type(error).__name__,
+                    "jeve.failures": failures,
+                    "jeve.delay_s": delay,
+                    "jeve.waited_s": waited,
+                },
             )
-            _sleep(delay, stop, conn)
+            with obs.span(
+                "sim.wait",
+                {"jeve.wait_reason": "model", "jeve.failures": failures},
+            ):
+                _sleep(delay, stop, conn)
             continue
         if failures or budget_since:
             if failures:
-                print(f"the model is back after {failures} failed attempt(s)")
+                log.info(
+                    f"the model is back after {failures} failed attempt(s)",
+                    {"jeve.failures": failures},
+                )
             failures = 0
             budget_since = 0.0
             _status(conn, "running")
@@ -346,11 +434,23 @@ def _loop(
         totals.decisions += report.decisions
         totals.events.update(report.events)
         spent = time.monotonic() - started
-        _heartbeat(conn, lag_s=max(0.0, spent - pace.seconds_per_tick))
+        lag = max(0.0, spent - pace.seconds_per_tick)
+        meters.TICKS.add(1, {"jeve.outcome": "ok"})
+        meters.TICK_DURATION.record(spent, {"jeve.policy": args.policy})
+        # The advance is always one quantum of sim time, so the gap between that
+        # and the wall time it took is the whole question: is the world keeping up.
+        meters.TICK_LAG.record(lag, {"jeve.policy": args.policy})
+        meters.DECISIONS.add(report.decisions, {"jeve.policy": args.policy})
+        for kind in report.events:
+            meters.EVENTS.add(1, {"jeve.kind": kind})
+        _heartbeat(conn, lag_s=lag)
         _sleep(pace.seconds_per_tick - spent, stop, conn)
 
     _status(conn, "paused")
-    print("stopped on request; the world is at the end of its last complete tick")
+    log.info(
+        "stopped on request; the world is at the end of its last complete tick",
+        {"jeve.ticks": totals.ticks, "jeve.decisions": totals.decisions},
+    )
     return 0
 
 
@@ -386,6 +486,11 @@ def _report(
             f"{stats.live_calls} live, ${stats.live_cost_usd:.6f} spent this run "
             f"({args.calls})"
         )
+    # OBS-0001: the run summary stays `print`. It is a formatted terminal
+    # block — a leading blank line, an indented table — not a sequence of
+    # events, and routing it through the logger would put a few hundred
+    # near-empty records into Axiom per run for numbers the metrics already
+    # carry. `test_resume.py` greps its exact bytes, too.
     print(f"\nran {totals.ticks} ticks, {totals.decisions} decisions ({args.policy})")
     if args.verbose:
         print("\nevents:")
@@ -475,8 +580,18 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # OBS-0001. The `finally` covers every exit: the horizon, the four
+    # deliberate halts (4-7), a busy writer (3), and SIGTERM — which needs
+    # nothing special here, because the stop flag makes `_loop` return
+    # normally, so the flush lands after the last tick has committed.
+    obs.start("jeve-sim")
     try:
         return run(parse(argv))
     except db.WriterBusyError as error:
-        print(f"refusing to start: {error}", file=sys.stderr)
+        log.error(
+            f"refusing to start: {error}",
+            {"jeve.error_type": type(error).__name__, "jeve.exit_code": 3},
+        )
         return 3
+    finally:
+        obs.shutdown()

@@ -3,7 +3,7 @@
 Only variables the code actually reads are listed here — if a name is not in
 this table, setting it does nothing. Sources: `py/src/jeve/config.py`,
 `py/src/jeve/db.py`, `py/src/jeve/sim/daemon.py`, `py/src/jeve/sim/runner.py`,
-`py/src/jeve/tracing.py`.
+`py/src/jeve/tracing.py`, `py/src/jeve/obs/wiring.py`.
 
 ## Database
 
@@ -58,6 +58,29 @@ Spans carry OpenRouter's reported cost as `metrics.estimated_cost`, so a trace
 and the `spend_entries` ledger price a call the same way. A tracing failure is
 never fatal: it prints one line and latches off for the process.
 
+## Telemetry (`jeve.obs`, OBS-0001)
+
+Read by both the api and the sim. **Leaving `AXIOM_TOKEN` unset is the
+supported off state**: the OpenTelemetry SDK is never imported, no exporter is
+built, no thread starts and no socket opens. `make check` and every CI job run
+that way, which is what keeps "no network, no key" true.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `AXIOM_TOKEN` | unset | The switch. A Fly secret from Doppler `worker`; never in a committed file. |
+| `AXIOM_DOMAIN` | `api.axiom.co` | `api.eu.axiom.co` for the EU region. A `scheme://host:port` form is accepted so a local OTLP collector can stand in — see `make obs-probe`. |
+| `AXIOM_DATASET` | `jeve` | Traces **and** logs, via `X-Axiom-Dataset`. |
+| `AXIOM_METRICS_DATASET` | `jeve-metrics` | Metrics route through `X-Axiom-Metrics-Dataset` — a different header, so a separate variable. Must be created in Axiom as a *metrics* dataset. |
+| `JEVE_OTEL_SERVICE` | `jeve-api` / `jeve-sim` | Override; normally each process names itself. |
+| `JEVE_OTEL_SAMPLE_RATIO` | `1.0` | Parent-based ratio sampler. Turn it down if tick volume gets expensive. |
+| `JEVE_OTEL_METRIC_INTERVAL_S` | `60` | Metric export interval. |
+| `JEVE_OTEL_TIMEOUT_S` | `5` | Exporter timeout; also bounds the flush on shutdown, so an unreachable Axiom costs seconds, not a deploy. |
+
+Fly injects `FLY_MACHINE_ID`, `FLY_REGION` and `FLY_APP_NAME`; `jeve.obs`
+reads them for resource attributes and never sets them.
+`OTEL_RESOURCE_ATTRIBUTES` is honoured too — `Resource.create` merges it — so
+an operator can tag a run without a code change.
+
 ## Test hooks
 
 | Variable | Read by | Notes |
@@ -80,7 +103,8 @@ the codebase reads them; they authenticate the deploy jobs.
 Three projects, matching the `.env.*.example` files:
 
 * **app** — `NEXT_PUBLIC_JEVE_API` (build-time only)
-* **worker** — everything above for api + sim; synced to `fly secrets`
+* **worker** — everything above for api + sim, `AXIOM_TOKEN` included;
+  synced to `fly secrets`
 * **infra** — the CI/CD credentials
 
 ```bash

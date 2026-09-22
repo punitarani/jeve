@@ -189,7 +189,9 @@ jobs:
       - name: No credentials in the tree
         working-directory: .
         run: |
-          if git grep -nE 'sk-or-v1-[A-Za-z0-9]' -- ':!*.md'; then
+          # OpenRouter keys, and Axiom ingest tokens (OBS-0001).
+          if git grep -nE 'sk-or-v1-[A-Za-z0-9]|xa[a-z]t-[A-Za-z0-9]{10}' \
+               -- ':!*.md' ':!.env*'; then
             echo "::error::An API key is committed. Rotate it."
             exit 1
           fi

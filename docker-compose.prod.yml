@@ -39,6 +39,10 @@ services:
     environment:
       - JEVE_DATABASE_URL=postgresql://jeve:${POSTGRES_PASSWORD:-jeve}@postgres:5432/jeve
       - JEVE_CORS_ORIGINS=${JEVE_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      - AXIOM_TOKEN=${AXIOM_TOKEN:-}
+      - AXIOM_DOMAIN=${AXIOM_DOMAIN:-api.axiom.co}
+      - AXIOM_DATASET=${AXIOM_DATASET:-jeve}
+      - AXIOM_METRICS_DATASET=${AXIOM_METRICS_DATASET:-jeve-metrics}
       # The dialogue endpoint can spend; self-hosters may want it on.
       - JEVE_DIALOGUE_GENERATE=${JEVE_DIALOGUE_GENERATE:-on}
       - PYTHONPATH=/app/src
@@ -64,6 +68,10 @@ services:
     environment:
       - JEVE_DATABASE_URL=postgresql://jeve:${POSTGRES_PASSWORD:-jeve}@postgres:5432/jeve
       - JEVE_POLICY=jev
+      - AXIOM_TOKEN=${AXIOM_TOKEN:-}
+      - AXIOM_DOMAIN=${AXIOM_DOMAIN:-api.axiom.co}
+      - AXIOM_DATASET=${AXIOM_DATASET:-jeve}
+      - AXIOM_METRICS_DATASET=${AXIOM_METRICS_DATASET:-jeve-metrics}
       - JEVE_CALLS=record
       # The cache is the model_calls table; a cassette in a container is an
       # unbounded file on an ephemeral disk (LLM-0007).

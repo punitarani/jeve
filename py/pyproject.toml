@@ -9,6 +9,13 @@ dependencies = [
     "braintrust>=0.41",
     "fastapi>=0.115",
     "httpx>=0.28",
+    # OBS-0001: telemetry is hand-written against the OTel API. No
+    # opentelemetry-instrumentation-* packages: they monkey-patch at import
+    # time and would be a second way to produce a span. The OTLP/HTTP
+    # exporter rides `requests`, not httpx, so LLM-0004's ban stands.
+    "opentelemetry-api>=1.44",
+    "opentelemetry-exporter-otlp-proto-http>=1.44",
+    "opentelemetry-sdk>=1.44",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.9",
     "uvicorn[standard]>=0.34",
