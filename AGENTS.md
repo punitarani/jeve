@@ -386,6 +386,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### SIM-0004: the daemon outlives its database, and the night is a dial
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/sim/daemon.py`, `py/tests/test_daemon.py`  
+**Tags**: daemon, robustness, pacing, agent-decided
+
+Dead-time speedup is `JEVE_NIGHT_SPEEDUP` / `--night-speedup`, and losing the database is weather in the sense of SIM-0002: the daemon takes another connection and runs the same tick again, for ever, rather than exiting.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### WEB-0002: A voxel town on the landing page, as a view over a GL-free scene model
 
 **Status**: accepted (2026-09-20)  

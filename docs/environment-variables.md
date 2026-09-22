@@ -28,6 +28,13 @@ this table, setting it does nothing. Sources: `py/src/jeve/config.py`,
 The ladder is the guardrail; OpenRouter's account cap is the stop. A 402
 puts the daemon into `waiting_on_budget`, not a crash (SIM-0003).
 
+**These defaults are the development ones and they halt a long run.**
+`JEVE_RUN_CAP_USD=1` stops one process dead at a dollar, and the ladder is
+measured against *lifetime* ledger spend, so `JEVE_HALT_CEILING_USD=16` halts
+every future process too. `fly.toml` and `docker-compose.prod.yml` set the cap
+to `0` and the ladder to `10000` for exactly this reason; anything running for
+more than an afternoon wants the same, plus an account cap at OpenRouter.
+
 ## Daemon (`python -m jeve.sim`)
 
 | Variable | Flag | Default | Notes |
@@ -36,6 +43,7 @@ puts the daemon into `waiting_on_budget`, not a crash (SIM-0003).
 | `JEVE_CALLS` | `--calls` | `replay` | `record` for production — replay is the deterministic dev mode. |
 | `JEVE_CASSETTE` | `--cassette` | `py/fixtures/cassettes/golden.jsonl` | `off`/`none` disables the file; production uses the `model_calls` table. |
 | `JEVE_SIM_DAY_MINUTES` | `--day-minutes` | `24` | Wall minutes per sim day; `0` is flat-out (fixtures). |
+| `JEVE_NIGHT_SPEEDUP` | `--night-speedup` | `10` | How much faster than the open hours dead time passes (SIM-0004). Must be positive. At `60` a weeknight is 13 real seconds instead of 78, and costs nothing — nothing calls a model while the town is shut. |
 | `JEVE_DAILY_BUDGET_USD` | `--daily-budget` | `2` | Governor pauses the clock when the window's spend exceeds it. |
 | `JEVE_BUDGET_WAIT_S` | `--budget-wait` | `900` | Seconds between retries while OpenRouter says 402. |
 
