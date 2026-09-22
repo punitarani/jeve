@@ -816,6 +816,74 @@ export function buildVoxels(map: TownMap): Voxel[] {
     voxels.push({ x: cx, y: 0.75, z: cz, sx: 0.34, sy: 0.7, sz: 0.34, color: "#aaa595", ao: OPEN });
     voxels.push({ x: cx, y: 1.2, z: cz, sx: 0.2, sy: 0.3, sz: 0.2, color: "#9fd4f2", ao: OPEN });
   }
+
+  // -- the outskirts ---------------------------------------------------------
+  //
+  // Past the last real tile the town keeps going as meadow until the fog takes
+  // it: the same grass, in bands that grow coarser with distance so the far
+  // field is a few thousand boxes rather than tens of thousands, a tree here
+  // and there, and one slab beneath it all so the horizon is never void. None
+  // of this is in `map.tiles` — nobody walks out there; it only has to look
+  // like somewhere.
+  const grass = GROUND.grass ?? "#6fae58";
+  // One slab, centred on the town, deeper than any pan limit plus a screen of
+  // ground. Its top sits a hair under the tiles' tops so nothing z-fights.
+  voxels.push({
+    x: (map.width - 1) / 2,
+    y: -0.12,
+    z: (map.height - 1) / 2,
+    sx: 480,
+    sy: 0.2,
+    sz: 480,
+    color: mute(grass, 0.1),
+    ao: OPEN,
+  });
+
+  // The meadow is emitted in 4x4 cells on one lattice, so its bands can change
+  // granularity with distance and never leave a seam: within a few tiles of the
+  // town every cell is real tiles, further out one box does the work of
+  // sixteen, and furthest out it does sixty-four.
+  const OUTSKIRTS = 64;
+  const CELL = 4;
+  /** Distance in tiles from a cell's nearest corner to the map rectangle. */
+  const gap = (lo: number, size: number, span: number): number =>
+    lo + size <= 0 ? 1 - lo - size : lo >= span ? lo - span + 1 : 0;
+  const inMap = (tx: number, ty: number, size: number): boolean =>
+    tx + size > 0 && tx < map.width && ty + size > 0 && ty < map.height;
+  for (let my = -OUTSKIRTS; my < map.height + OUTSKIRTS; my += CELL) {
+    for (let mx = -OUTSKIRTS; mx < map.width + OUTSKIRTS; mx += CELL) {
+      const reach = Math.max(gap(mx, CELL, map.width), gap(my, CELL, map.height));
+      if (reach === 0) continue; // inside the map: the town loop owns these
+      const unit = reach <= 6 ? 1 : reach <= 24 ? 2 : CELL;
+      for (let sy = 0; sy < CELL; sy += unit) {
+        for (let sx = 0; sx < CELL; sx += unit) {
+          const tx = mx + sx;
+          const ty = my + sy;
+          if (inMap(tx, ty, unit)) continue;
+          const cx = tx + unit / 2 - 0.5;
+          const cz = ty + unit / 2 - 0.5;
+          box(null, cx, -0.1, cz, unit, 0.2, unit, jitter(grass, 0.09, tx, ty, 1));
+          // A tree now and then, sparser the further out — the same three boxes
+          // the town's own trees are made of, at one cell to a cell.
+          const treeOdds = unit === 1 ? 0.02 : 0.055;
+          if (unit <= 2 && hash2(tx, ty, 61) < treeOdds) {
+            const size = 0.85 + hash2(tx, ty, 9) * 0.4;
+            const leaf = jitter("#3d8a4b", 0.1, tx, ty, 4);
+            box(null, cx, 0.5 * size, cz, 0.26, 1.0 * size, 0.26, "#6f4d31");
+            box(null, cx, 1.3 * size, cz, 1.1 * size, 0.8 * size, 1.1 * size, leaf);
+            box(null, cx, 1.95 * size, cz, 0.68 * size, 0.5 * size, 0.68 * size, shade(leaf, 0.14));
+          } else if (unit === 1 && hash2(tx, ty, 63) < 0.11) {
+            // A tuft or a flower, as on the town's lawns.
+            const ox = (hash2(tx, ty, 22) - 0.5) * 0.6;
+            const oz = (hash2(tx, ty, 23) - 0.5) * 0.6;
+            const flower = hash2(tx, ty, 24) > 0.7;
+            box(null, tx + ox, 0.06, ty + oz, 0.16, 0.12, 0.16, flower ? "#f2e27a" : "#4f9447");
+          }
+        }
+      }
+    }
+  }
+
   return voxels;
 }
 
