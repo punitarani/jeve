@@ -338,6 +338,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### OPS-0003: Deploy the web app after the backend, never before it
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `.github/workflows/ci.yml`, `scripts/check_deploy_order.py`  
+**Tags**: deployment, ci, contracts, agent-decided
+
+`deploy-web` needs `[web, contracts, deploy-backend]`, so the page ships only once the API it talks to is live.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### SIM-0001: One run loop, a horizon, a single-writer lock, and a governor that pauses
 
 **Status**: accepted (2026-09-20)  
