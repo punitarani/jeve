@@ -148,20 +148,20 @@ test("filtering to one org narrows the timeline", async ({ page }) => {
     .toEqual(["thirdrail"]);
 });
 
-test("encounters start filtered out, and the chip puts them back", async ({
+test("encounters start filtered out, and the menu puts them back", async ({
   page,
 }) => {
-  const chip = page.getByTestId("kind-encounter");
-  await expect(chip).toBeVisible();
-
   // The panel opens on signal: staff small-talk is offered, not shown.
-  await expect(chip).toHaveAttribute("aria-pressed", "false");
+  await page.getByRole("button", { name: "event kinds" }).click();
+  const item = page.getByTestId("menu-kind-encounter");
+  await expect(item).toBeVisible();
+  await expect(item).toHaveAttribute("aria-checked", "false");
   await expect(page.locator('.ev[data-kind="encounter"]')).toHaveCount(0);
 
   // Counted on the kind itself rather than on the whole lane, whose total
   // scrollback can move underneath a comparison.
-  await chip.click();
-  await expect(chip).toHaveAttribute("aria-pressed", "true");
+  await item.click();
+  await expect(item).toHaveAttribute("aria-checked", "true");
   await expect
     .poll(async () => page.locator('.ev[data-kind="encounter"]').count(), {
       timeout: 10_000,
@@ -169,7 +169,7 @@ test("encounters start filtered out, and the chip puts them back", async ({
     .toBeGreaterThan(0);
 
   // And it is reversible.
-  await chip.click();
+  await item.click();
   await expect
     .poll(async () => page.locator('.ev[data-kind="encounter"]').count(), {
       timeout: 10_000,
@@ -226,7 +226,9 @@ test("rows carry a readable line, not just the kind name", async ({ page }) => {
   // Everything on, so the encounter rows are on screen too. Scoped by testid:
   // Playwright matches an accessible name as a substring, and "tallybird"
   // contains "all", so a name query here would hit every org's row.
-  await page.getByTestId("filter-all").click();
+  await page.getByRole("button", { name: "event kinds" }).click();
+  await page.getByTestId("menu-filter-all").click();
+  await page.keyboard.press("Escape");
 
   // Where it happened and what it was about, not just the word "encounter".
   await expect(page.locator('.ev[data-kind="encounter"]').first()).toContainText(
