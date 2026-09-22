@@ -89,7 +89,12 @@ export function Dashboard({
 	const [failed, setFailed] = useState<string | null>(null);
 	const [selected, setSelected] = useState<number | null>(null);
 	const [chain, setChain] = useState<Map<number, number> | null>(null);
-	const [org, setOrg] = useState<string | null>(null);
+	// The firms the timeline is narrowed to; none picked means every firm.
+	// A set, not one id: with a dozen firms the question is usually "the
+	// vendor and the two clients its outage reached", not one of them.
+	const [pickedOrgs, setPickedOrgs] = useState<ReadonlySet<string>>(
+		() => new Set(),
+	);
 	// The hidden set, not the selected set: the kinds only become known once
 	// the events have arrived, so "a kind nobody ruled out is visible" has to
 	// be the default, and the initial state has to be a literal.
@@ -237,12 +242,28 @@ export function Dashboard({
 		});
 	}, []);
 
+	// A second click on the same firm takes it back out; taking the last one
+	// out is the same as never having picked.
+	const togglePickedOrg = useCallback((id: string) => {
+		setPickedOrgs((prev) => {
+			const next = new Set(prev);
+			if (!next.delete(id)) next.add(id);
+			return next;
+		});
+	}, []);
+
 	const down = state.modules.filter((m) => m.status === "down");
 	// Richest first: with a dozen firms the table is a league table, and the
 	// one sinking towards an insolvency warning is at the bottom where it
 	// reads as such. Colours come with the firm on `/state` (CORE-0012).
 	const orgs = useMemo(
 		() => [...state.orgs].sort((a, b) => b.cash_cents - a.cash_cents),
+		[state.orgs],
+	);
+	// Each firm's colour for the timeline's org column: the same one its
+	// building and its people are drawn in, from `/state` (CORE-0012).
+	const palettes = useMemo(
+		() => Object.fromEntries(state.orgs.map((o) => [o.id, o.palette.body])),
 		[state.orgs],
 	);
 	// Reversed here, at the one boundary where reading order matters. The clock
@@ -253,7 +274,11 @@ export function Dashboard({
 		() =>
 			events
 				.filter((event) => {
-					if (org !== null && event.org_id !== org) return false;
+					if (
+						pickedOrgs.size > 0 &&
+						(event.org_id === null || !pickedOrgs.has(event.org_id))
+					)
+						return false;
 					if (!hidden.has(event.kind)) return true;
 					// A cascade is only legible whole. An event in the selected chain
 					// stays on screen even when its kind is switched off, or following
@@ -261,7 +286,7 @@ export function Dashboard({
 					return chain?.has(event.seq) ?? false;
 				})
 				.reverse(),
-		[events, org, hidden, chain],
+		[events, pickedOrgs, hidden, chain],
 	);
 
 	// The trigger is an effect rather than the observer callback, because the
@@ -319,7 +344,28 @@ export function Dashboard({
 					<CardHeader>
 						<CardTitle className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
 							Orgs
+							{pickedOrgs.size > 0 && (
+								<span className="normal-case tracking-normal">
+									{" "}
+									· timeline narrowed to {pickedOrgs.size}
+								</span>
+							)}
 						</CardTitle>
+						{pickedOrgs.size > 0 && (
+							<CardAction>
+								{/* Not "clear": the cascade's clear button is found by name.
+								    Not `org-…` either: the specs gather the rows by that prefix. */}
+								<Button
+									variant="link"
+									size="xs"
+									className="h-auto p-0 text-[var(--mark)]"
+									data-testid="orgs-every"
+									onClick={() => setPickedOrgs(new Set())}
+								>
+									every org
+								</Button>
+							</CardAction>
+						)}
 					</CardHeader>
 					<CardContent>
 						<Table>
@@ -340,39 +386,57 @@ export function Dashboard({
 								</TableRow>
 							</TableHeader>
 							<TableBody>
-								{orgs.map((o) => (
-									<TableRow
-										key={o.id}
-										className="border-b-0 hover:bg-transparent"
-										data-testid={`org-${o.id}`}
-									>
-										{/* whitespace-normal: the only text column — wrapping the name keeps
-										    all four columns inside a phone-width card. */}
-										<TableCell className="whitespace-normal px-1.5 py-1.5">
-											<span
-												className="swatch-sm"
-												style={{ background: o.palette.body }}
-											/>
-											{o.name}
-										</TableCell>
-										<TableCell className="num px-1.5 py-1.5">
-											{money(o.cash_cents)}
-										</TableCell>
-										<TableCell className="num px-1.5 py-1.5">
-											{money(o.receivable_cents)}
-										</TableCell>
-										<TableCell className="num px-1.5 py-1.5">
-											<Button
-												variant="link"
-												size="xs"
-												className="h-auto p-0 text-[var(--mark)]"
-												onClick={() => setOrg(org === o.id ? null : o.id)}
-											>
-												{org === o.id ? "clear" : "only"}
-											</Button>
-										</TableCell>
-									</TableRow>
-								))}
+								{orgs.map((o) => {
+									const picked = pickedOrgs.has(o.id);
+									return (
+										<TableRow
+											key={o.id}
+											className="border-b-0 hover:bg-transparent data-[picked=yes]:bg-muted/60"
+											data-testid={`org-${o.id}`}
+											data-picked={picked ? "yes" : "no"}
+											data-archetype={o.archetype}
+										>
+											{/* whitespace-normal: the only text column — wrapping the name keeps
+											    all four columns inside a phone-width card. */}
+											<TableCell className="whitespace-normal px-1.5 py-1.5">
+												<span
+													className="swatch-sm"
+													style={{ background: o.palette.body }}
+												/>
+												{o.name}{" "}
+												{/* Which flows the firm takes part in (CORE-0012): the
+												    vendor, its clients, the shops. Read from the state,
+												    never a list written here. */}
+												<Badge
+													variant="outline"
+													className="ml-1 h-4 px-1.5 text-[10px] font-normal text-muted-foreground"
+												>
+													{o.archetype.replaceAll("_", " ")}
+												</Badge>
+											</TableCell>
+											<TableCell className="num px-1.5 py-1.5">
+												{money(o.cash_cents)}
+											</TableCell>
+											<TableCell className="num px-1.5 py-1.5">
+												{money(o.receivable_cents)}
+											</TableCell>
+											<TableCell className="num px-1.5 py-1.5">
+												{/* One name whichever way it is about to go, so it reads
+												    as a toggle to a screen reader and to a test alike;
+												    `aria-pressed` carries the state. */}
+												<Button
+													variant="link"
+													size="xs"
+													className="h-auto p-0 text-[var(--mark)] aria-pressed:font-semibold aria-pressed:underline"
+													aria-pressed={picked}
+													onClick={() => togglePickedOrg(o.id)}
+												>
+													only
+												</Button>
+											</TableCell>
+										</TableRow>
+									);
+								})}
 							</TableBody>
 						</Table>
 						<p className="muted fineprint">
@@ -529,6 +593,7 @@ export function Dashboard({
 							selected={selected}
 							chain={chain}
 							onSelect={select}
+							palettes={palettes}
 							laneRef={laneRef}
 							footer={
 								// Always mounted, whatever it says: the observer attaches to

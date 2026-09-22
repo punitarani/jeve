@@ -37,7 +37,7 @@ const VP = {
 } as const;
 type Viewport = keyof typeof VP;
 
-type Building = { org_id: string; zone: string; name: string; x0: number; y0: number; x1: number; y1: number };
+type Building = { org_id: string; zone: string; name: string; x0: number; y0: number; x1: number; y1: number; floors: number };
 const town: { buildings: Building[] } = await fetch(`${API}/world/map`)
   .then((r) => r.json())
   .catch(() => ({ buildings: [] }));
@@ -107,6 +107,7 @@ async function shot(page: any, name: string, vp: string, route: string, note: st
       label: st?.label, seq: st?.seq, people: st?.people, walking: st?.walking, visible: st?.visible,
       live: st?.live, replaying: st?.replaying, software: st?.software ?? null,
       minute: st?.minute, sky: st?.sky, sunIntensity: st?.sunIntensity, lamps: st?.lamps,
+      levelCut: st?.levelCut ?? null,
     }) + "\n",
   );
   console.log(file, fps, "fps", st?.label ?? "");
@@ -269,6 +270,44 @@ if (phase === "main") {
     await page.waitForTimeout(1500);
     await focusTile(page, [(town as any).width / 2, (town as any).height / 2], 8);
     await shot(page, "14-plaza-close", "d1440", "/world", "the fountain, benches and lamps, from close to");
+    await page.context().close();
+  }
+  // The level cut (WEB-0007): the district cut at the ground, from close to
+  // a building with storeys, so the rooms the slabs hid are the picture.
+  {
+    const page = await open("d1440");
+    await page.goto(`${WEB}/world`);
+    await ready(page, "explore");
+    await page.waitForTimeout(1500);
+    await page.getByTestId("level-cut-0").click();
+    const tall = town.buildings.find((b) => b.floors > 1) ?? town.buildings[0];
+    if (tall) await focusBuilding(page, tall.org_id);
+    await page.waitForTimeout(600);
+    await shot(page, "15-level-cut-ground", "d1440", "/world", `cut at the ground floor${tall ? `, ${tall.org_id} from close to` : ""}`);
+    await page.context().close();
+  }
+  // The hero's tour descends a building storey by storey (WEB-0007): caught
+  // on a stop below the top floor, where the cut is visibly cutting. The
+  // tour sets the cut and the snapshot reports it, so there is nothing to
+  // drive: wait for it. Seven seconds a stop, the district first.
+  {
+    const page = await open("d1440");
+    await page.goto(`${WEB}/`);
+    await ready(page, "hero");
+    const tallest = Math.max(1, ...town.buildings.map((b) => b.floors));
+    await page
+      .waitForFunction(
+        (top: number) => {
+          const cut = (window as any).__jeveWorld?.hero?.status().levelCut;
+          return typeof cut === "number" && cut < top;
+        },
+        tallest - 1,
+        { timeout: 120000 },
+      )
+      .catch(() => console.log("the tour never reached a storey below the top"));
+    // Let the camera ease in on the stop.
+    await page.waitForTimeout(2500);
+    await shot(page, "16-tour-descending", "d1440", "/", "the hero mid-tour, cut at a storey below the top");
     await page.context().close();
   }
 }

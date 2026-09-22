@@ -73,11 +73,18 @@ export const fetchKindsBetween = (
 export const fetchCausal = (seq: number, direction: "up" | "down" = "down") =>
   get(`/causal/${seq}?direction=${direction}`, CausalChain);
 /**
- * Staff, all of them: the API pages at a hundred by default, and the district
- * has more than twice that. Five hundred is its ceiling.
+ * Staff matching a fragment of a name or a role, narrowed to a firm or a
+ * team when asked: two hundred and twenty-five people do not fit in a list,
+ * so the panel searches and the API caps what it sends back. The empty
+ * query is the first `limit` of the roster, in the API's own order.
  */
-export const fetchPersons = (org?: string) =>
-  get(`/persons?limit=500${org ? `&org=${org}` : ""}`, PersonsResponse);
+export const searchPersons = (q: string, org?: string, team?: string, limit = 30) => {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (q) params.set("q", q);
+  if (org) params.set("org", org);
+  if (team) params.set("team", team);
+  return get(`/persons?${params.toString()}`, PersonsResponse);
+};
 export const fetchDecisions = (personId: string) =>
   get(`/persons/${encodeURIComponent(personId)}/decisions`, PersonDecisions);
 export const fetchEconomics = () => get("/economics", Economics);

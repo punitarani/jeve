@@ -481,13 +481,18 @@ export class WorldModel {
     sky: string;
     sunIntensity: number;
     lamps: number;
+    /** The storey the buildings are cut at; null when nothing is cut away. */
+    levelCut: number | null;
     agents: {
       id: string;
       x: number;
       y: number;
       floor: number;
       zone: string;
+      /** On the map at all: not at home. Unchanged by the level cut. */
       visible: boolean;
+      /** Drawn and pickable: on the map, and on a floor the cut leaves in view. */
+      drawn: boolean;
       walking: boolean;
     }[];
   } {
@@ -499,6 +504,7 @@ export class WorldModel {
       floor: w.floor,
       zone: w.zone,
       visible: w.visible,
+      drawn: w.visible && this.shown(w),
       walking: w.walking,
     }));
     return {
@@ -513,6 +519,7 @@ export class WorldModel {
       sky: sky.top,
       sunIntensity: Math.round(sky.sunIntensity * 1000) / 1000,
       lamps: Math.round(sky.lamps * 1000) / 1000,
+      levelCut: this.levelCut,
       agents,
     };
   }

@@ -33,7 +33,26 @@ type Status = {
   glOk: boolean;
   software: string | null;
   drawing: boolean;
-  agents: { id: string; x: number; y: number; floor: number; zone: string; visible: boolean }[];
+  /** The storey the buildings are cut at; null when nothing is cut away. */
+  levelCut: number | null;
+  agents: {
+    id: string;
+    x: number;
+    y: number;
+    floor: number;
+    zone: string;
+    /** On the map: not at home. The level cut does not change it. */
+    visible: boolean;
+    /** Drawn and pickable: on the map, and on a floor the cut leaves in view. */
+    drawn: boolean;
+    walking: boolean;
+  }[];
+};
+
+type Map = {
+  width: number;
+  height: number;
+  buildings: { org_id: string; floors: number }[];
 };
 
 /**
@@ -57,10 +76,25 @@ async function state(page: Page): Promise<State> {
   return (await response.json()) as State;
 }
 
-async function townMap(page: Page): Promise<{ width: number; height: number }> {
+async function townMap(page: Page): Promise<Map> {
   const response = await page.request.get(`${await apiOrigin(page)}/world/map`);
   expect(response.ok(), "GET /world/map").toBe(true);
-  return (await response.json()) as { width: number; height: number };
+  return (await response.json()) as Map;
+}
+
+/** Where a building is drawn, from the explorer's own model: a click there opens its books. */
+async function buildingAt(page: Page, orgId: string): Promise<{ x: number; y: number }> {
+  const at = await page.evaluate((id) => {
+    const handle = (window as unknown as {
+      __jeveWorld: Record<
+        string,
+        { screenPositionOfBuilding(id: string): { x: number; y: number } | null }
+      >;
+    }).__jeveWorld.explore!;
+    return handle.screenPositionOfBuilding(id);
+  }, orgId);
+  expect(at, `${orgId} is on screen`).not.toBeNull();
+  return at!;
 }
 
 async function status(page: Page, mode: "hero" | "explore"): Promise<Status> {
@@ -255,17 +289,8 @@ test("clicking a building shows the firm's books", async ({ page }) => {
   const orgs = (await state(page)).orgs;
   const org = orgs.find((o) => o.id === "ledgerline") ?? orgs[0];
   expect(org, "the roster has a firm").toBeDefined();
-  const at = await page.evaluate((id) => {
-    const handle = (window as unknown as {
-      __jeveWorld: Record<
-        string,
-        { screenPositionOfBuilding(id: string): { x: number; y: number } | null }
-      >;
-    }).__jeveWorld.explore!;
-    return handle.screenPositionOfBuilding(id);
-  }, org!.id);
-  expect(at).not.toBeNull();
-  await page.getByTestId("world-canvas").click({ position: { x: at!.x, y: at!.y } });
+  const at = await buildingAt(page, org!.id);
+  await page.getByTestId("world-canvas").click({ position: { x: at.x, y: at.y } });
 
   const panel = page.getByTestId("org-panel");
   await expect(panel).toBeVisible();
@@ -310,4 +335,95 @@ test("dragging pans the map instead of selecting", async ({ page }) => {
     .toBeGreaterThan(120);
   // A drag is not a click: nothing got selected.
   await expect(page.getByTestId("world-hint")).toBeVisible();
+});
+
+test("the level cut: the ground floor only, then everything again", async ({ page }) => {
+  await page.goto("/world");
+  await ready(page, "explore");
+
+  // The control offers every storey the map has, highest first, down to the
+  // ground, and starts on everything.
+  const map = await townMap(page);
+  const tallest = Math.max(...map.buildings.map((b) => b.floors));
+  const group = page.getByTestId("level-cut");
+  await expect(group.getByTestId("level-cut-all")).toHaveAttribute("aria-pressed", "true");
+  for (let floor = 1; floor < tallest; floor++) {
+    await expect(group.getByTestId(`level-cut-${floor}`)).toBeVisible();
+  }
+  await expect(group.getByTestId(`level-cut-${tallest}`)).toHaveCount(0);
+
+  await group.getByTestId("level-cut-0").click();
+  await expect(group.getByTestId("level-cut-0")).toHaveAttribute("aria-pressed", "true");
+  await expect(group.getByTestId("level-cut-all")).toHaveAttribute("aria-pressed", "false");
+
+  // The cut is model state (WEB-0007): what is drawn and what can be clicked
+  // read it, so it holds with no picture at all. Nobody is sent home by it —
+  // on the map is one thing, in view another — and whoever it takes out of
+  // view is upstairs.
+  const cut = await status(page, "explore");
+  expect(cut.levelCut).toBe(0);
+  const drawn = cut.agents.filter((a) => a.drawn);
+  expect(drawn.every((a) => a.visible && a.floor === 0)).toBe(true);
+  const hidden = cut.agents.filter((a) => a.visible && !a.drawn);
+  expect(hidden.every((a) => a.floor > 0)).toBe(true);
+  expect(drawn.length + hidden.length).toBe(cut.visible);
+  // Somebody the cut hides cannot be clicked: their pixel is not reported.
+  if (hidden[0] !== undefined) {
+    const at = await page.evaluate((id) => {
+      const handle = (window as unknown as {
+        __jeveWorld: Record<string, { screenPositionOf(id: string): unknown }>;
+      }).__jeveWorld.explore!;
+      return handle.screenPositionOf(id);
+    }, hidden[0].id);
+    expect(at).toBeNull();
+  }
+
+  await group.getByTestId("level-cut-all").click();
+  await expect(group.getByTestId("level-cut-all")).toHaveAttribute("aria-pressed", "true");
+  const whole = await status(page, "explore");
+  expect(whole.levelCut).toBeNull();
+  expect(whole.agents.filter((a) => a.visible && !a.drawn)).toHaveLength(0);
+});
+
+test("a team row in the firm's panel cuts the building at that team's floor", async ({
+  page,
+}) => {
+  await page.goto("/world");
+  await ready(page, "explore");
+
+  // A building with storeys, if the district has one; any building otherwise.
+  const map = await townMap(page);
+  const building = map.buildings.find((b) => b.floors > 1) ?? map.buildings[0];
+  expect(building, "the map has a building").toBeDefined();
+  const at = await buildingAt(page, building!.org_id);
+  await page.getByTestId("world-canvas").click({ position: { x: at.x, y: at.y } });
+  const panel = page.getByTestId("org-panel");
+  await expect(panel).toHaveAttribute("data-org", building!.org_id);
+
+  // A team is a floor (WORLD-0006). The one highest up: its floor is the cut
+  // that says the most, since it is the only one that leaves the whole
+  // building standing while still being a choice.
+  const rows = panel.getByTestId("org-team");
+  expect(await rows.count()).toBeGreaterThan(0);
+  const floors = await rows.evaluateAll((els) =>
+    els.map((el) => Number((el as HTMLElement).dataset.floor)),
+  );
+  const top = Math.max(...floors);
+  expect(top).toBe(building!.floors - 1);
+  const row = rows.nth(floors.indexOf(top));
+  await row.click();
+  await expect(row.getByRole("button")).toHaveAttribute("aria-pressed", "true");
+  // The control in the strip follows, and so does the model.
+  await expect(page.getByTestId(`level-cut-${top}`)).toHaveAttribute("aria-pressed", "true");
+  await expect
+    .poll(async () => (await status(page, "explore")).levelCut, { timeout: 5_000 })
+    .toBe(top);
+
+  // Pressed again, it puts the cut back.
+  await row.click();
+  await expect(row.getByRole("button")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByTestId("level-cut-all")).toHaveAttribute("aria-pressed", "true");
+  await expect
+    .poll(async () => (await status(page, "explore")).levelCut, { timeout: 5_000 })
+    .toBeNull();
 });

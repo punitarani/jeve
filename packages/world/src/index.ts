@@ -63,11 +63,17 @@ export type WorldHandle = {
   paletteOf(orgId: string): Palette | null;
   /**
    * Cut the buildings at storey `n`: every floor above it is not drawn, and
-   * neither are the people on it. Null shows everything. There is no control
-   * for it yet; it is here for the console, for scripts, and for the next phase.
+   * neither are the people on it. Null shows everything. The explorer's
+   * segmented control drives it; the hero's tour drives its own (each mount
+   * has a model of its own, so neither reaches the other).
    */
   setLevelCut(n: number | null): void;
   readonly levelCut: number | null;
+  /**
+   * How many storeys the tallest building has, from the map this world
+   * holds: what a level-cut control offers. 0 before the map has arrived.
+   */
+  maxFloors(): number;
 };
 
 declare global {
@@ -85,6 +91,36 @@ const TOPIC_WORDS: Record<string, string> = {
 };
 
 type Bubble = { element: HTMLDivElement; personId: string; until: number };
+
+/**
+ * One stop of the hero's tour: where to look, and how the buildings are cut
+ * while looking. A storey stop cuts at its own floor, so the camera looks
+ * into the room rather than at the slab over it; the district and a
+ * single-storey building are seen whole.
+ */
+type Stop = ViewTarget & { cut: number | null };
+
+/**
+ * The tour: the whole district first, then each building in the order the
+ * map lists them, however many there are. A building with storeys is visited
+ * once per floor from the top down, cut at that floor for the stop; the next
+ * stop puts the cut back (to null, or to its own floor). A building's stop is
+ * framed to its width.
+ */
+function tourOf(map: TownMap, whole: ViewTarget): Stop[] {
+  return [
+    { ...whole, cut: null },
+    ...map.buildings.flatMap((b): Stop[] => {
+      const at = {
+        x: (b.x0 + b.x1) / 2,
+        z: (b.y0 + b.y1) / 2,
+        span: Math.max(19, b.x1 - b.x0 + 9),
+      };
+      if (b.floors <= 1) return [{ ...at, cut: null }];
+      return Array.from({ length: b.floors }, (_, i) => ({ ...at, cut: b.floors - 1 - i }));
+    }),
+  ];
+}
 
 /** A node as the payload carries it. The floor is always sent; the type admits its absence so an older log still replays. */
 type Step = [number, number] | [number, number, number];
@@ -134,7 +170,7 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
   let stream: EventSource | null = null;
   let frameTimer: ReturnType<typeof setTimeout> | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
-  let tour: ViewTarget[] = [];
+  let tour: Stop[] = [];
   let tourIndex = 0;
   let tourNextAt = 0;
   const bubbles: Bubble[] = [];
@@ -191,8 +227,10 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
       if (payload.raised_by) say(payload.raised_by, `fix ${payload.module_id}!`, now);
       const where = model.walkers.get(payload.raised_by ?? "");
       if (where && options.mode === "hero") {
-        // Something happened: go and look at it.
+        // Something happened: go and look at it — cut to their floor, or the
+        // storeys over them would hide it. The next stop resets the cut.
         view.lookAt({ x: where.x, z: where.y, span: 15 });
+        model.levelCut = where.floor;
         tourNextAt = now + 6500;
       }
     }
@@ -219,7 +257,10 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
     if (disposed) return;
     if (options.mode === "hero" && tour.length > 0 && now >= tourNextAt) {
       const stop = tour[tourIndex % tour.length];
-      if (stop !== undefined) view.lookAt(stop);
+      if (stop !== undefined) {
+        view.lookAt(stop);
+        model.levelCut = stop.cut;
+      }
       tourIndex++;
       tourNextAt = now + 7000;
     }
@@ -346,6 +387,9 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
     get levelCut() {
       return model.levelCut;
     },
+    maxFloors() {
+      return Math.max(0, ...(model.map?.buildings.map((b) => b.floors) ?? []));
+    },
   };
 
   const observer = new ResizeObserver(() => view.resize());
@@ -369,17 +413,8 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
       if (disposed) return;
       model.setMap(map);
       view.build(map);
-      // The whole district, then each building in the order the map lists
-      // them, however many there are. A building's stop is framed to its width.
       const whole = { x: map.width / 2, z: map.height / 2, span: view.spanOf(map) + 1 };
-      tour = [
-        whole,
-        ...map.buildings.map((b) => ({
-          x: (b.x0 + b.x1) / 2,
-          z: (b.y0 + b.y1) / 2,
-          span: Math.max(19, b.x1 - b.x0 + 9),
-        })),
-      ];
+      tour = tourOf(map, whole);
       view.lookAt(whole);
 
       const frame = await getJson("/world/agents", AgentsFrame);

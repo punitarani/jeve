@@ -26,8 +26,12 @@ import {
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 const MOODS = ["stressed", "flat", "content", "upbeat"];
+
+/** The level-cut control's value for a cut: "all" for none, else the floor. */
+const cutValue = (cut: number | null): string => (cut === null ? "all" : String(cut));
 
 /** Floors are counted from the ground, as a lift button would. */
 function floorWord(floor: number): string {
@@ -51,6 +55,13 @@ export function WorldExplorer() {
 	const [status, setStatus] = useState<WorldStatus | null>(null);
 	const [agentId, setAgentId] = useState<string | null>(null);
 	const [orgId, setOrgId] = useState<string | null>(null);
+	// The storey the buildings are cut at (WEB-0007): the model's, mirrored
+	// here so the control and the team rows can show it. Null cuts nothing.
+	const [cut, setCut] = useState<number | null>(null);
+	const applyCut = (next: number | null) => {
+		setCut(next);
+		world.current?.setLevelCut(next);
+	};
 
 	useEffect(() => {
 		if (container.current === null) return;
@@ -87,6 +98,12 @@ export function WorldExplorer() {
 	const colorOf = (id: string): string =>
 		world.current?.paletteOf(id)?.body ?? ORG_COLORS[id] ?? "#999";
 
+	// Highest storey first, as a lift's buttons read, down to the ground; the
+	// map says how many there are, so a taller district needs no change here.
+	// Read on each status update, which is how the map's arrival reaches it.
+	const floors = world.current?.maxFloors() ?? 0;
+	const levels = Array.from({ length: Math.max(0, floors - 1) }, (_, i) => floors - 1 - i);
+
 	return (
 		<main className="world-page">
 			<header className="strip">
@@ -98,6 +115,49 @@ export function WorldExplorer() {
 				</span>
 				<span className="muted">
 					drag to pan · scroll to zoom · click anyone
+				</span>
+				<span className="inline-flex items-center gap-2">
+					<span className="muted">cut at</span>
+					{/* One pressed item, always: a second press on the pressed one
+					    would report an empty value, and is ignored. */}
+					<ToggleGroup
+						variant="outline"
+						size="sm"
+						spacing={0}
+						value={[cutValue(cut)]}
+						onValueChange={(next) => {
+							const value = next[0];
+							if (value === undefined) return;
+							applyCut(value === "all" ? null : Number(value));
+						}}
+						aria-label="storeys shown"
+						data-testid="level-cut"
+					>
+						<ToggleGroupItem
+							value="all"
+							className="h-6 px-2 text-[11px] font-normal"
+							data-testid="level-cut-all"
+						>
+							All
+						</ToggleGroupItem>
+						{levels.map((floor) => (
+							<ToggleGroupItem
+								key={floor}
+								value={String(floor)}
+								className="h-6 px-2 text-[11px] font-normal"
+								data-testid={`level-cut-${floor}`}
+							>
+								{floor}
+							</ToggleGroupItem>
+						))}
+						<ToggleGroupItem
+							value="0"
+							className="h-6 px-2 text-[11px] font-normal"
+							data-testid="level-cut-0"
+						>
+							G
+						</ToggleGroupItem>
+					</ToggleGroup>
 				</span>
 				<Link href="/" className="muted push-right">
 					← timeline
@@ -119,7 +179,12 @@ export function WorldExplorer() {
 									colorOf={colorOf}
 								/>
 							) : orgId !== null ? (
-								<OrgPanel id={orgId} tick={status?.tick ?? 0} />
+								<OrgPanel
+									id={orgId}
+									tick={status?.tick ?? 0}
+									cut={cut}
+									onPickFloor={applyCut}
+								/>
 							) : (
 								<Card size="sm" data-testid="world-hint">
 									<CardHeader>
@@ -413,7 +478,17 @@ function Imagined({ seq }: { seq: number }) {
 	);
 }
 
-function OrgPanel({ id, tick }: { id: string; tick: number }) {
+function OrgPanel({
+	id,
+	tick,
+	cut,
+	onPickFloor,
+}: {
+	id: string;
+	tick: number;
+	cut: number | null;
+	onPickFloor: (floor: number | null) => void;
+}) {
 	const { data, error } = useDetail<Org>(
 		`/orgs/${encodeURIComponent(id)}`,
 		OrgDetail,
@@ -466,15 +541,31 @@ function OrgPanel({ id, tick }: { id: string; tick: number }) {
 					</dd>
 				</dl>
 				<h4>Teams, by floor</h4>
+				{/* A team is a floor (WORLD-0006), so a team row is a level cut
+				    (WEB-0007): clicking one takes the storeys above it off, and the
+				    floor the team works on is the one in view — the same cut as the
+				    control in the strip, which follows. Pressed again, it puts the
+				    cut back. */}
 				<ul className="traits" data-testid="org-teams">
-					{data.teams.map((team) => (
-						<li key={team.id} data-testid="org-team">
-							{team.name}{" "}
-							<span className="muted">
-								{floorWord(team.floor)} · {team.present} of {team.headcount} in
-							</span>
-						</li>
-					))}
+					{data.teams.map((team) => {
+						const pressed = cut === team.floor;
+						return (
+							<li key={team.id} data-testid="org-team" data-floor={team.floor}>
+								<button
+									type="button"
+									aria-pressed={pressed}
+									onClick={() => onPickFloor(pressed ? null : team.floor)}
+									className="w-full rounded-md px-1.5 py-0.5 text-left hover:bg-muted aria-pressed:bg-muted aria-pressed:text-[var(--mark)]"
+								>
+									{team.name}{" "}
+									<span className="muted">
+										{floorWord(team.floor)} · {team.present} of {team.headcount}{" "}
+										in
+									</span>
+								</button>
+							</li>
+						);
+					})}
 				</ul>
 			</CardContent>
 		</Card>

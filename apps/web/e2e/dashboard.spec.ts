@@ -140,21 +140,42 @@ test("the primary flow: click an outage and follow what it caused", async ({
 test("a person's decisions show what was chosen and the draw behind it", async ({
   page,
 }) => {
-  const select = page.getByTestId("person-select");
-  await expect(select).toBeVisible();
-  await select.click();
+  const search = page.getByTestId("person-select");
+  await expect(search).toBeVisible();
+  await search.click();
 
-  // Base UI renders the select's items as a listbox overlay, not <option>s.
-  // Everybody on the roster is in it: the fetch asks for all of them.
-  const options = await page.getByRole("option").allTextContents();
-  expect(options.length).toBe((await state(page)).persons.staff);
+  // A search, not a roster: the district's staff do not fit in a list, so
+  // the empty query shows a screenful and never everyone. The options are
+  // the list under the input, `role=option` each.
+  const staff = (await state(page)).persons.staff ?? 0;
+  expect(staff).toBeGreaterThan(30);
+  await expect
+    .poll(async () => page.getByRole("option").count(), { timeout: 10_000 })
+    .toBeGreaterThan(0);
+  const shown = await page.getByRole("option").count();
+  expect(shown).toBeLessThanOrEqual(30);
+  expect(shown).toBeLessThan(staff);
 
-  // Pick someone who actually decides in the flows that are wired up.
-  const decider = options.find(
-    (o) => o.includes("office_manager") || o.includes("support"),
-  );
+  // Pick someone who actually decides in the flows that are wired up: a
+  // fragment of the role finds them wherever they are on the roster.
+  let decider: string | null = null;
+  for (const role of ["office_manager", "support"]) {
+    await search.fill(role);
+    const match = page.getByRole("option", { name: role }).first();
+    const found = await match.waitFor({ timeout: 5_000 }).then(
+      () => true,
+      () => false,
+    );
+    if (!found) continue;
+    decider = await match.textContent();
+    await match.click();
+    break;
+  }
   expect(decider, "no role in the fixture makes decisions").toBeTruthy();
-  await page.getByRole("option", { name: decider! }).click();
+  // Each line is who, what they do and where — the same line the picked
+  // person is then captioned with.
+  expect(decider).toMatch(/^.+ — .+ @ .+/);
+  await expect(page.getByTestId("person-picked")).toContainText(decider!);
 
   const rows = page.getByTestId("decision-row");
   await expect(rows.first()).toBeVisible({ timeout: 10_000 });

@@ -13,12 +13,17 @@ import { EVENT_TONE, ORG_COLORS } from "@/lib/tone";
  * The order is whatever the caller hands over, and `footer` is whatever the
  * caller wants below the last row — scrollback lives in the Dashboard, which
  * owns the cursor; this stays a component that renders a list.
+ *
+ * `palettes` is each firm's colour as `/state` serves it (CORE-0012), so the
+ * org column matches the building and the people in the town; the generated
+ * roster colour stands in for a firm the state has not named.
  */
 export function Timeline({
   events,
   selected,
   chain,
   onSelect,
+  palettes,
   laneRef,
   footer,
 }: {
@@ -26,6 +31,7 @@ export function Timeline({
   selected: number | null;
   chain: Map<number, number> | null;
   onSelect: (seq: number) => void;
+  palettes: Record<string, string>;
   laneRef?: RefObject<HTMLDivElement | null>;
   footer?: ReactNode;
 }) {
@@ -56,7 +62,9 @@ export function Timeline({
             <span className="muted">{event.label ?? event.sim_time}</span>
             <span
               style={{
-                color: event.org_id ? ORG_COLORS[event.org_id] : undefined,
+                color: event.org_id
+                  ? (palettes[event.org_id] ?? ORG_COLORS[event.org_id])
+                  : undefined,
               }}
             >
               {event.org_id ?? "—"}

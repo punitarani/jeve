@@ -7,10 +7,14 @@
  * carries the distribution the policy produced *and* the draw taken from it,
  * so you can see both what was thought and what the dice did — and, once Jev
  * is wired in, whether two people in the same situation actually differ.
+ *
+ * Whose decisions is a search, not a list: the district has two hundred and
+ * twenty-five staff, and a listbox of them was a scroll nobody finished. The
+ * input asks `/persons?q=` for a name or a role and shows a screenful.
  */
 import { useEffect, useState } from "react";
 import type { Decision, Person } from "@jeve/contracts";
-import { fetchDecisions, fetchPersons } from "@/lib/api";
+import { fetchDecisions, searchPersons } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import {
 	Card,
@@ -19,13 +23,6 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@/components/ui/select";
 import {
 	Table,
 	TableBody,
@@ -40,25 +37,42 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 
+/** How long the input rests before a keystroke becomes a request. */
+const SEARCH_DEBOUNCE_MS = 250;
+/** What one search brings back: a screenful, never the roster. */
+const SEARCH_LIMIT = 30;
+
 export function PersonPanel() {
-	const [persons, setPersons] = useState<Person[]>([]);
+	const [query, setQuery] = useState("");
+	const [results, setResults] = useState<Person[]>([]);
+	const [open, setOpen] = useState(false);
 	const [selected, setSelected] = useState<string | null>(null);
 	const [decisions, setDecisions] = useState<Decision[]>([]);
 	const [person, setPerson] = useState<Person | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
+	// The query, once it has rested. The empty query runs too, on mount, so
+	// the panel opens on somebody rather than on nothing: the first person
+	// the API lists is picked until the reader picks another.
 	useEffect(() => {
-		fetchPersons()
-			.then((body) => {
-				setPersons(body.persons);
-				if (body.persons.length > 0 && selected === null) {
-					setSelected(body.persons[0]!.id);
-				}
-			})
-			// Swallowing this would leave an empty dropdown with no explanation,
-			// which is how a contract mismatch turns into a mystery.
-			.catch((e: unknown) => setError(String(e)));
-	}, [selected]);
+		let live = true;
+		const timer = setTimeout(() => {
+			searchPersons(query, undefined, undefined, SEARCH_LIMIT)
+				.then((body) => {
+					if (!live) return;
+					setResults(body.persons);
+					setError(null);
+					setSelected((current) => current ?? body.persons[0]?.id ?? null);
+				})
+				// Swallowing this would leave an empty list with no explanation,
+				// which is how a contract mismatch turns into a mystery.
+				.catch((e: unknown) => live && setError(String(e)));
+		}, SEARCH_DEBOUNCE_MS);
+		return () => {
+			live = false;
+			clearTimeout(timer);
+		};
+	}, [query]);
 
 	useEffect(() => {
 		if (selected === null) return;
@@ -70,6 +84,11 @@ export function PersonPanel() {
 			})
 			.catch((e: unknown) => setError(String(e)));
 	}, [selected]);
+
+	const pick = (p: Person) => {
+		setSelected(p.id);
+		setOpen(false);
+	};
 
 	return (
 		<Card size="sm" data-testid="person-panel">
@@ -87,36 +106,73 @@ export function PersonPanel() {
 						{error}
 					</p>
 				)}
-				<Select
-					items={persons.map((p) => ({
-						value: p.id,
-						label: describe(p),
-					}))}
-					value={selected}
-					onValueChange={(value) => setSelected(value)}
-				>
-					<SelectTrigger
-						className="mb-2.5 w-full"
+				<div className="relative mb-2.5">
+					<input
+						type="text"
+						role="combobox"
+						aria-expanded={open}
+						aria-controls="person-options"
+						aria-autocomplete="list"
+						autoComplete="off"
+						placeholder="search staff by name or role"
+						value={query}
+						onChange={(event) => {
+							setQuery(event.target.value);
+							setOpen(true);
+						}}
+						onFocus={() => setOpen(true)}
+						onBlur={() => setOpen(false)}
+						onKeyDown={(event) => {
+							if (event.key === "Escape") setOpen(false);
+						}}
+						className="flex h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
 						data-testid="person-select"
-					>
-						<SelectValue placeholder="pick someone" />
-					</SelectTrigger>
-					<SelectContent>
-						{persons.map((p) => (
-							<SelectItem key={p.id} value={p.id}>
-								{describe(p)}
-							</SelectItem>
-						))}
-					</SelectContent>
-				</Select>
+					/>
+					{open && results.length > 0 && (
+						<ul
+							id="person-options"
+							role="listbox"
+							className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-border bg-popover p-1 text-sm shadow-md"
+							data-testid="person-options"
+						>
+							{results.map((p) => (
+								<li
+									key={p.id}
+									role="option"
+									aria-selected={p.id === selected}
+									// mousedown would move focus off the input, whose blur
+									// closes this list before the click lands on it.
+									onMouseDown={(event) => event.preventDefault()}
+									onClick={() => pick(p)}
+									className="cursor-pointer rounded-md px-2 py-1 hover:bg-muted aria-selected:bg-muted"
+								>
+									{describe(p)}
+								</li>
+							))}
+						</ul>
+					)}
+					{open && results.length === 0 && query !== "" && (
+						<p
+							className="absolute z-20 mt-1 w-full rounded-lg border border-border bg-popover px-2.5 py-1.5 text-xs text-muted-foreground shadow-md"
+							data-testid="person-none"
+						>
+							Nobody on the staff matches &ldquo;{query}&rdquo;.
+						</p>
+					)}
+				</div>
 
-				{person?.traits && (
-					<p className="muted fineprint">
-						{person.team_id !== null && <>team {person.team_id} · </>}
-						traits:{" "}
-						{Object.entries(person.traits)
-							.map(([k, v]) => `${k} ${v.toFixed(2)}`)
-							.join(" · ")}
+				{person !== null && (
+					<p className="muted fineprint" data-testid="person-picked">
+						{describe(person)}
+						{person.traits && (
+							<>
+								{" "}
+								· traits:{" "}
+								{Object.entries(person.traits)
+									.map(([k, v]) => `${k} ${v.toFixed(2)}`)
+									.join(" · ")}
+							</>
+						)}
 					</p>
 				)}
 
