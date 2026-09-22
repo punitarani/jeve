@@ -13,12 +13,12 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve import db
-from jeve.core.clock import DAY, at
+from jeve.core.clock import DAY, TICK, WORK_END, at
 from jeve.core.orgs import BY_ID
 from jeve.decide.policy import DecisionContext, RulesPolicy
 from jeve.sim import advance
 from jeve.world import scheduler
-from jeve.world.engine import WRITE_OFF_AFTER, Engine, TickReport
+from jeve.world.engine import TICKET_TIMEOUT, WRITE_OFF_AFTER, Engine, TickReport
 from jeve.world.seed_world import ROOT_SEED, seed
 from tests.worldcache import build_once
 
@@ -134,10 +134,14 @@ def test_tickets_end(conn: Connection[DictRow]) -> None:
         ).fetchall()
     }
     assert counts.get("closed", 0) > 20
+    # The timeout is enforced by an office-hours tick, so a ticket answered on
+    # the second Thursday afternoon times out on the Saturday and is closed
+    # on the Monday, past this horizon. The bound is the last office tick.
+    last_office_tick = at(11) + WORK_END - TICK
     lingering = conn.execute(
         "SELECT count(*) AS n FROM tickets WHERE status = 'answered' "
-        "AND answered_sim < %s",
-        (14 * DAY - 3 * DAY,),
+        "AND answered_sim + %s <= %s",
+        (TICKET_TIMEOUT, last_office_tick),
     ).fetchone()
     assert lingering is not None and int(lingering["n"]) == 0
     reasons = {
