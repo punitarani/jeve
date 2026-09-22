@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 /**
  * Gate 5: a human can complete the primary flow in a browser.
@@ -60,7 +60,10 @@ test("the primary flow: click an outage and follow what it caused", async ({
   // Nothing is dimmed until something is selected.
   expect(await page.locator(".ev.dim").count()).toBe(0);
 
-  const incident = page.locator('[data-kind="incident.started"]').first();
+  // `.last()`, not `.first()`: the lane reads newest first, so the oldest
+  // incident on screen — the one whose whole cascade is inside the loaded
+  // window — is now at the bottom.
+  const incident = page.locator('[data-kind="incident.started"]').last();
   await expect(incident).toBeVisible();
   await incident.click();
 
@@ -95,8 +98,10 @@ test("a person's decisions show what was chosen and the draw behind it", async (
 }) => {
   const select = page.getByTestId("person-select");
   await expect(select).toBeVisible();
+  await select.click();
 
-  const options = await select.locator("option").allTextContents();
+  // Base UI renders the select's items as a listbox overlay, not <option>s.
+  const options = await page.getByRole("option").allTextContents();
   expect(options.length).toBe(24);
 
   // Pick someone who actually decides in the flows that are wired up.
@@ -104,7 +109,7 @@ test("a person's decisions show what was chosen and the draw behind it", async (
     (o) => o.includes("office_manager") || o.includes("support"),
   );
   expect(decider, "no role in the fixture makes decisions").toBeTruthy();
-  await select.selectOption({ label: decider! });
+  await page.getByRole("option", { name: decider! }).click();
 
   const rows = page.getByTestId("decision-row");
   await expect(rows.first()).toBeVisible({ timeout: 10_000 });
@@ -119,22 +124,28 @@ test("a person's decisions show what was chosen and the draw behind it", async (
   await expect(rows.filter({ hasText: "jev" }).first()).toBeVisible();
 });
 
-test("filtering to one org narrows the timeline", async ({ page }) => {
-  const before = await page.locator(".ev").count();
-  await page
-    .getByTestId("org-thirdrail")
-    .getByRole("button", { name: "only" })
-    .click();
-  await expect
-    .poll(async () => page.locator(".ev").count(), { timeout: 10_000 })
-    .toBeLessThan(before);
-
-  const orgs = await page
+/** Every org named by a row on screen, deduplicated. */
+const orgsOnScreen = (page: Page) =>
+  page
     .locator(".ev")
     .evaluateAll((els) =>
       [...new Set(els.map((el) => el.children[1]?.textContent))].filter(Boolean),
     );
-  expect(orgs).toEqual(["thirdrail"]);
+
+test("filtering to one org narrows the timeline", async ({ page }) => {
+  // Not a row count: emptying the lane brings the foot of it into view and
+  // pulls older pages in, so the count is the filter's side effect rather than
+  // its claim. The claim is that nothing else is left.
+  expect(await orgsOnScreen(page)).not.toEqual(["thirdrail"]);
+
+  await page
+    .getByTestId("org-thirdrail")
+    .getByRole("button", { name: "only" })
+    .click();
+
+  await expect
+    .poll(async () => orgsOnScreen(page), { timeout: 10_000 })
+    .toEqual(["thirdrail"]);
 });
 
 test("encounters start filtered out, and the chip puts them back", async ({
@@ -147,12 +158,15 @@ test("encounters start filtered out, and the chip puts them back", async ({
   await expect(chip).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator('.ev[data-kind="encounter"]')).toHaveCount(0);
 
-  const before = await page.locator(".ev").count();
+  // Counted on the kind itself rather than on the whole lane, whose total
+  // scrollback can move underneath a comparison.
   await chip.click();
   await expect(chip).toHaveAttribute("aria-pressed", "true");
   await expect
-    .poll(async () => page.locator(".ev").count(), { timeout: 10_000 })
-    .toBeGreaterThan(before);
+    .poll(async () => page.locator('.ev[data-kind="encounter"]').count(), {
+      timeout: 10_000,
+    })
+    .toBeGreaterThan(0);
 
   // And it is reversible.
   await chip.click();
@@ -163,10 +177,40 @@ test("encounters start filtered out, and the chip puts them back", async ({
     .toBe(0);
 });
 
+test("the kinds menu toggles kinds without closing on each pick", async ({
+  page,
+}) => {
+  // The dropdown is the same filter the chips drive, one control instead of
+  // one chip per kind. The menu must stay open between picks.
+  await page.getByRole("button", { name: "event kinds" }).click();
+  const item = page.getByTestId("menu-kind-payment.made");
+  await expect(item).toBeVisible();
+  await expect(item).toHaveAttribute("aria-checked", "true");
+
+  const before = await page.locator(".ev").count();
+  await item.click();
+  await expect(item).toHaveAttribute("aria-checked", "false");
+  await expect(item).toBeVisible(); // still open
+  await expect
+    .poll(async () => page.locator(".ev").count(), { timeout: 10_000 })
+    .toBeLessThan(before);
+
+  // "show all kinds" resets the filter and leaves the menu open.
+  await page.getByTestId("menu-kind-payment.made").click();
+  await page.getByTestId("menu-filter-none").click();
+  await expect(page.locator(".ev")).toHaveCount(0, { timeout: 10_000 });
+  await page.getByTestId("menu-filter-all").click();
+  await expect
+    .poll(async () => page.locator(".ev").count(), { timeout: 10_000 })
+    .toBeGreaterThan(0);
+  await page.keyboard.press("Escape");
+  await expect(item).not.toBeVisible();
+});
+
 test("a filtered-out kind still shows inside a cascade", async ({ page }) => {
   // An encounter is how an outage reaches a ticket (WORLD-0003). Hiding the
   // kind must not put a hole in the chain this dashboard exists to show.
-  await page.locator('[data-kind="incident.started"]').first().click();
+  await page.locator('[data-kind="incident.started"]').last().click();
   await expect(page.locator(".ev.sel")).toHaveCount(1);
   await expect
     .poll(async () => page.locator(".ev.dim").count(), { timeout: 10_000 })
@@ -193,4 +237,57 @@ test("rows carry a readable line, not just the kind name", async ({ page }) => {
   await expect(
     page.locator('.ev[data-kind="incident.started"]').first(),
   ).toContainText(/incident\.started · \w/);
+});
+
+/** The seq of every row on screen, top to bottom. */
+const seqs = (page: Page) =>
+  page.locator(".ev").evaluateAll((els) => els.map((el) => Number(el.dataset.seq)));
+
+test("hiding every kind does not page the whole log", async ({ page }) => {
+  // An empty lane keeps the foot of it on screen, and the scrollback loop
+  // re-arms whenever the foot is visible. Without a guard, `hide all kinds`
+  // walks the entire event table 200 rows at a time to show nothing.
+  let pages = 0;
+  await page.route("**/events?before=*", (route) => {
+    pages += 1;
+    return route.continue();
+  });
+
+  await page.getByRole("button", { name: "event kinds" }).click();
+  await page.getByTestId("menu-filter-none").click();
+  await expect(page.locator(".ev")).toHaveCount(0, { timeout: 10_000 });
+  await page.keyboard.press("Escape");
+
+  // Give the loop every chance to run away before asserting it did not.
+  await page.waitForTimeout(2_000);
+  expect(pages, "an empty lane must not fetch history it cannot show").toBe(0);
+});
+
+test("the timeline opens on the newest event", async ({ page }) => {
+  // The clock runs far faster than real time, so a reader arrives to history:
+  // what just happened is the top row, not the bottom one.
+  const onScreen = await seqs(page);
+  expect(onScreen.length).toBeGreaterThan(0);
+  expect(onScreen).toEqual([...onScreen].sort((a, b) => b - a));
+});
+
+test("scrolling to the foot of the lane loads older events", async ({
+  page,
+}) => {
+  const before = await seqs(page);
+  const oldest = Math.min(...before);
+  await expect(page.getByTestId("lane-end")).toContainText(/scroll|loading/i);
+
+  const lane = page.getByTestId("timeline");
+  await lane.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+
+  await expect
+    .poll(async () => (await seqs(page)).length, { timeout: 15_000 })
+    .toBeGreaterThan(before.length);
+
+  // The new rows are older, and they arrived below the ones already there.
+  const after = await seqs(page);
+  expect(Math.min(...after)).toBeLessThan(oldest);
+  expect(after.slice(0, before.length)).toEqual(before);
+  expect(after).toEqual([...after].sort((a, b) => b - a));
 });
