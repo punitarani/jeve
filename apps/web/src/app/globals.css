@@ -271,7 +271,7 @@ a { color: inherit; }
    when the bar hides. vh stays as the fallback for older engines. */
 .world-page { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .world-body { display: flex; flex: 1; min-height: 0; }
-.world-stage { flex: 1; min-width: 0; display: flex; align-items: stretch; }
+.world-stage { position: relative; flex: 1; min-width: 0; display: flex; }
 .world-canvas {
   position: relative;
   flex: 1;
@@ -283,44 +283,48 @@ a { color: inherit; }
 
 /* The level cut (WEB-0007), as a lift's buttons: the top storey at the top,
    the ground at the foot, and nothing pressed until somebody wants to see
-   inside. In a gutter beside the canvas rather than floating over it — a
-   control over the town eats the click meant for the building beneath it. */
+   inside. Over the town, with no panel behind it — the view is the thing, and
+   a column of glyphs costs it nothing. The strip itself takes no clicks, so
+   the building between two buttons is still the building. */
 .level-cut {
-  align-self: center;
-  margin: 0 0 0 12px;
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 4px;
-  border: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
-  border-radius: 12px;
-  background: color-mix(in oklab, var(--bg) 78%, transparent);
-  backdrop-filter: blur(6px);
-  box-shadow: 0 6px 20px rgb(0 0 0 / 0.18);
+  gap: 2px;
+  pointer-events: none;
 }
 .level-cut button {
-  width: 26px;
+  pointer-events: auto;
+  width: 28px;
   height: 26px;
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: var(--muted-foreground);
+  color: rgb(255 255 255 / 0.82);
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.65);
   font: inherit;
   font-size: 11px;
   line-height: 1;
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
 }
-.level-cut button:hover { background: color-mix(in oklab, var(--mark) 22%, transparent); color: var(--fg); }
-.level-cut button[aria-pressed="true"] { background: var(--mark); color: var(--bg); }
-.level-cut .level-cut-clear {
-  margin-top: 2px;
-  border-top: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
-  border-radius: 0 0 8px 8px;
-  font-size: 10px;
-  letter-spacing: 0.3px;
+.level-cut button:hover { background: rgb(255 255 255 / 0.16); color: #fff; }
+.level-cut button[aria-pressed="true"] {
+  background: var(--mark);
+  color: var(--bg);
+  text-shadow: none;
 }
-.level-cut .level-cut-clear[aria-pressed="true"] { background: transparent; color: var(--muted-foreground); }
+.level-cut .level-cut-clear { margin-top: 5px; font-size: 10px; letter-spacing: 0.3px; }
+/* Nothing cut is the resting state, so "All" does not light up for it. */
+.level-cut .level-cut-clear[aria-pressed="true"] {
+  background: transparent;
+  color: rgb(255 255 255 / 0.82);
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.65);
+}
 .world-side {
   width: 380px;
   flex: none;

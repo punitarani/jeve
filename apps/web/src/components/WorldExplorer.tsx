@@ -118,6 +118,11 @@ export function WorldExplorer() {
 			</header>
 			<div className="world-body">
 				<div className="world-stage">
+					<div
+						ref={container}
+						className="world-canvas"
+						data-testid="world-view"
+					/>
 					{floors > 1 && (
 						<div
 							className="level-cut"
@@ -158,11 +163,6 @@ export function WorldExplorer() {
 							</button>
 						</div>
 					)}
-					<div
-						ref={container}
-						className="world-canvas"
-						data-testid="world-view"
-					/>
 				</div>
 				<aside className="world-side">
 					<ScrollArea className="h-full">
