@@ -38,9 +38,37 @@ async function state(page: Page): Promise<State> {
   return (await response.json()) as State;
 }
 
+/**
+ * Three times the budget when WebGL turns out to be a CPU rasteriser. The
+ * hero draws the whole district behind this page, and on SwiftShader a frame
+ * costs half a second: every click first waits for the page to hold still, so
+ * a test that works a search, picks somebody and reads their decisions spends
+ * its thirty seconds waiting for frames rather than for the app. Nothing is
+ * skipped and nothing is relaxed — the same assertions, given the time a
+ * machine without a GPU needs to satisfy them (WEB-0003).
+ */
+async function slowOnASoftwareRenderer(page: Page): Promise<void> {
+  const software = await page
+    .waitForFunction(
+      () => {
+        const world = (window as unknown as {
+          __jeveWorld?: { hero?: { status(): { software: string | null } } };
+        }).__jeveWorld;
+        const status = world?.hero?.status();
+        return status === undefined ? null : { software: status.software };
+      },
+      undefined,
+      { timeout: 10_000 },
+    )
+    .then((handle) => handle.jsonValue())
+    .catch(() => null);
+  if (software?.software != null) test.slow();
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("status-strip")).toBeVisible();
+  await slowOnASoftwareRenderer(page);
 });
 
 test("the world is on screen: clock, every org, modules, people", async ({

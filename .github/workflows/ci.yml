@@ -93,7 +93,12 @@ jobs:
 
   python:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The district is twelve firms and 225 staff, and the suite walks days of
+    # it: the run that used to fit in twenty-five minutes now spends that long
+    # on the world alone, and GitHub cancels a job at its budget rather than
+    # failing it, which reads as a mystery. Sixty is the wall-clock the suite
+    # plus the record confirmations actually need, with room to grow.
+    timeout-minutes: 60
     needs: [changes]
     if: needs.changes.outputs.python == 'true'
     # Without a database about half the suite skips: everything that runs the
