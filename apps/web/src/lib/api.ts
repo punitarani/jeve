@@ -47,8 +47,12 @@ export const fetchOlderEvents = (before: number, limit = 200) =>
   get(`/events?before=${before}&limit=${limit}`, EventPage);
 export const fetchCausal = (seq: number, direction: "up" | "down" = "down") =>
   get(`/causal/${seq}?direction=${direction}`, CausalChain);
+/**
+ * Staff, all of them: the API pages at a hundred by default, and the district
+ * has more than twice that. Five hundred is its ceiling.
+ */
 export const fetchPersons = (org?: string) =>
-  get(`/persons${org ? `?org=${org}` : ""}`, PersonsResponse);
+  get(`/persons?limit=500${org ? `&org=${org}` : ""}`, PersonsResponse);
 export const fetchDecisions = (personId: string) =>
   get(`/persons/${encodeURIComponent(personId)}/decisions`, PersonDecisions);
 export const fetchEconomics = () => get("/economics", Economics);
@@ -68,12 +72,12 @@ export const EVENT_TONE: Record<string, string> = {
   "incident.started": "bad",
   "incident.ended": "good",
   "invoice.blocked": "bad",
-  "cafe.walkout": "bad",
+  "retail.walkout": "bad",
   "payment.deferred": "warn",
   "ticket.opened": "warn",
   "invoice.issued": "good",
   "payment.made": "good",
-  "cafe.sale": "good",
+  "retail.sale": "good",
   "ticket.answered": "good",
   "ticket.triaged": "neutral",
   "month.end": "mark",

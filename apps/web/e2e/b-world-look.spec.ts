@@ -27,7 +27,7 @@ type Status = {
   replaying: boolean;
   visible: number;
   walking: number;
-  agents: { id: string; x: number; y: number; zone: string; visible: boolean }[];
+  agents: { id: string; x: number; y: number; floor: number; zone: string; visible: boolean }[];
 };
 
 async function status(page: Page): Promise<Status> {
@@ -92,15 +92,40 @@ test("the map says where one sits, and staff at their desks are on a seat", asyn
   const map = (await (await request.get(api!)).json()) as {
     tiles: string[][];
     seats: Record<string, [number, number][]>;
-    buildings: { zone: string }[];
+    buildings: { zone: string; floors: number; x0: number; y0: number; x1: number; y1: number }[];
+    storeys: { zone: string; floor: number; x0: number; y0: number; tiles: string[][] }[];
   };
 
-  const seats = Object.values(map.seats).flat();
-  expect(seats.length).toBeGreaterThan(0);
-  for (const [x, y] of seats) expect(["chair", "bench"]).toContain(map.tiles[y]![x]);
-  // Every office has somewhere to sit; the renderer draws whoever is standing
-  // still on one of these as seated.
-  for (const zone of ["software_office", "law_office", "accounting_office"]) {
-    expect(map.seats[zone]!.length, zone).toBeGreaterThan(0);
+  // A seat is on a floor: `zone/floor`. The ground floor is in `tiles`; an
+  // upper floor is a storey's own grid over its building's footprint.
+  const kindAt = (zone: string, floor: number, x: number, y: number): string | undefined => {
+    if (floor === 0) return map.tiles[y]?.[x];
+    const storey = map.storeys.find((s) => s.zone === zone && s.floor === floor);
+    return storey?.tiles[y - storey.y0]?.[x - storey.x0];
+  };
+  const SITTABLE = ["chair", "bench", "sofa"];
+  let seats = 0;
+  for (const [key, tiles] of Object.entries(map.seats)) {
+    const [zone, floor] = key.split("/");
+    for (const [x, y] of tiles) {
+      seats++;
+      expect(SITTABLE, `${key} (${x},${y})`).toContain(kindAt(zone!, Number(floor), x, y));
+    }
+  }
+  expect(seats).toBeGreaterThan(0);
+  // Every floor that has a chair on it has somewhere to sit listed; the
+  // renderer draws whoever is standing still on one of these as seated.
+  // Asked of every building the map has, whatever it is called.
+  for (const b of map.buildings) {
+    for (let floor = 0; floor < b.floors; floor++) {
+      let chairs = 0;
+      for (let y = b.y0; y <= b.y1; y++) {
+        for (let x = b.x0; x <= b.x1; x++) {
+          const kind = kindAt(b.zone, floor, x, y);
+          if (kind === "chair" || kind === "sofa") chairs++;
+        }
+      }
+      if (chairs > 0) expect(map.seats[`${b.zone}/${floor}`]?.length, `${b.zone}/${floor}`).toBeGreaterThan(0);
+    }
   }
 });

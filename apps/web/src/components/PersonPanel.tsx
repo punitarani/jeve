@@ -90,7 +90,7 @@ export function PersonPanel() {
 				<Select
 					items={persons.map((p) => ({
 						value: p.id,
-						label: `${p.name} — ${p.role} @ ${p.org_id}`,
+						label: describe(p),
 					}))}
 					value={selected}
 					onValueChange={(value) => setSelected(value)}
@@ -104,7 +104,7 @@ export function PersonPanel() {
 					<SelectContent>
 						{persons.map((p) => (
 							<SelectItem key={p.id} value={p.id}>
-								{p.name} — {p.role} @ {p.org_id}
+								{describe(p)}
 							</SelectItem>
 						))}
 					</SelectContent>
@@ -112,6 +112,7 @@ export function PersonPanel() {
 
 				{person?.traits && (
 					<p className="muted fineprint">
+						{person.team_id !== null && <>team {person.team_id} · </>}
 						traits:{" "}
 						{Object.entries(person.traits)
 							.map(([k, v]) => `${k} ${v.toFixed(2)}`)
@@ -201,6 +202,12 @@ export function PersonPanel() {
 			</CardContent>
 		</Card>
 	);
+}
+
+/** One line for the picker: who, what they do, where — and which team, when they have one. */
+function describe(p: Person): string {
+	const team = p.team_id === null ? "" : ` / ${p.team_id}`;
+	return `${p.name} — ${p.role} @ ${p.org_id}${team}`;
 }
 
 function summarise(chosen: Record<string, unknown>): string {

@@ -37,11 +37,16 @@ const VP = {
 } as const;
 type Viewport = keyof typeof VP;
 
-type Building = { org_id: string; name: string; x0: number; y0: number; x1: number; y1: number };
+type Building = { org_id: string; zone: string; name: string; x0: number; y0: number; x1: number; y1: number };
 const town: { buildings: Building[] } = await fetch(`${API}/world/map`)
   .then((r) => r.json())
   .catch(() => ({ buildings: [] }));
-const ORGS = town.buildings.map((b) => b.org_id);
+// The firms from `/state`, in the order it lists them; the map's buildings
+// if that is down. Never a list written here: the roster is allowed to grow.
+const state: { orgs: { id: string }[] } = await fetch(`${API}/state`)
+  .then((r) => r.json())
+  .catch(() => ({ orgs: [] }));
+const ORGS = state.orgs.length > 0 ? state.orgs.map((o) => o.id) : town.buildings.map((b) => b.org_id);
 const centreOf = (org: string): [number, number] | null => {
   const b = town.buildings.find((x) => x.org_id === org);
   return b ? [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2] : null;

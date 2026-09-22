@@ -13,7 +13,7 @@ import { ListFilter } from "lucide-react";
 import { toast } from "sonner";
 import type { EventPage, WorldState } from "@jeve/contracts";
 import { fetchCausal, fetchOlderEvents, fetchState, money } from "@/lib/api";
-import { EVENT_TONE, ORG_COLORS } from "@/lib/tone";
+import { EVENT_TONE } from "@/lib/tone";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -182,6 +182,13 @@ export function Dashboard({
 	}, []);
 
 	const down = state.modules.filter((m) => m.status === "down");
+	// Richest first: with a dozen firms the table is a league table, and the
+	// one sinking towards an insolvency warning is at the bottom where it
+	// reads as such. Colours come with the firm on `/state` (CORE-0012).
+	const orgs = useMemo(
+		() => [...state.orgs].sort((a, b) => b.cash_cents - a.cash_cents),
+		[state.orgs],
+	);
 	// Reversed here, at the one boundary where reading order matters. The clock
 	// runs far faster than real time, so a reader arrives to history and wants
 	// the most recent thing first; scrolling down then walks into the past,
@@ -277,7 +284,7 @@ export function Dashboard({
 								</TableRow>
 							</TableHeader>
 							<TableBody>
-								{state.orgs.map((o) => (
+								{orgs.map((o) => (
 									<TableRow
 										key={o.id}
 										className="border-b-0 hover:bg-transparent"
@@ -288,7 +295,7 @@ export function Dashboard({
 										<TableCell className="whitespace-normal px-1.5 py-1.5">
 											<span
 												className="swatch-sm"
-												style={{ background: ORG_COLORS[o.id] ?? "#888" }}
+												style={{ background: o.palette.body }}
 											/>
 											{o.name}
 										</TableCell>

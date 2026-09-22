@@ -145,9 +145,10 @@ def test_people_are_at_work_when_it_is_open_and_home_when_it_is_not(
     seed(conn, root_seed=ROOT_SEED)
     engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED)
 
-    # Eight in the morning: the cafe, the gym, the yard and the clinic are
-    # open; the offices and the shop are not. Every firm keeps its own hours.
-    advance(conn, engine, until=at(0, 8))
+    # Just after eight in the morning: the cafe, the gym, the yard and the
+    # clinic are open; the offices and the shop are not. Every firm keeps its
+    # own hours, and the eight o'clock tick has run.
+    advance(conn, engine, until=at(0, 8, 15))
     rows = conn.execute(
         "SELECT p.org_id, count(*) FILTER (WHERE s.zone <> 'home') AS out "
         "FROM positions s JOIN persons p ON p.id = s.person_id GROUP BY p.org_id"
@@ -218,18 +219,20 @@ def test_an_encounter_is_between_people_who_had_to_move_to_meet(
     rows = conn.execute(
         "SELECT e.payload->>'zone' AS zone, (e.payload->>'floor')::int AS floor, "
         "  a.org_id AS a_org, b.org_id AS b_org, "
-        "  a.team_id AS a_team, b.team_id AS b_team "
+        "  ta.floor AS a_floor, tb.floor AS b_floor "
         "FROM events e JOIN persons a ON a.id = e.payload->>'a' "
-        "JOIN persons b ON b.id = e.payload->>'b' WHERE e.kind = 'encounter'"
+        "JOIN persons b ON b.id = e.payload->>'b' "
+        "JOIN teams ta ON ta.id = a.team_id JOIN teams tb ON tb.id = b.team_id "
+        "WHERE e.kind = 'encounter'"
     ).fetchall()
     assert len(rows) > 10
     for row in rows:
-        # Two people from one team, on their own floor, are at their desks:
-        # that is work, not an encounter. Colleagues from different floors
-        # meeting in the lobby is.
+        # Two colleagues on their own floor of their own building are at
+        # their desks: that is work, not an encounter. The same two meeting
+        # in the lobby downstairs is one.
         colleagues_at_their_desks = (
             row["a_org"] == row["b_org"] == row["zone"]
-            and row["a_team"] == row["b_team"]
+            and row["a_floor"] == row["b_floor"] == row["floor"]
         )
         assert not colleagues_at_their_desks, row
 

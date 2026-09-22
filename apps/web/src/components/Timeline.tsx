@@ -111,9 +111,10 @@ function describe(event: SimEvent): string {
       return String(p.subject ?? "");
     case "ticket.triaged":
       return `${p.queue} · severity ${p.severity}`;
-    case "cafe.sale":
+    // The retailer is `org_id` on the row; the cafe is one of them now.
+    case "retail.sale":
       return join(cents(p.amount_cents), p.pos_down === true && "cash only");
-    case "cafe.walkout":
+    case "retail.walkout":
       return words(p.reason);
     case "encounter":
       return join(words(p.zone), words(p.topic));
@@ -171,7 +172,8 @@ function join(...parts: (string | false | undefined)[]): string {
 }
 
 /**
- * Enum values travel as `law_office` and `the_outage`. The prose in
+ * Enum values travel as `the_outage` and `small_talk`, and a zone is a firm's
+ * id, `plaza` or `home`. The prose in
  * `jeve.decide.questions` is part of a Jev request body, whose exact bytes
  * are a cache key (DECIDE-0004) — mirroring it here would invite someone to
  * keep the two in sync and re-record every cassette. Underscores to spaces.

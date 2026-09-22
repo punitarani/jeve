@@ -1,11 +1,11 @@
 /**
  * The renderer: a view over `WorldModel`, and nothing else.
  *
- * An orthographic camera at an isometric angle; flat-shaded boxes; every static
- * voxel in one instanced mesh, everything that glows in a second, and every
- * part of every person in a third, so the whole town is a handful of draw
- * calls. Nothing in here holds simulation state, and everything it needs to
- * know comes from the model each frame.
+ * An orthographic camera at an isometric angle; flat-shaded boxes; per storey,
+ * every static voxel in one instanced mesh and everything that glows in a
+ * second, and every part of every person in one more, so the whole town is a
+ * handful of draw calls. Nothing in here holds simulation state, and
+ * everything it needs to know comes from the model each frame.
  *
  * The camera object is created whether or not WebGL is available: projection
  * is plain matrix arithmetic, and picking and labels depend on it.
@@ -13,8 +13,13 @@
  * WEB-0004 is why it looks the way it does: a weak ambient and a strong sun
  * that casts real shadows, occlusion baked into the corners of every box, a
  * filmic tone curve, and a sky, a sun and lamps that follow the sim clock.
+ *
+ * Nothing here is sized to the town in tiles. Every distance — the camera's,
+ * the fog's, how far one may pan, where the clouds are — is a multiple of the
+ * map's span, worked out in `build` (WORLD-0006: the district is twice the
+ * town it replaced, and will grow again).
  */
-import { ORG_PALETTE, type TownMap } from "@jeve/contracts";
+import type { Palette, TownMap } from "@jeve/contracts";
 import * as THREE from "three";
 import { MapControls } from "three/addons/controls/MapControls.js";
 
@@ -27,37 +32,45 @@ import {
   PERSON_BOXES,
   RIG,
   SKIN_TONES,
+  STOREY,
   SURFACES,
   TROUSER_TONES,
   buildVoxels,
   facingAt,
   fountainOf,
+  groundKinds,
   hash2,
   lookFor,
   shade,
+  storeyKinds,
   type Glow,
   type Joint,
+  type KindAt,
   type Voxel,
 } from "./voxels";
 
-/** The town is growing from 24 staff to 104, plus a visiting crowd. */
-const MAX_PEOPLE = 256;
+/**
+ * Slots the people mesh is given beyond what the frame needs, so a crowd that
+ * grows by a few does not rebuild it every tick. It is rebuilt, larger, when
+ * even that is not enough: capacity follows the staff, not a constant.
+ */
+const PEOPLE_HEADROOM = 64;
 const MAX_SELECTED = 8;
 const ISO_ELEVATION = Math.atan(1 / Math.SQRT2); // true isometric: ~35.26 degrees
 const ISO_AZIMUTH = Math.PI / 4;
-const CAMERA_DISTANCE = 80;
 /**
- * A long ramp: haze starts just past the town and the far meadow is gone by
- * its end. The camera sits at CAMERA_DISTANCE, so these are depths, and an
- * orthographic camera reads them almost as tiles from the target.
+ * Distances as multiples of the map's span. These are the numbers that were
+ * right for a forty-tile town, over forty: the camera sat 80 out, haze began
+ * at 104 and was total at 215, the target could be dragged 15 past the edge,
+ * and clouds drifted within 85 of the centre.
  */
-const FOG_NEAR = 104;
-const FOG_FAR = 215;
-/** How far past the map's edge the camera may be dragged, in tiles. */
-const PAN_MARGIN = 15;
+const CAMERA_SPANS = 2;
+const FOG_NEAR_SPANS = 0.6;
+const FOG_FAR_SPANS = 3.4;
+const PAN_MARGIN_SPANS = 0.375;
+const CLOUD_RADIUS_SPANS = 2.1;
 /** Thin drifting clouds over the meadow, in the town's own box idiom. */
 const CLOUD_COUNT = 26;
-const CLOUD_RADIUS = 85;
 /** A cloud's lobes: offsets and scales against the puff's own size. */
 const CLOUD_LOBES: [number, number, number, number, number, number][] = [
   [0, 0, 0, 1, 1, 1],
@@ -65,6 +78,9 @@ const CLOUD_LOBES: [number, number, number, number, number, number][] = [
   [-0.5, 0.35, -0.3, 0.6, 0.55, 0.5],
   [0.1, 0.45, -0.55, 0.45, 0.45, 0.4],
 ];
+/** A person whose firm has no building on the map is drawn in this. */
+const NEUTRAL_BODY = "#9a9a9a";
+const NEUTRAL_ACCENT = "#6a6a6a";
 
 export type ViewTarget = { x: number; z: number; span: number };
 
@@ -140,6 +156,16 @@ type Drawn = {
   seenAt: number;
 };
 
+/** One storey's static meshes: what the level cut shows or hides together. */
+type StoreyMeshes = {
+  floor: number;
+  town: THREE.InstancedMesh;
+  glow: THREE.InstancedMesh;
+  glowKinds: Glow[];
+  glowBase: THREE.Color[];
+  pool: THREE.InstancedMesh;
+};
+
 export class WorldView {
   readonly camera: THREE.OrthographicCamera;
   readonly glOk: boolean;
@@ -152,32 +178,43 @@ export class WorldView {
   private controls: MapControls | null = null;
   private width = 1;
   private height = 1;
-  private target: ViewTarget = { x: 20, z: 14, span: 41 };
-  private eased: ViewTarget = { x: 20, z: 14, span: 41 };
+  private target: ViewTarget = { x: 0, z: 0, span: 41 };
+  private eased: ViewTarget = { x: 0, z: 0, span: 41 };
   private frames: number[] = [];
   private lastFrameAt = 0;
   private lastDrawAt = 0;
+
+  /** The map's span in tiles, from which every distance below is derived. */
+  private span = 40;
+  private mapWidth = 1;
+  private mapHeight = 1;
 
   // The scene's moving parts. All null until `build`.
   private hemi: THREE.HemisphereLight | null = null;
   private sun: THREE.DirectionalLight | null = null;
   private fill: THREE.DirectionalLight | null = null;
+  private storeys: StoreyMeshes[] = [];
+  private falloff: THREE.DataTexture | null = null;
+  private poolsLit = false;
+  private appliedCut: number | null | undefined = undefined;
+  private unitBox = new THREE.BoxGeometry(1, 1, 1);
+  private peopleMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
+  private blobMaterial: THREE.MeshBasicMaterial | null = null;
   private people: THREE.InstancedMesh | null = null;
   private blobs: THREE.InstancedMesh | null = null;
+  private capacity = 0;
   private rings: THREE.InstancedMesh | null = null;
   private markers: THREE.InstancedMesh | null = null;
-  private glowMesh: THREE.InstancedMesh | null = null;
-  private poolMesh: THREE.InstancedMesh | null = null;
-  private glowKinds: Glow[] = [];
-  private glowBase: THREE.Color[] = [];
   private skyTexture: THREE.DataTexture | null = null;
   private townCentre = new THREE.Vector3();
   private townRadius = 30;
   private clouds: THREE.InstancedMesh | null = null;
   private cloudSpots: { x: number; z: number; y: number; sx: number; sy: number; sz: number; speed: number }[] = [];
   /** Where the camera's target may go, in tiles: the map plus a margin. */
-  private panX: [number, number] = [-PAN_MARGIN, PAN_MARGIN];
-  private panZ: [number, number] = [-PAN_MARGIN, PAN_MARGIN];
+  private panX: [number, number] = [0, 0];
+  private panZ: [number, number] = [0, 0];
+  /** Each firm's colours, from its building: what its people are drawn in. */
+  private palettes = new Map<string, Palette>();
 
   // Time of day, eased: a tick moves the clock a quarter of an hour at once,
   // and a sun that jumped would make every shadow in town twitch.
@@ -190,7 +227,6 @@ export class WorldView {
   private drawn = new Map<string, Drawn>();
   private seatYaw = new Map<number, number>();
   private faceYaw = new Map<number, number>();
-  private mapWidth = 1;
 
   private root = new THREE.Matrix4();
   private local = new THREE.Matrix4();
@@ -212,7 +248,7 @@ export class WorldView {
     this.canvas.dataset.testid = "world-canvas";
     container.appendChild(this.canvas);
 
-    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 400);
+    this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, this.cameraDistance * 5);
     this.placeCamera();
 
     this.software = softwareRenderer();
@@ -261,34 +297,84 @@ export class WorldView {
     this.resize();
   }
 
+  // -- derived distances ---------------------------------------------------
+
+  /** How many tiles across the whole map is, allowing for the isometric foreshortening of depth. */
+  spanOf(map: { width: number; height: number }): number {
+    return Math.max(map.width, map.height * 1.2);
+  }
+
+  private get cameraDistance(): number {
+    return this.span * CAMERA_SPANS;
+  }
+
+  private get cloudRadius(): number {
+    return this.span * CLOUD_RADIUS_SPANS;
+  }
+
   // -- scene ---------------------------------------------------------------
 
   build(map: TownMap): void {
     this.mapWidth = map.width;
+    this.mapHeight = map.height;
+    this.span = this.spanOf(map);
     this.townCentre.set((map.width - 1) / 2, 0, (map.height - 1) / 2);
     this.townRadius = Math.hypot(map.width, map.height) / 2 + 2;
+    this.palettes = new Map(map.buildings.map((b) => [b.org_id, b.palette]));
     this.learnSeats(map);
+
+    // The camera: far enough out for the whole district, framed to it, and
+    // able to see to the far end of the outskirts.
+    this.camera.far = this.cameraDistance * 5;
+    const whole = { x: this.townCentre.x, z: this.townCentre.z, span: this.span + 1 };
+    this.target = { ...whole };
+    this.eased = { ...whole };
+    this.placeCamera();
+    if (this.controls !== null) {
+      this.controls.target.set(whole.x, 0, whole.z);
+      // As close as a building filling the screen, however wide the map.
+      this.controls.maxZoom = Math.max(5, this.span / 8);
+    }
 
     this.hemi = new THREE.HemisphereLight(0xffffff, 0x8a93a6, 0.45);
     this.sun = new THREE.DirectionalLight(0xfff2dc, 3);
     // From over the camera's right shoulder, and never casting: see `Sky`.
     this.fill = new THREE.DirectionalLight(0xffffff, 0.5);
-    this.fill.position.copy(this.townCentre).add(new THREE.Vector3(60, 45, 28));
+    this.fill.position
+      .copy(this.townCentre)
+      .add(new THREE.Vector3(1.5, 1.125, 0.7).multiplyScalar(this.span));
     this.fill.target.position.copy(this.townCentre);
     this.scene.add(this.hemi, this.sun, this.sun.target, this.fill, this.fill.target);
     if (this.software === null) this.castShadows(this.sun);
 
+    // Each storey gets meshes of its own, so a level cut can hide the floors
+    // above one without touching the rest.
     const voxels = buildVoxels(map);
-    this.buildTown(voxels.filter((v) => v.glow === undefined));
-    this.buildGlow(voxels.filter((v) => v.glow !== undefined));
+    const floors = [...new Set(voxels.map((v) => v.floor))].sort((a, b) => a - b);
+    this.falloff = this.falloffTexture();
+    for (const floor of floors) {
+      const own = voxels.filter((v) => v.floor === floor);
+      this.storeys.push({
+        floor,
+        town: this.buildTown(own.filter((v) => v.glow === undefined)),
+        ...this.buildGlow(own.filter((v) => v.glow !== undefined), this.falloff),
+      });
+    }
     this.buildPeople();
     this.buildSky();
     this.buildClouds(map);
     // Haze, not a wall: the meadow melts into the horizon colour, repainted
-    // with the sky every time the light moves.
-    this.scene.fog = new THREE.Fog(0xffffff, FOG_NEAR, FOG_FAR);
-    this.panX = [-PAN_MARGIN, map.width - 1 + PAN_MARGIN];
-    this.panZ = [-PAN_MARGIN, map.height - 1 + PAN_MARGIN];
+    // with the sky every time the light moves. The camera sits at
+    // `cameraDistance`, so these are depths from it, and an orthographic
+    // camera reads them almost as tiles from the target.
+    this.scene.fog = new THREE.Fog(
+      0xffffff,
+      this.cameraDistance + this.span * FOG_NEAR_SPANS,
+      this.cameraDistance + this.span * FOG_FAR_SPANS,
+    );
+    const margin = Math.round(this.span * PAN_MARGIN_SPANS);
+    this.panX = [-margin, map.width - 1 + margin];
+    this.panZ = [-margin, map.height - 1 + margin];
     this.debugHandle();
   }
 
@@ -313,18 +399,25 @@ export class WorldView {
     cam.top = r;
     cam.bottom = -r;
     cam.near = 1;
-    cam.far = r * 2 + 60;
+    // The sun stands `sunDistance` out; the far plane reaches through the town
+    // and out the other side.
+    cam.far = r + this.sunDistance + this.span;
     cam.updateProjectionMatrix();
     sun.shadow.bias = -0.0004;
     sun.shadow.normalBias = 0.035;
   }
 
-  private buildTown(voxels: Voxel[]): void {
+  /** How far out the sun is placed: past the town's radius by most of a span. */
+  private get sunDistance(): number {
+    return this.townRadius + this.span * 0.75;
+  }
+
+  private buildTown(voxels: Voxel[]): THREE.InstancedMesh {
     const geometry = new THREE.BoxGeometry(1, 1, 1);
     const lo = new Float32Array(voxels.length * 4);
     const hi = new Float32Array(voxels.length * 4);
-    // One material for the whole town: white, flat-shaded, tinted per instance
-    // and darkened per corner.
+    // One material for the whole storey: white, flat-shaded, tinted per
+    // instance and darkened per corner.
     const material = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
     material.onBeforeCompile = (shader) => {
       if (!shader.vertexShader.includes("#include <color_vertex>")) {
@@ -342,7 +435,7 @@ export class WorldView {
           }`,
         );
     };
-    const town = new THREE.InstancedMesh(geometry, material, voxels.length);
+    const town = new THREE.InstancedMesh(geometry, material, Math.max(1, voxels.length));
     const matrix = new THREE.Matrix4();
     voxels.forEach((voxel, i) => {
       matrix.makeScale(voxel.sx, voxel.sy, voxel.sz).setPosition(voxel.x, voxel.y, voxel.z);
@@ -351,6 +444,7 @@ export class WorldView {
       lo.set(voxel.ao.slice(0, 4), i * 4);
       hi.set(voxel.ao.slice(4, 8), i * 4);
     });
+    town.count = voxels.length;
     geometry.setAttribute("aoLo", new THREE.InstancedBufferAttribute(lo, 4));
     geometry.setAttribute("aoHi", new THREE.InstancedBufferAttribute(hi, 4));
     town.instanceMatrix.needsUpdate = true;
@@ -360,33 +454,11 @@ export class WorldView {
     town.castShadow = true;
     town.receiveShadow = true;
     this.scene.add(town);
+    return town;
   }
 
-  /**
-   * Everything unlit. Windows, lamps and screens are boxes whose colour is set
-   * from the time of day; pools are soft discs of light on the ground under
-   * them, added to whatever is there. None of it is tone-mapped: a lit window
-   * should be the brightest thing in a night, not a filmic grey.
-   */
-  private buildGlow(voxels: Voxel[]): void {
-    const boxes = voxels.filter((v) => v.glow !== "pool");
-    const pools = voxels.filter((v) => v.glow === "pool");
-    const matrix = new THREE.Matrix4();
-
-    const material = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
-    const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), material, boxes.length);
-    boxes.forEach((voxel, i) => {
-      matrix.makeScale(voxel.sx, voxel.sy, voxel.sz).setPosition(voxel.x, voxel.y, voxel.z);
-      mesh.setMatrixAt(i, matrix);
-      mesh.setColorAt(i, this.color.set(voxel.color));
-    });
-    mesh.frustumCulled = false;
-    this.glowKinds = boxes.map((v) => v.glow ?? "lamp");
-    this.glowBase = boxes.map((v) => new THREE.Color(v.color));
-    this.glowMesh = mesh;
-    this.scene.add(mesh);
-
-    // A radial falloff, made here: there is still no asset in this package.
+  /** A radial falloff, made here: there is still no asset in this package. */
+  private falloffTexture(): THREE.DataTexture {
     const size = 64;
     const data = new Uint8Array(size * size * 4);
     for (let y = 0; y < size; y++) {
@@ -400,6 +472,34 @@ export class WorldView {
     falloff.magFilter = THREE.LinearFilter;
     falloff.minFilter = THREE.LinearFilter;
     falloff.needsUpdate = true;
+    return falloff;
+  }
+
+  /**
+   * Everything unlit on one storey. Windows, lamps and screens are boxes whose
+   * colour is set from the time of day; pools are soft discs of light on the
+   * floor under them, added to whatever is there. None of it is tone-mapped:
+   * a lit window should be the brightest thing in a night, not a filmic grey.
+   */
+  private buildGlow(
+    voxels: Voxel[],
+    falloff: THREE.DataTexture,
+  ): Pick<StoreyMeshes, "glow" | "glowKinds" | "glowBase" | "pool"> {
+    const boxes = voxels.filter((v) => v.glow !== "pool");
+    const pools = voxels.filter((v) => v.glow === "pool");
+    const matrix = new THREE.Matrix4();
+
+    const material = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
+    const glow = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), material, Math.max(1, boxes.length));
+    boxes.forEach((voxel, i) => {
+      matrix.makeScale(voxel.sx, voxel.sy, voxel.sz).setPosition(voxel.x, voxel.y, voxel.z);
+      glow.setMatrixAt(i, matrix);
+      glow.setColorAt(i, this.color.set(voxel.color));
+    });
+    glow.count = boxes.length;
+    glow.frustumCulled = false;
+    this.scene.add(glow);
+
     const poolMaterial = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       map: falloff,
@@ -410,50 +510,36 @@ export class WorldView {
       opacity: 0,
     });
     const disc = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
-    const poolMesh = new THREE.InstancedMesh(disc, poolMaterial, Math.max(1, pools.length));
+    const pool = new THREE.InstancedMesh(disc, poolMaterial, Math.max(1, pools.length));
     pools.forEach((voxel, i) => {
       matrix.makeScale(voxel.sx, 1, voxel.sz).setPosition(voxel.x, voxel.y, voxel.z);
-      poolMesh.setMatrixAt(i, matrix);
-      poolMesh.setColorAt(i, this.color.set(voxel.color));
+      pool.setMatrixAt(i, matrix);
+      pool.setColorAt(i, this.color.set(voxel.color));
     });
-    poolMesh.count = pools.length;
-    poolMesh.frustumCulled = false;
-    poolMesh.renderOrder = 1;
-    this.poolMesh = poolMesh;
-    this.scene.add(poolMesh);
+    pool.count = pools.length;
+    pool.frustumCulled = false;
+    pool.renderOrder = 1;
+    this.scene.add(pool);
+    return {
+      glow,
+      glowKinds: boxes.map((v) => v.glow ?? "lamp"),
+      glowBase: boxes.map((v) => new THREE.Color(v.color)),
+      pool,
+    };
   }
 
   private buildPeople(): void {
-    const box = new THREE.BoxGeometry(1, 1, 1);
-    const material = new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
-    // WEB-0004: one mesh for every box of every person. One per part was
-    // thirteen draw calls, and thirteen more in the shadow pass.
-    const people = new THREE.InstancedMesh(box, material, MAX_PEOPLE * PERSON_BOXES);
-    people.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    people.frustumCulled = false;
-    people.castShadow = true;
-    people.receiveShadow = true;
-    people.count = 0;
-    // Allocate the colour buffer now; `setColorAt` would do it on first use.
-    people.setColorAt(0, this.color.set(0xffffff));
-    this.people = people;
-    this.scene.add(people);
-
     if (this.software !== null) {
       // No shadow map on a CPU rasteriser, so people keep a blob under them:
       // without it they float.
-      const blob = new THREE.MeshBasicMaterial({
+      this.blobMaterial = new THREE.MeshBasicMaterial({
         color: 0x000000,
         transparent: true,
         opacity: 0.22,
         depthWrite: false,
       });
-      this.blobs = new THREE.InstancedMesh(box, blob, MAX_PEOPLE);
-      this.blobs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      this.blobs.frustumCulled = false;
-      this.blobs.count = 0;
-      this.scene.add(this.blobs);
     }
+    this.ensurePeople(0);
 
     // Selection (audit C4: "nothing marks a selection in the scene"). A square
     // ring on the ground, and a marker over the head for when the ground is
@@ -471,10 +557,50 @@ export class WorldView {
     this.rings.count = 0;
     this.rings.renderOrder = 2;
     const marker = new THREE.MeshBasicMaterial({ color: 0xffe066, toneMapped: false });
-    this.markers = new THREE.InstancedMesh(box, marker, MAX_SELECTED);
+    this.markers = new THREE.InstancedMesh(this.unitBox, marker, MAX_SELECTED);
     this.markers.frustumCulled = false;
     this.markers.count = 0;
     this.scene.add(this.rings, this.markers);
+  }
+
+  /**
+   * Room in the instance buffer for `need` people. WEB-0004: one mesh for
+   * every box of every person — one per part was thirteen draw calls, and
+   * thirteen more in the shadow pass. An instanced mesh cannot grow, so when
+   * the town outgrows it a larger one takes its place and every slot is
+   * repainted on the next frame.
+   */
+  private ensurePeople(need: number): void {
+    if (this.people !== null && need <= this.capacity) return;
+    const capacity = need + PEOPLE_HEADROOM;
+    if (this.people !== null) {
+      this.scene.remove(this.people);
+      this.people.dispose();
+    }
+    if (this.blobs !== null) {
+      this.scene.remove(this.blobs);
+      this.blobs.dispose();
+    }
+    const people = new THREE.InstancedMesh(this.unitBox, this.peopleMaterial, capacity * PERSON_BOXES);
+    people.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    people.frustumCulled = false;
+    people.castShadow = true;
+    people.receiveShadow = true;
+    people.count = 0;
+    // Allocate the colour buffer now; `setColorAt` would do it on first use.
+    people.setColorAt(0, this.color.set(0xffffff));
+    this.people = people;
+    this.scene.add(people);
+    if (this.blobMaterial !== null) {
+      this.blobs = new THREE.InstancedMesh(this.unitBox, this.blobMaterial, capacity);
+      this.blobs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.blobs.frustumCulled = false;
+      this.blobs.count = 0;
+      this.scene.add(this.blobs);
+    }
+    this.capacity = capacity;
+    this.slots = [];
+    this.repainted = true;
   }
 
   /** A vertical gradient the renderer owns, because the page cannot know the sim clock. */
@@ -494,7 +620,8 @@ export class WorldView {
    * clustered — a slab with lobes, in the town's own box idiom. They sell the
    * fog as weather: a cloud slides through the haze where the ground is
    * already gone, and the world reads as somewhere rather than a slab.
-   * Tinted from the sky once a frame; fogged like everything else.
+   * Tinted from the sky once a frame; fogged like everything else. They fly
+   * above the tallest building.
    */
   private buildClouds(map: TownMap): void {
     const material = new THREE.MeshBasicMaterial({
@@ -510,10 +637,12 @@ export class WorldView {
     );
     clouds.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     clouds.frustumCulled = false;
+    const radius = this.cloudRadius;
+    const tallest = Math.max(1, ...map.buildings.map((b) => b.floors)) * STOREY;
     this.cloudSpots = Array.from({ length: CLOUD_COUNT }, (_, i) => ({
-      x: map.width / 2 + (hash2(i, 3, 71) - 0.5) * 2 * CLOUD_RADIUS,
-      z: map.height / 2 + (hash2(i, 5, 72) - 0.5) * 2 * CLOUD_RADIUS,
-      y: 10.5 + hash2(i, 7, 73) * 5.5,
+      x: map.width / 2 + (hash2(i, 3, 71) - 0.5) * 2 * radius,
+      z: map.height / 2 + (hash2(i, 5, 72) - 0.5) * 2 * radius,
+      y: tallest + 6 + hash2(i, 7, 73) * 5.5,
       sx: 5 + hash2(i, 11, 74) * 9,
       sy: 1 + hash2(i, 13, 75) * 0.4,
       sz: 3.5 + hash2(i, 17, 76) * 3,
@@ -523,28 +652,50 @@ export class WorldView {
     this.scene.add(clouds);
   }
 
+  /** One number for a tile on a floor: the key the seat and facing tables use. */
+  private tileKey(x: number, y: number, floor: number): number {
+    return (floor * this.mapHeight + Math.round(y)) * this.mapWidth + Math.round(x);
+  }
+
   /**
    * Which way somebody on a tile should face when nobody has said.
    *
    * A seat faces the desk or table it is drawn up to. Anybody standing next to
    * a counter or a table faces that. The map says where the seats are
-   * (`seats`); what is next to them is in the tiles.
+   * (`seats`, keyed `zone/floor`); what is next to them is in that floor's
+   * tiles — the ground for floor 0, a storey's own grid above it.
    */
   private learnSeats(map: TownMap): void {
-    const fountain = fountainOf(map);
     const seats = new Set<number>();
-    for (const tiles of Object.values(map.seats)) {
-      for (const [x, y] of tiles) seats.add(y * map.width + x);
+    for (const [key, tiles] of Object.entries(map.seats)) {
+      const floor = Number(key.split("/")[1] ?? 0);
+      for (const [x, y] of tiles) seats.add(this.tileKey(x, y, floor));
     }
-    for (let ty = 0; ty < map.height; ty++) {
-      for (let tx = 0; tx < map.width; tx++) {
-        const kind = map.tiles[ty]?.[tx];
-        if (kind === undefined || SURFACES.has(kind)) continue;
-        const side = facingAt(map, tx, ty, fountain);
-        const key = ty * map.width + tx;
-        if (side !== null) this.faceYaw.set(key, Math.atan2(side[0], side[1]));
-        if (seats.has(key)) this.seatYaw.set(key, side ? Math.atan2(side[0], side[1]) : 0);
+    const learn = (
+      kinds: KindAt,
+      floor: number,
+      x0: number,
+      y0: number,
+      x1: number,
+      y1: number,
+      centre: [number, number] | null,
+    ) => {
+      for (let ty = y0; ty <= y1; ty++) {
+        for (let tx = x0; tx <= x1; tx++) {
+          const kind = kinds(tx, ty);
+          if (kind === undefined || SURFACES.has(kind)) continue;
+          const side = facingAt(kinds, tx, ty, centre);
+          const key = this.tileKey(tx, ty, floor);
+          if (side !== null) this.faceYaw.set(key, Math.atan2(side[0], side[1]));
+          if (seats.has(key)) this.seatYaw.set(key, side ? Math.atan2(side[0], side[1]) : 0);
+        }
       }
+    };
+    learn(groundKinds(map), 0, 0, 0, map.width - 1, map.height - 1, fountainOf(map));
+    for (const storey of map.storeys) {
+      const x1 = storey.x0 + (storey.tiles[0]?.length ?? 1) - 1;
+      const y1 = storey.y0 + storey.tiles.length - 1;
+      learn(storeyKinds(storey), storey.floor, storey.x0, storey.y0, x1, y1, null);
     }
   }
 
@@ -650,7 +801,7 @@ export class WorldView {
       centre.applyMatrix4(this.basis);
     }
     sun.target.position.copy(centre);
-    sun.position.copy(centre).addScaledVector(dir, this.townRadius + 30);
+    sun.position.copy(centre).addScaledVector(dir, this.sunDistance);
     sun.target.updateMatrixWorld();
   }
 
@@ -673,30 +824,44 @@ export class WorldView {
   }
 
   private paintGlow(sky: Sky): void {
-    const mesh = this.glowMesh;
-    if (mesh === null) return;
     const lit = sky.lamps;
     const glass = this.colorB.set(sky.top).lerp(this.color.set(0xffffff), 0.45);
     const warm = new THREE.Color("#ffd98a");
     const lampOff = new THREE.Color("#8d8f96");
     const lampOn = new THREE.Color("#fff1c4");
-    this.glowKinds.forEach((kind, i) => {
-      const base = this.glowBase[i] ?? warm;
-      const colour =
-        kind === "window"
-          ? glass.clone().lerp(warm, lit)
-          : kind === "lamp"
-            ? lampOff.clone().lerp(lampOn, lit)
-            : kind === "sign"
-              ? base
-              : base.clone().multiplyScalar(0.75 + 0.25 * lit);
-      mesh.setColorAt(i, colour);
-    });
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    if (this.poolMesh !== null) {
-      const material = this.poolMesh.material as THREE.MeshBasicMaterial;
+    for (const storey of this.storeys) {
+      storey.glowKinds.forEach((kind, i) => {
+        const base = storey.glowBase[i] ?? warm;
+        const colour =
+          kind === "window"
+            ? glass.clone().lerp(warm, lit)
+            : kind === "lamp"
+              ? lampOff.clone().lerp(lampOn, lit)
+              : kind === "sign"
+                ? base
+                : base.clone().multiplyScalar(0.75 + 0.25 * lit);
+        storey.glow.setColorAt(i, colour);
+      });
+      if (storey.glow.instanceColor) storey.glow.instanceColor.needsUpdate = true;
+      const material = storey.pool.material as THREE.MeshBasicMaterial;
       material.opacity = lit * 0.55;
-      this.poolMesh.visible = lit > 0.01;
+    }
+    this.poolsLit = lit > 0.01;
+    this.applyLevelCut();
+  }
+
+  /**
+   * Show each storey's meshes or not, from the model's level cut: everything
+   * above the cut is hidden, pools only while the lamps are on anyway.
+   */
+  private applyLevelCut(): void {
+    const cut = this.model.levelCut;
+    this.appliedCut = cut;
+    for (const storey of this.storeys) {
+      const shown = cut === null || storey.floor <= cut;
+      storey.town.visible = shown;
+      storey.glow.visible = shown;
+      storey.pool.visible = shown && this.poolsLit;
     }
   }
 
@@ -704,10 +869,10 @@ export class WorldView {
 
   private placeCamera(): void {
     const { x, z } = this.eased;
-    const horizontal = Math.cos(ISO_ELEVATION) * CAMERA_DISTANCE;
+    const horizontal = Math.cos(ISO_ELEVATION) * this.cameraDistance;
     this.camera.position.set(
       x + Math.sin(ISO_AZIMUTH) * horizontal,
-      Math.sin(ISO_ELEVATION) * CAMERA_DISTANCE,
+      Math.sin(ISO_ELEVATION) * this.cameraDistance,
       z + Math.cos(ISO_AZIMUTH) * horizontal,
     );
     this.camera.lookAt(x, 0, z);
@@ -814,8 +979,9 @@ export class WorldView {
    * Write one person's boxes into the instance buffer.
    *
    * `swing` is the angle of the walk cycle, `sit` runs from standing (0) to
-   * seated (1), `reach` lifts the arms forward, and `lift` is the breathing bob
-   * of everything above the hips.
+   * seated (1), `reach` lifts the arms forward, `lift` is the breathing bob
+   * of everything above the hips, and `floorY` is the height of the floor
+   * they stand on.
    */
   private pose(
     slot: number,
@@ -823,6 +989,7 @@ export class WorldView {
     repaint: boolean,
     x: number,
     z: number,
+    floorY: number,
     yaw: number,
     swing: number,
     sit: number,
@@ -833,7 +1000,7 @@ export class WorldView {
     if (people === null) return;
     // Sitting lowers the hips onto the seat and swings the legs out in front.
     const drop = sit * (SEAT_TOP - 0.34 + 0.11);
-    this.root.makeRotationY(yaw).setPosition(x, drop, z);
+    this.root.makeRotationY(yaw).setPosition(x, floorY + drop, z);
     const angles: Record<Joint, number> = {
       legL: swing * (1 - sit) - sit * (Math.PI / 2),
       legR: -swing * (1 - sit) - sit * (Math.PI / 2),
@@ -857,7 +1024,7 @@ export class WorldView {
       const sin = Math.sin(a);
       const up = joint === "legL" || joint === "legR" ? 0 : lift;
       // Rotation about x through the pivot, then the box's own size: written
-      // out, because thirteen boxes times two hundred people is every frame.
+      // out, because thirteen boxes times a few hundred people is every frame.
       this.local.set(
         size[0], 0, 0, pivot[0] + offset[0],
         0, cos * size[1], -sin * size[2], pivot[1] + up + cos * offset[1] - sin * offset[2],
@@ -887,22 +1054,24 @@ export class WorldView {
   }
 
   private drawPeople(now: number, dt: number): void {
+    // An upper bound — everyone, at home or not, plus the crowd — is cheap
+    // to ask for and never leaves anybody undrawn.
+    this.ensurePeople(this.model.walkers.size + this.model.crowd.length);
     let count = 0;
     let selected = 0;
     const k = 1 - Math.exp(-dt / 140);
 
     for (const walker of this.model.walkers.values()) {
-      if (!walker.visible) {
+      if (!walker.visible || !this.model.shown(walker)) {
         this.drawn.delete(walker.id);
         continue;
       }
-      if (count >= MAX_PEOPLE) break;
-      const palette = ORG_PALETTE[walker.orgId];
+      const palette = this.palettes.get(walker.orgId);
       const look = this.lookOf(
         walker.id,
         walker.role,
-        palette?.body ?? "#999999",
-        palette?.accent ?? "#555555",
+        palette?.body ?? NEUTRAL_BODY,
+        palette?.accent ?? NEUTRAL_ACCENT,
       );
 
       let state = this.drawn.get(walker.id);
@@ -921,7 +1090,7 @@ export class WorldView {
       const striding = walker.walking && moved > 1e-4;
       state.swing += ((striding ? Math.sin(state.cycle) * 0.75 : 0) - state.swing) * Math.min(1, k * 2.5);
 
-      const tile = Math.round(walker.y) * this.mapWidth + Math.round(walker.x);
+      const tile = this.tileKey(walker.x, walker.y, walker.floor);
       const still = !walker.walking;
       // WEB-0004: the one inference the renderer makes. `seated` wins when set.
       const seated = walker.seated ?? (still && this.seatYaw.has(tile));
@@ -939,9 +1108,10 @@ export class WorldView {
       const breath = Math.sin(now / 900 + walker.phase) * 0.012;
       // Seated people have their hands on the desk; talkers gesture.
       const reach = state.sit * 1.05 + (talking ? 0.35 + Math.sin(now / 230 + walker.phase) * 0.3 : 0);
+      const floorY = walker.floor * STOREY;
       const repaint = this.claims(count, walker.id);
-      this.pose(count, look, repaint, walker.x, walker.y, state.yaw, state.swing, state.sit, reach, bounce + breath);
-      this.blob(count, walker.x, walker.y);
+      this.pose(count, look, repaint, walker.x, walker.y, floorY, state.yaw, state.swing, state.sit, reach, bounce + breath);
+      this.blob(count, walker.x, walker.y, floorY);
       if (walker.selected === true && selected < MAX_SELECTED) {
         this.select(selected++, walker, now, state.sit);
       }
@@ -949,9 +1119,8 @@ export class WorldView {
     }
 
     // The crowd: counterparties, drawn in greys and bare-headed so staff stay
-    // legible. Demand, not people: they stand where they are put.
+    // legible. Demand, not people: they stand where they are put, on the ground.
     for (const dot of this.model.crowd) {
-      if (count >= MAX_PEOPLE) break;
       const grey = 0.5 + dot.tint * 0.3;
       const key = `crowd:${dot.tint.toFixed(4)}`;
       let look = this.looks.get(key);
@@ -961,14 +1130,14 @@ export class WorldView {
       }
       // The model scatters the crowd a little about its spots. On a chair that
       // would seat somebody half off it, so a seated customer is drawn square.
-      const tile = Math.round(dot.y) * this.mapWidth + Math.round(dot.x);
+      const tile = this.tileKey(dot.x, dot.y, 0);
       const seat = this.seatYaw.get(tile);
       const [x, y] = seat === undefined ? [dot.x, dot.y] : [Math.round(dot.x), Math.round(dot.y)];
       const yaw = seat ?? this.faceYaw.get(tile) ?? dot.phase;
       const breath = Math.sin(now / 900 + dot.phase) * 0.012;
       const sit = seat === undefined ? 0 : 1;
-      this.pose(count, look, this.claims(count, key), x, y, yaw, 0, sit, sit * 0.6, breath);
-      this.blob(count, x, y);
+      this.pose(count, look, this.claims(count, key), x, y, 0, yaw, 0, sit, sit * 0.6, breath);
+      this.blob(count, x, y, 0);
       count++;
     }
 
@@ -991,17 +1160,18 @@ export class WorldView {
     }
   }
 
-  private blob(slot: number, x: number, z: number): void {
+  private blob(slot: number, x: number, z: number, floorY: number): void {
     if (this.blobs === null) return;
-    this.local.makeScale(0.8, 0.01, 0.8).setPosition(x, 0.012, z);
+    this.local.makeScale(0.8, 0.01, 0.8).setPosition(x, floorY + 0.012, z);
     this.blobs.setMatrixAt(slot, this.local);
   }
 
   private select(slot: number, walker: Walker, now: number, sit: number): void {
+    const floorY = walker.floor * STOREY;
     const pulse = 1 + Math.sin(now / 260) * 0.08;
-    this.local.makeScale(pulse, 1, pulse).setPosition(walker.x, 0.04, walker.y);
+    this.local.makeScale(pulse, 1, pulse).setPosition(walker.x, floorY + 0.04, walker.y);
     this.rings?.setMatrixAt(slot, this.local);
-    const hover = HEAD_TOP + 0.85 - sit * 0.1 + Math.sin(now / 320) * 0.08;
+    const hover = floorY + HEAD_TOP + 0.85 - sit * 0.1 + Math.sin(now / 320) * 0.08;
     this.local
       .makeRotationY(now / 600)
       .multiply(this.out.makeRotationZ(Math.PI / 4))
@@ -1039,6 +1209,7 @@ export class WorldView {
 
     if (this.people !== null) {
       this.light(dt);
+      if (this.appliedCut !== this.model.levelCut) this.applyLevelCut();
       this.drawPeople(now, dt);
       this.driftClouds(dt);
     }
@@ -1070,10 +1241,11 @@ export class WorldView {
     const clouds = this.clouds;
     if (clouds === null) return;
     const centre = this.townCentre.x;
+    const radius = this.cloudRadius;
     const seconds = dt / 1000;
     this.cloudSpots.forEach((cloud, i) => {
       cloud.x += cloud.speed * seconds;
-      if (cloud.x - centre > CLOUD_RADIUS) cloud.x -= CLOUD_RADIUS * 2;
+      if (cloud.x - centre > radius) cloud.x -= radius * 2;
       CLOUD_LOBES.forEach(([dx, dy, dz, kx, ky, kz], l) => {
         this.local
           .makeScale(cloud.sx * kx, cloud.sy * ky, cloud.sz * kz)
@@ -1112,6 +1284,10 @@ export class WorldView {
         }
       }
     });
+    this.unitBox.dispose();
+    this.peopleMaterial.dispose();
+    this.blobMaterial?.dispose();
+    this.falloff?.dispose();
     this.skyTexture?.dispose();
     this.sun?.shadow.map?.dispose();
     this.renderer?.dispose();

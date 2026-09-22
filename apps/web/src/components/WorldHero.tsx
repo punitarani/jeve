@@ -47,7 +47,7 @@ export function WorldHero() {
         <div>
           <b>jeve</b>{" "}
           <span className="muted">
-            four firms, one town, every decision a typed question
+            twelve firms, one district, every decision a typed question
           </span>
         </div>
         <div className="hero-meta">

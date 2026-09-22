@@ -13,6 +13,12 @@ import { expect, test, type Page } from "@playwright/test";
  * first test says which it was.
  */
 
+/** The roster as the API serves it: counts and ids are read, never written down here. */
+type State = {
+  persons: Record<string, number>;
+  orgs: { id: string; name: string }[];
+};
+
 type Status = {
   seq: number;
   tick: number;
@@ -24,8 +30,35 @@ type Status = {
   glOk: boolean;
   software: string | null;
   drawing: boolean;
-  agents: { id: string; x: number; y: number; zone: string; visible: boolean }[];
+  agents: { id: string; x: number; y: number; floor: number; zone: string; visible: boolean }[];
 };
+
+/**
+ * The API the page is reading from: the build inlines it, so the test run
+ * that built the page has it in the environment; a page that is already up
+ * says so through the origin of its own `/world/map` fetch.
+ */
+async function apiOrigin(page: Page): Promise<string> {
+  const fromEnv = process.env.NEXT_PUBLIC_JEVE_API;
+  if (fromEnv) return fromEnv;
+  const seen = await page.evaluate(() => {
+    const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+    return entries.find((entry) => entry.name.endsWith("/world/map"))?.name ?? null;
+  });
+  return seen === null ? "http://127.0.0.1:8000" : seen.replace(/\/world\/map$/, "");
+}
+
+async function state(page: Page): Promise<State> {
+  const response = await page.request.get(`${await apiOrigin(page)}/state`);
+  expect(response.ok(), "GET /state").toBe(true);
+  return (await response.json()) as State;
+}
+
+async function townMap(page: Page): Promise<{ width: number; height: number }> {
+  const response = await page.request.get(`${await apiOrigin(page)}/world/map`);
+  expect(response.ok(), "GET /world/map").toBe(true);
+  return (await response.json()) as { width: number; height: number };
+}
 
 async function status(page: Page, mode: "hero" | "explore"): Promise<Status> {
   return page.evaluate((m) => {
@@ -38,10 +71,13 @@ async function status(page: Page, mode: "hero" | "explore"): Promise<Status> {
 }
 
 async function ready(page: Page, mode: "hero" | "explore"): Promise<void> {
+  // Everybody on the roster is in the scene, at home or not.
+  const staff = (await state(page)).persons.staff ?? 0;
+  expect(staff, "the roster has staff").toBeGreaterThan(0);
   const mounted = async () =>
     (await status(page, mode).catch(() => null))?.agents.length ?? 0;
   try {
-    await expect.poll(mounted, { timeout: 25_000 }).toBe(24);
+    await expect.poll(mounted, { timeout: 25_000 }).toBe(staff);
   } catch {
     // Seen once on a machine that was also running another project's test
     // suite: the three.js chunk (~1 MB) never finished downloading, so the page
@@ -51,7 +87,7 @@ async function ready(page: Page, mode: "hero" | "explore"): Promise<void> {
       description: `${mode} world did not mount within 25s; reloaded once`,
     });
     await page.reload();
-    await expect.poll(mounted, { timeout: 40_000 }).toBe(24);
+    await expect.poll(mounted, { timeout: 40_000 }).toBe(staff);
   }
 }
 
@@ -206,39 +242,49 @@ test("clicking a building shows the firm's books", async ({ page }) => {
   await page.goto("/world");
   await ready(page, "explore");
 
-  const at = await page.evaluate(() => {
+  // The accountants, if the roster still has them; any firm otherwise.
+  const orgs = (await state(page)).orgs;
+  const org = orgs.find((o) => o.id === "ledgerline") ?? orgs[0];
+  expect(org, "the roster has a firm").toBeDefined();
+  const at = await page.evaluate((id) => {
     const handle = (window as unknown as {
       __jeveWorld: Record<
         string,
         { screenPositionOfBuilding(id: string): { x: number; y: number } | null }
       >;
     }).__jeveWorld.explore!;
-    return handle.screenPositionOfBuilding("ledgerline");
-  });
+    return handle.screenPositionOfBuilding(id);
+  }, org!.id);
   expect(at).not.toBeNull();
   await page.getByTestId("world-canvas").click({ position: { x: at!.x, y: at!.y } });
 
   const panel = page.getByTestId("org-panel");
   await expect(panel).toBeVisible();
-  await expect(panel).toHaveAttribute("data-org", "ledgerline");
-  await expect(panel).toContainText("Ledgerline Accounting");
+  await expect(panel).toHaveAttribute("data-org", org!.id);
+  await expect(panel).toContainText(org!.name);
   await expect(panel.getByTestId("org-cash")).toContainText(/\$[\d,]+/);
+  // A team is a floor (CORE-0012): the panel lists them, with who is in.
+  expect(await panel.getByTestId("org-team").count()).toBeGreaterThan(0);
+  await expect(panel.getByTestId("org-team").first()).toContainText(/\d+ of \d+ in/);
 });
 
 test("dragging pans the map instead of selecting", async ({ page }) => {
   await page.goto("/world");
   await ready(page, "explore");
-  // The fountain: a fixed point on the ground, wherever anyone is standing.
+  // The middle of the map: a fixed point on the ground, wherever anyone is
+  // standing, and wherever the map's edges are.
+  const map = await townMap(page);
+  const centre: [number, number] = [Math.floor(map.width / 2), Math.floor(map.height / 2)];
   const fountain = () =>
-    page.evaluate(() => {
+    page.evaluate(([x, y]) => {
       const handle = (window as unknown as {
         __jeveWorld: Record<
           string,
           { screenPositionOfTile(x: number, y: number): { x: number; y: number } }
         >;
       }).__jeveWorld.explore!;
-      return handle.screenPositionOfTile(20, 14);
-    });
+      return handle.screenPositionOfTile(x, y);
+    }, centre);
   const before = await fountain();
 
   const box = (await page.getByTestId("world-canvas").boundingBox())!;

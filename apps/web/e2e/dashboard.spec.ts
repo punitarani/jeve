@@ -10,34 +10,60 @@ import { expect, test, type Page } from "@playwright/test";
  * Needs the stack up: `make db-up && make fixture && make api` and the web app.
  */
 
+/** The roster as the API serves it: counts and ids are read, never written down here. */
+type State = {
+  persons: Record<string, number>;
+  orgs: { id: string; name: string }[];
+};
+
+/**
+ * The API the page is reading from: the build inlines it, so the test run
+ * that built the page has it in the environment; a page that is already up
+ * says so through the origin of its own `/state` fetch.
+ */
+async function state(page: Page): Promise<State> {
+  const fromEnv = process.env.NEXT_PUBLIC_JEVE_API;
+  const seen =
+    fromEnv ??
+    (await page.evaluate(() => {
+      const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+      return entries.find((entry) => /\/state$/.test(entry.name))?.name.replace(/\/state$/, "") ?? null;
+    })) ??
+    "http://127.0.0.1:8000";
+  const response = await page.request.get(`${seen}/state`);
+  expect(response.ok(), "GET /state").toBe(true);
+  return (await response.json()) as State;
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("status-strip")).toBeVisible();
 });
 
-test("the world is on screen: clock, four orgs, modules, people", async ({
+test("the world is on screen: clock, every org, modules, people", async ({
   page,
 }) => {
   await expect(page.getByTestId("clock")).toContainText(/^d\d+ \w{3} \d\d:\d\d$/);
 
-  for (const org of ["tallybird", "halloran", "ledgerline", "thirdrail"]) {
-    await expect(page.getByTestId(`org-${org}`)).toBeVisible();
+  const { orgs, persons } = await state(page);
+  expect(orgs.length).toBeGreaterThan(0);
+  for (const org of orgs) {
+    await expect(page.getByTestId(`org-${org.id}`)).toBeVisible();
+    // Money is rendered from integer cents, so it must look like money.
+    await expect(page.getByTestId(`org-${org.id}`)).toContainText(/\$[\d,]+/);
   }
 
-  // Money is rendered from integer cents, so it must look like money.
-  await expect(page.getByTestId("org-tallybird")).toContainText(/\$[\d,]+/);
-
-  await expect(page.getByTestId("status-strip")).toContainText("24 staff");
+  await expect(page.getByTestId("status-strip")).toContainText(`${persons.staff} staff`);
   await expect(page.getByTestId("status-strip")).toContainText(
-    "400 counterparties",
+    `${persons.counterparty} counterparties`,
   );
 });
 
 test("no org is owed a negative amount", async ({ page }) => {
   // A receivable that went negative is money arriving that was never owed —
   // a balance sheet that lies while the ledger still sums to zero.
-  for (const org of ["tallybird", "halloran", "ledgerline", "thirdrail"]) {
-    await expect(page.getByTestId(`org-${org}`)).not.toContainText("-$");
+  for (const org of (await state(page)).orgs) {
+    await expect(page.getByTestId(`org-${org.id}`)).not.toContainText("-$");
   }
 });
 
@@ -101,8 +127,9 @@ test("a person's decisions show what was chosen and the draw behind it", async (
   await select.click();
 
   // Base UI renders the select's items as a listbox overlay, not <option>s.
+  // Everybody on the roster is in it: the fetch asks for all of them.
   const options = await page.getByRole("option").allTextContents();
-  expect(options.length).toBe(24);
+  expect(options.length).toBe((await state(page)).persons.staff);
 
   // Pick someone who actually decides in the flows that are wired up.
   const decider = options.find(
@@ -133,19 +160,23 @@ const orgsOnScreen = (page: Page) =>
     );
 
 test("filtering to one org narrows the timeline", async ({ page }) => {
+  // The cafe, whose till makes it the noisiest row, if the roster still has
+  // it; any firm otherwise.
+  const orgs = (await state(page)).orgs;
+  const org = (orgs.find((o) => o.id === "thirdrail") ?? orgs[0])!.id;
   // Not a row count: emptying the lane brings the foot of it into view and
   // pulls older pages in, so the count is the filter's side effect rather than
   // its claim. The claim is that nothing else is left.
-  expect(await orgsOnScreen(page)).not.toEqual(["thirdrail"]);
+  expect(await orgsOnScreen(page)).not.toEqual([org]);
 
   await page
-    .getByTestId("org-thirdrail")
+    .getByTestId(`org-${org}`)
     .getByRole("button", { name: "only" })
     .click();
 
   await expect
     .poll(async () => orgsOnScreen(page), { timeout: 10_000 })
-    .toEqual(["thirdrail"]);
+    .toEqual([org]);
 });
 
 test("encounters start filtered out, and the chip puts them back", async ({

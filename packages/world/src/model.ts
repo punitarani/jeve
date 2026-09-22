@@ -7,20 +7,26 @@
  * renderer is a view over it and nothing more.
  *
  * The server ticks coarsely (a tick is fifteen sim-minutes) and says, for each
- * person who changed zone, the tiles they walked. The client's whole job is to
+ * person who changed zone, the nodes they walked. The client's whole job is to
  * spread that walk over the real seconds until the next tick.
+ *
+ * A zone is a string: a firm's id, `plaza` or `home` (WORLD-0006). A node is
+ * a tile and a floor; floor 0 is the ground and the street, and each upper
+ * floor is a storey of its own over its building's footprint.
  */
-import type { Agent, AgentsFrame, Tile, TownMap, Zone } from "@jeve/contracts";
+import type { Agent, AgentsFrame, Node, TownMap } from "@jeve/contracts";
 
 import { minuteOfDay, skyAt } from "./sky";
+import { STOREY } from "./voxels";
 
 export type Move = {
   seq: number;
   tick: number;
   personId: string;
-  fromZone: Zone;
-  toZone: Zone;
-  path: Tile[];
+  fromZone: string;
+  toZone: string;
+  /** (x, y, floor) nodes, both ends included. A flight of stairs is two nodes on one tile. */
+  path: Node[];
 };
 
 export type Walker = {
@@ -28,7 +34,9 @@ export type Walker = {
   name: string;
   orgId: string;
   role: string;
-  zone: Zone;
+  zone: string;
+  /** 0 on the ground or off the map; a storey of the building they are in. */
+  floor: number;
   mood: number;
   /** Tile coordinates, fractional while walking. */
   x: number;
@@ -38,11 +46,11 @@ export type Walker = {
   walking: boolean;
   /** Stable per-person phase so idle bobbing is not in lockstep. */
   phase: number;
-  route: Tile[] | null;
+  route: Node[] | null;
   routeStart: number;
   routeEnd: number;
   /** Where the walk ends up: a zone, or off the map. */
-  routeToZone: Zone | null;
+  routeToZone: string | null;
 
   // -- pose (WEB-0004). All optional, all set through `WorldModel.setPose`. --
   // The renderer draws from these and from nothing else: it does not read the
@@ -86,6 +94,8 @@ const STALL_BEFORE_FIRST_EVENT_MS = 3000;
 const STALL_WHILE_LIVE_MS = 40000;
 const REPLAY_TICK_MS = 2600;
 const REPLAY_TICKS = 4;
+/** The least recorded movement kept, however few people there are. */
+const MIN_HISTORY = 240;
 
 function hash(text: string): number {
   let h = 2166136261;
@@ -113,6 +123,12 @@ export class WorldModel {
    * anything a visitor sees.
    */
   clockOverride: number | null = null;
+  /**
+   * Storeys above this one are not shown, and neither are the people on them:
+   * a cut through the building, for looking at a floor the ones above would
+   * hide. Null shows everything. The renderer and picking both read it.
+   */
+  levelCut: number | null = null;
 
   private truth = new Map<string, Agent>();
   private history: Move[] = [];
@@ -129,6 +145,20 @@ export class WorldModel {
   /** Minutes since midnight on the sim clock: what the sky is a function of. */
   get minute(): number {
     return this.clockOverride ?? minuteOfDay(this.label);
+  }
+
+  /** Whether the level cut leaves this person in view. */
+  shown(walker: Walker): boolean {
+    return this.levelCut === null || walker.floor <= this.levelCut;
+  }
+
+  /**
+   * How much recorded movement to keep: enough for the replay's few ticks
+   * even when everyone walks at once, so it grows with the staff rather than
+   * being a number that was right for two dozen people.
+   */
+  private get historyLimit(): number {
+    return Math.max(MIN_HISTORY, this.walkers.size * REPLAY_TICKS * 2);
   }
 
   /**
@@ -182,6 +212,7 @@ export class WorldModel {
       orgId: agent.org_id,
       role: agent.role,
       zone: agent.zone,
+      floor: agent.floor,
       mood: agent.mood,
       x: agent.x ?? 0,
       y: agent.y ?? 0,
@@ -199,6 +230,7 @@ export class WorldModel {
 
   private settle(walker: Walker, agent: Agent): void {
     walker.zone = agent.zone;
+    walker.floor = agent.floor;
     walker.mood = agent.mood;
     walker.visible = agent.x !== null;
     if (agent.x !== null && agent.y !== null) {
@@ -209,7 +241,7 @@ export class WorldModel {
 
   /** Movement the server has already recorded, kept for the idle replay. */
   seedHistory(moves: Move[]): void {
-    this.history = [...moves].sort((a, b) => a.seq - b.seq).slice(-240);
+    this.history = [...moves].sort((a, b) => a.seq - b.seq).slice(-this.historyLimit);
   }
 
   /**
@@ -233,7 +265,8 @@ export class WorldModel {
   liveMove(move: Move, now: number): void {
     this.noteSeq(move.seq, now);
     this.history.push(move);
-    if (this.history.length > 240) this.history.shift();
+    const over = this.history.length - this.historyLimit;
+    if (over > 0) this.history.splice(0, over);
     this.walk(move, now);
   }
 
@@ -268,6 +301,7 @@ export class WorldModel {
     walker.visible = true;
     walker.x = first[0];
     walker.y = first[1];
+    walker.floor = first[2];
   }
 
   /** Advance every walker to `now`. Returns how many are mid-walk. */
@@ -293,6 +327,9 @@ export class WorldModel {
         const f = at - index;
         walker.x = a[0] + (b[0] - a[0]) * f;
         walker.y = a[1] + (b[1] - a[1]) * f;
+        // A flight of stairs is one node on each floor at the same tile: on
+        // that step nothing moves but the floor, which changes at the midpoint.
+        walker.floor = f < 0.5 ? a[2] : b[2];
         if (a[0] !== b[0] || a[1] !== b[1]) {
           walker.heading = Math.atan2(b[0] - a[0], b[1] - a[1]);
         }
@@ -370,7 +407,9 @@ export class WorldModel {
   /**
    * Counterparties are demand flows, not people with positions. They are drawn
    * as a sampled crowd: the count is real (last tick's arrivals), the spots are
-   * a stable shuffle so dots do not jump about between frames.
+   * a stable shuffle so dots do not jump about between frames. `counts` is
+   * keyed by zone — each social firm's id and the plaza — and so is the map's
+   * `crowd_spots`, all of which are on the ground floor.
    */
   private layoutCrowd(counts: Record<string, number>): void {
     const map = this.map;
@@ -398,9 +437,11 @@ export class WorldModel {
   /**
    * The person nearest a screen point, by projected position.
    *
-   * Not a raycast against instanced meshes: there are at most a few dozen
-   * people, an instanced mesh's cached bounds go stale as instances move, and
-   * this way a click resolves identically with no GPU at all.
+   * Not a raycast against instanced meshes: there are a few hundred people at
+   * most, an instanced mesh's cached bounds go stale as instances move, and
+   * this way a click resolves identically with no GPU at all. Somebody on an
+   * upper floor is projected from that floor's height, as they are drawn; and
+   * somebody the level cut hides cannot be clicked.
    */
   pick(
     px: number,
@@ -411,8 +452,8 @@ export class WorldModel {
     let best: Walker | null = null;
     let bestDistance = radius * radius;
     for (const walker of this.walkers.values()) {
-      if (!walker.visible) continue;
-      const p = project(walker.x, 0.7, walker.y);
+      if (!walker.visible || !this.shown(walker)) continue;
+      const p = project(walker.x, 0.7 + walker.floor * STOREY, walker.y);
       const d = (p.x - px) ** 2 + (p.y - py) ** 2;
       if (d < bestDistance) {
         bestDistance = d;
@@ -422,7 +463,7 @@ export class WorldModel {
     return best;
   }
 
-  zoneAt(tileX: number, tileY: number): Zone | null {
+  zoneAt(tileX: number, tileY: number): string | null {
     const row = this.map?.zones[Math.floor(tileY)];
     return row?.[Math.floor(tileX)] ?? null;
   }
@@ -440,13 +481,14 @@ export class WorldModel {
     sky: string;
     sunIntensity: number;
     lamps: number;
-    agents: { id: string; x: number; y: number; zone: Zone; visible: boolean }[];
+    agents: { id: string; x: number; y: number; floor: number; zone: string; visible: boolean }[];
   } {
     const sky = skyAt(this.minute);
     const agents = [...this.walkers.values()].map((w) => ({
       id: w.id,
       x: Math.round(w.x * 100) / 100,
       y: Math.round(w.y * 100) / 100,
+      floor: w.floor,
       zone: w.zone,
       visible: w.visible,
     }));

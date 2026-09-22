@@ -343,7 +343,7 @@ def test_responses_match_the_pydantic_contract(client: TestClient) -> None:
 def test_economics_reports_measured_spend(client: TestClient) -> None:
     body = client.get("/economics").json()
     assert body["sim_days"] >= 1
-    assert body["counts"]["persons"] == 424
+    assert body["counts"]["persons"] == HEADCOUNT + sum(o.counterparties for o in ORGS)
     # A rules-only run costs nothing, and saying so is the honest answer.
     assert body["spend_usd"] == 0.0
     assert body["model_calls"] == 0
@@ -489,8 +489,9 @@ def test_teams_are_floors_with_a_headcount_and_a_presence(client: TestClient) ->
 
 
 def test_people_can_be_found_by_name_role_or_team(client: TestClient) -> None:
-    found = client.get("/persons", params={"q": "boateng"}).json()["persons"]
-    assert [p["name"] for p in found] == ["Kwame Boateng"]
+    found = client.get("/persons", params={"q": "kwame boat"}).json()["persons"]
+    assert "Kwame Boateng" in {p["name"] for p in found}
+    assert all("Boateng" in p["name"] for p in found)
     team = client.get("/persons", params={"team": "tallybird.support"}).json()
     assert team["persons"]
     assert {p["team_id"] for p in team["persons"]} == {"tallybird.support"}

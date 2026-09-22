@@ -3,13 +3,13 @@
 import {
 	AgentDetail,
 	EncounterDialogue,
-	ORG_PALETTE,
+	ORG_COLORS,
 	OrgDetail,
 	type AgentDetail as Agent,
 	type EncounterDialogue as Dialogue,
 	type OrgDetail as Org,
 } from "@jeve/contracts";
-import { mountWorld, type WorldStatus } from "@jeve/world";
+import { mountWorld, type WorldHandle, type WorldStatus } from "@jeve/world";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -29,9 +29,25 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 
 const MOODS = ["stressed", "flat", "content", "upbeat"];
 
+/** Floors are counted from the ground, as a lift button would. */
+function floorWord(floor: number): string {
+	return floor === 0 ? "ground floor" : `floor ${floor}`;
+}
+
+/**
+ * Where somebody is, for a caption: a zone is a firm's id, `plaza` or
+ * `home` (WORLD-0006), and inside a building the floor says which storey.
+ */
+function where(zone: string, floor: number): string {
+	if (zone === "home") return "at home";
+	if (zone === "plaza") return "in the plaza";
+	return `at ${zone}, ${floorWord(floor)}`;
+}
+
 /** The full-page town: pan, zoom, click a person, click a building. */
 export function WorldExplorer() {
 	const container = useRef<HTMLDivElement>(null);
+	const world = useRef<WorldHandle | null>(null);
 	const [status, setStatus] = useState<WorldStatus | null>(null);
 	const [agentId, setAgentId] = useState<string | null>(null);
 	const [orgId, setOrgId] = useState<string | null>(null);
@@ -59,8 +75,17 @@ export function WorldExplorer() {
 				}
 			},
 		});
-		return () => handle.dispose();
+		world.current = handle;
+		return () => {
+			world.current = null;
+			handle.dispose();
+		};
 	}, []);
+
+	// A firm's colour, from the map the scene already holds (CORE-0012); the
+	// generated roster colour until it has arrived, for a panel opened first.
+	const colorOf = (id: string): string =>
+		world.current?.paletteOf(id)?.body ?? ORG_COLORS[id] ?? "#999";
 
 	return (
 		<main className="world-page">
@@ -88,7 +113,11 @@ export function WorldExplorer() {
 					<ScrollArea className="h-full">
 						<div className="p-3">
 							{agentId !== null ? (
-								<AgentPanel id={agentId} tick={status?.tick ?? 0} />
+								<AgentPanel
+									id={agentId}
+									tick={status?.tick ?? 0}
+									colorOf={colorOf}
+								/>
 							) : orgId !== null ? (
 								<OrgPanel id={orgId} tick={status?.tick ?? 0} />
 							) : (
@@ -181,7 +210,15 @@ function Bars({
 	);
 }
 
-function AgentPanel({ id, tick }: { id: string; tick: number }) {
+function AgentPanel({
+	id,
+	tick,
+	colorOf,
+}: {
+	id: string;
+	tick: number;
+	colorOf: (orgId: string) => string;
+}) {
 	const { data, error } = useDetail<Agent>(
 		`/world/agents/${encodeURIComponent(id)}`,
 		AgentDetail,
@@ -202,16 +239,17 @@ function AgentPanel({ id, tick }: { id: string; tick: number }) {
 			</Card>
 		);
 	const d = data.last_decision;
-	const color = ORG_PALETTE[data.org_id]?.body ?? "#999";
+	const color = colorOf(data.org_id);
 	return (
 		<Card size="sm" data-testid="agent-panel" data-person={data.id}>
 			<CardHeader>
 				<CardTitle className="text-[15px] font-semibold">
 					<span className="swatch" style={{ background: color }} /> {data.name}
 				</CardTitle>
-				<p className="muted fineprint">
+				<p className="muted fineprint" data-testid="agent-where">
 					{data.role.replaceAll("_", " ")} · {data.org_name} ·{" "}
-					{data.zone.replaceAll("_", " ")} · {MOODS[data.mood] ?? "—"}
+					{data.team_name} · {where(data.zone, data.floor)} ·{" "}
+					{MOODS[data.mood] ?? "—"}
 				</p>
 			</CardHeader>
 			<CardContent>
@@ -395,14 +433,18 @@ function OrgPanel({ id, tick }: { id: string; tick: number }) {
 				<CardContent className="text-muted-foreground">…</CardContent>
 			</Card>
 		);
-	const color = ORG_PALETTE[data.id]?.body ?? "#999";
+	// The firm's own colours come with its books (CORE-0012).
+	const color = data.palette.body;
 	return (
 		<Card size="sm" data-testid="org-panel" data-org={data.id}>
 			<CardHeader>
 				<CardTitle className="text-[15px] font-semibold">
 					<span className="swatch" style={{ background: color }} /> {data.name}
 				</CardTitle>
-				<p className="muted fineprint">{data.kind}</p>
+				<p className="muted fineprint">
+					{data.kind} · {data.archetype} ·{" "}
+					{data.floors === 1 ? "one floor" : `${data.floors} floors`}
+				</p>
 			</CardHeader>
 			<CardContent>
 				<dl className="fields">
@@ -423,6 +465,17 @@ function OrgPanel({ id, tick }: { id: string; tick: number }) {
 						{data.active.length > 0 ? data.active.join("; ") : "nothing unusual"}
 					</dd>
 				</dl>
+				<h4>Teams, by floor</h4>
+				<ul className="traits" data-testid="org-teams">
+					{data.teams.map((team) => (
+						<li key={team.id} data-testid="org-team">
+							{team.name}{" "}
+							<span className="muted">
+								{floorWord(team.floor)} · {team.present} of {team.headcount} in
+							</span>
+						</li>
+					))}
+				</ul>
 			</CardContent>
 		</Card>
 	);

@@ -138,7 +138,7 @@ def test_a_failed_tick_leaves_no_gap_either(
     def explode(*args: object, **kwargs: object) -> None:
         raise RuntimeError("the cafe caught fire")
 
-    monkeypatch.setattr(engine, "_cafe", explode)
+    monkeypatch.setattr(engine, "_retail", explode)
     with pytest.raises(RuntimeError, match="caught fire"):
         engine.tick()
     monkeypatch.undo()
