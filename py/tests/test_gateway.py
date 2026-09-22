@@ -17,6 +17,7 @@ import pytest
 from psycopg import Connection
 from psycopg.rows import DictRow
 
+from jeve import telemetry
 from jeve.config import Settings
 from jeve.errors import (
     BudgetExceededError,
@@ -37,7 +38,7 @@ from jeve.llm import (
     Score,
 )
 from jeve.llm.gateway import MAX_ATTEMPTS, parse_decision
-from tests.conftest import RecordingSink
+from tests.conftest import Captured, RecordingSink
 from tests.test_catalog import DECISION_MODELS, DEFAULT_MODELS
 
 JEV = "typesafe/jev-1.13"
@@ -752,3 +753,157 @@ async def test_closing_the_gateway_flushes(
     await gateway.aclose()
 
     assert spans.flushes == 1
+
+
+# -- Sentry (CORE-0012) ----------------------------------------------------
+
+
+async def test_each_attempt_is_metered_with_its_outcome(
+    tmp_path: Path, sentry: Captured
+) -> None:
+    """A retry storm shows as a count of `http-5xx`, not as one slow `ok` —
+    and the cost on the metric is the cost the ledger booked (LLM-0007)."""
+
+    replies = iter(
+        [
+            httpx.Response(503, text="unavailable"),
+            httpx.Response(200, json=DECISION_BODY),
+        ]
+    )
+    recorder = Recorder(decisions=replies)
+    gateway = await _gateway(tmp_path, recorder)
+    await gateway.decide(_decision_request())
+    await gateway.aclose()
+
+    calls = sentry.metrics_named("jeve.llm.calls")
+    assert [c["attributes"]["outcome"] for c in calls] == ["http-503", "ok"]
+    assert [c["attributes"]["http_status"] for c in calls] == [503, 200]
+    assert {c["attributes"]["endpoint"] for c in calls} == {"decisions"}
+    assert {c["attributes"]["model"] for c in calls} == {JEV}
+    assert len(sentry.metrics_named("jeve.llm.latency")) == 2
+
+    costs = sentry.metrics_named("jeve.llm.cost_usd")
+    # The 503 settles at worst case, estimated; the 200 at OpenRouter's number.
+    assert [c["attributes"]["estimated"] for c in costs] == [True, False]
+    assert costs[1]["value"] == pytest.approx(DECISION_BODY["usage"]["cost"])
+    tokens = {
+        t["attributes"]["direction"]: t["value"]
+        for t in sentry.metrics_named("jeve.llm.tokens")
+    }
+    assert tokens == {"in": 400, "out": 30}
+
+
+async def test_a_rejected_attempt_is_counted_but_costs_nothing(
+    tmp_path: Path, sentry: Captured
+) -> None:
+    """A 429 is refused before inference and its reservation released: a count
+    and a latency, no cost — the metric must not invent a bill."""
+
+    replies = iter(
+        [
+            httpx.Response(429, text="slow down"),
+            httpx.Response(200, json=DECISION_BODY),
+        ]
+    )
+    gateway = await _gateway(tmp_path, Recorder(decisions=replies))
+    await gateway.decide(_decision_request())
+    await gateway.aclose()
+
+    outcomes = [
+        c["attributes"]["outcome"] for c in sentry.metrics_named("jeve.llm.calls")
+    ]
+    assert outcomes == ["http-429", "ok"]
+    assert [
+        c["attributes"]["estimated"] for c in sentry.metrics_named("jeve.llm.cost_usd")
+    ] == [False]
+
+
+async def test_a_decision_span_nests_under_the_tick_it_was_asked_in(
+    tmp_path: Path, sentry: Captured
+) -> None:
+    """The tick's handle crosses the bridge; the HTTP span nests on its own."""
+
+    recorder = Recorder()
+    gateway = await _gateway(tmp_path, recorder)
+    with telemetry.span("sim.tick", root=True):
+        await gateway.decide_raw(_decision_request(), sentry_parent=telemetry.current())
+    await gateway.aclose()
+
+    (tick,) = sentry.spans_named("sim.tick")
+    (decide,) = sentry.spans_named("jev.decide")
+    assert decide["parent_span_id"] == tick["span_id"]
+    assert decide["attributes"]["sentry.op"] == "llm.decide"
+    assert decide["attributes"]["llm.served_model"] == DECISION_BODY["model"]
+    assert decide["attributes"]["llm.provider"] == "TypeSafe"
+    assert decide["attributes"]["llm.cost_usd"] == pytest.approx(
+        DECISION_BODY["usage"]["cost"]
+    )
+    assert decide["attributes"]["llm.tokens_in"] == 400
+    # No prompt and no answers: that is Braintrust's job (LLM-0008).
+    assert not any(key.startswith("llm.state") for key in decide["attributes"])
+    # Under it: the POST itself, and the `/key` reconciliation the attempt
+    # makes first — both HTTP, both the call's, neither a trace of its own.
+    tries = [s for s in sentry.spans() if s.get("parent_span_id") == decide["span_id"]]
+    assert tries and all(t["attributes"]["sentry.op"] == "http.client" for t in tries)
+    assert any(t["name"].endswith("/alpha/decisions") for t in tries)
+
+
+async def test_telemetry_adds_no_headers_and_changes_no_bytes(
+    tmp_path: Path, sentry: Captured
+) -> None:
+    """DECIDE-0004 again, for the second backend: the request is the cache key,
+    and OpenRouter is not part of our trace."""
+
+    recorder = Recorder()
+    gateway = await _gateway(tmp_path, recorder)
+    request = _decision_request().model_copy(update={"provider": None})
+    with telemetry.span("sim.tick", root=True):
+        await gateway.decide_raw(request, sentry_parent=telemetry.current())
+    await gateway.aclose()
+
+    sent = recorder.requests[-1]
+    assert sent.content == request.wire_bytes()
+    assert "sentry-trace" not in sent.headers
+    assert "baggage" not in sent.headers
+
+
+async def test_starting_the_gateway_is_one_root_span(
+    tmp_path: Path, sentry: Captured
+) -> None:
+    """`start()` runs on the gateway thread where no tick is active; without
+    a root of its own, each of its HTTP calls would be a trace by itself."""
+
+    gateway = await _gateway(tmp_path, Recorder())
+    await gateway.aclose()
+
+    (start,) = sentry.roots()
+    assert start["name"] == "gateway.start"
+    calls = [s for s in sentry.spans() if s.get("parent_span_id") == start["span_id"]]
+    assert calls and all(c["attributes"]["sentry.op"] == "http.client" for c in calls)
+
+
+async def test_prose_is_a_chat_span_too(tmp_path: Path, sentry: Captured) -> None:
+    recorder = Recorder()
+    gateway = await _gateway(tmp_path, recorder)
+    with telemetry.span("dialogue", root=True):
+        await gateway.complete(
+            ChatRequest(
+                model=GLM,
+                messages=[ChatMessage(role="user", content="Say something.")],
+                max_tokens=64,
+                seed=7,
+            ),
+            purpose="explore",
+        )
+    await gateway.aclose()
+
+    (chat,) = sentry.spans_named("chat.completion")
+    assert chat["attributes"]["sentry.op"] == "llm.chat"
+    assert chat["attributes"]["llm.purpose"] == "explore"
+    assert chat["attributes"]["llm.tokens_in"] == 37
+    assert chat["attributes"]["llm.cost_usd"] == pytest.approx(
+        CHAT_BODY["usage"]["cost"]
+    )
+    assert {
+        c["attributes"]["endpoint"] for c in sentry.metrics_named("jeve.llm.calls")
+    } == {"chat"}

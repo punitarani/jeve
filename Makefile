@@ -75,6 +75,10 @@ persona-probe: ## Does sampling Jev preserve persona? 280 live calls, ~half a ce
 spend: ## What has been spent so far — from the table, not the checkpoint
 	@$(UV) python -c "from jeve.llm.ledger import SpendLedger; import json; s = SpendLedger().read(); print(json.dumps({'effective_usd': round(s.effective_usd, 6), 'settled_usd': round(s.settled_usd, 6), 'reserved_usd': round(s.reserved_usd, 6), 'calls': s.calls, 'baseline_usd': s.baseline_usd, 'remote_usd': s.remote_usd}, indent=2))" 2>/dev/null || (test -f ops/spend.json && cat ops/spend.json || echo '{"effective_usd": 0}')
 
+.PHONY: sentry-probe
+sentry-probe: ## One issue, span, metric and log to the SERVICE=api|sim Sentry project (default sim)
+	$(UV) python scripts/sentry_probe.py $(or $(SERVICE),sim)
+
 .PHONY: db-up
 db-up: ## Start Postgres and apply migrations
 	docker compose up -d --wait

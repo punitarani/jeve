@@ -11,6 +11,9 @@ dependencies = [
     "httpx>=0.28",
     "psycopg[binary,pool]>=3.2",
     "pydantic>=2.9",
+    # CORE-0012: errors, traces, metrics and logs. Guarded behind
+    # `jeve.telemetry`, and not imported at all unless a DSN is set.
+    "sentry-sdk[fastapi,httpx]>=2.69",
     "uvicorn[standard]>=0.34",
 ]
 

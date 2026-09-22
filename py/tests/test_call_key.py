@@ -110,7 +110,11 @@ class _AnotherBuildAnswers:
         self._payload = {**payload, "model": served}
 
     def fetch(
-        self, requests: Sequence[DecisionRequest], *, parent: str | None = None
+        self,
+        requests: Sequence[DecisionRequest],
+        *,
+        parent: str | None = None,
+        sentry_parent: object | None = None,
     ) -> list[RawDecision]:
         return [
             RawDecision(payload=dict(self._payload), usage=Usage(), latency_s=0.1)

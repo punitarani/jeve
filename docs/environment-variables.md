@@ -3,7 +3,7 @@
 Only variables the code actually reads are listed here — if a name is not in
 this table, setting it does nothing. Sources: `py/src/jeve/config.py`,
 `py/src/jeve/db.py`, `py/src/jeve/sim/daemon.py`, `py/src/jeve/sim/runner.py`,
-`py/src/jeve/tracing.py`.
+`py/src/jeve/tracing.py`, `py/src/jeve/telemetry.py`.
 
 ## Database
 
@@ -66,6 +66,28 @@ Spans carry OpenRouter's reported cost as `metrics.estimated_cost`, so a trace
 and the `spend_entries` ledger price a call the same way. A tracing failure is
 never fatal: it prints one line and latches off for the process.
 
+## Observability (`jeve.telemetry`, CORE-0012)
+
+Errors, traces, metrics and structured logs to Sentry. One project per
+process; the DSN is the only switch, and the same three rules as Braintrust
+apply — unset means no import and no socket, a failure prints one line and
+latches off, nothing on the wire changes.
+
+| Variable | Read by | Default | Notes |
+|---|---|---|---|
+| `SENTRY_DSN_API` | api | unset | The API's project. `/state`'s `health.sentry` says whether it is present. |
+| `SENTRY_DSN_SIM` | sim | unset | The daemon's project. |
+| `SENTRY_DSN` | both | unset | Fallback when the per-service one is unset — a compose stack, or one project for everything. Never the other service's DSN. |
+| `SENTRY_ENVIRONMENT` | both | `development` | `fly.toml` sets `production`. |
+| `SENTRY_RELEASE` | both | `FLY_IMAGE_REF`, else unset | Names the deploy that is running. |
+
+Traces run in Sentry's stream mode: one root span per tick (`sim.tick`) with
+the model calls nested under it, one per API request named by route template
+(`/causal/{seq}`). `/health` and `/stream` are never traced. The daemon's
+prints are unchanged; `sim_meta.status` transitions are the structured log
+(`sim status: …`), halts are issues tagged `sim.exit_code`, and weather
+(SIM-0002) is a count, never an issue.
+
 ## Test hooks
 
 | Variable | Read by | Notes |
@@ -77,19 +99,27 @@ never fatal: it prints one line and latches off for the process.
 | Variable | Default | Notes |
 |---|---|---|
 | `NEXT_PUBLIC_JEVE_API` | `http://127.0.0.1:8000` | **Build-time inlined** (WEB-0005). Production: `https://jeve-api.punitarani.com`. |
+| `NEXT_PUBLIC_SENTRY_DSN` | unset | **Build-time inlined** (CORE-0012). The browser's project; unset, the SDK is a no-op and no request leaves the page. Public by nature — it ships in the bundle. |
+| `NEXT_PUBLIC_SENTRY_ENVIRONMENT` | `development` | Build-time; CI sets `production`. |
+| `SENTRY_ORG`, `SENTRY_PROJECT` | unset | Build-time, `next.config.ts` only: where source maps are uploaded. Nothing happens without `SENTRY_AUTH_TOKEN`. |
 
 ## CI/CD credentials (GitHub secrets / Doppler `infra`)
 
 `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `FLY_API_TOKEN`. Nothing in
-the codebase reads them; they authenticate the deploy jobs.
+the codebase reads them; they authenticate the deploy jobs. `SENTRY_AUTH_TOKEN`
+is read by `next.config.ts` during the `deploy-web` build to upload source
+maps; without it (the `web` and `docker` jobs, `make e2e`) no source maps are
+generated at all, so `out/` never carries a `.map`.
 
 ## Doppler layout
 
 Three projects, matching the `.env.*.example` files:
 
-* **app** — `NEXT_PUBLIC_JEVE_API` (build-time only)
-* **worker** — everything above for api + sim; synced to `fly secrets`
-* **infra** — the CI/CD credentials
+* **app** — `NEXT_PUBLIC_JEVE_API`, `NEXT_PUBLIC_SENTRY_DSN`, `SENTRY_ORG`,
+  `SENTRY_PROJECT` (build-time only; in CI they are repository `vars`)
+* **worker** — everything above for api + sim, `SENTRY_DSN_API` and
+  `SENTRY_DSN_SIM` included; synced to `fly secrets`
+* **infra** — the CI/CD credentials, `SENTRY_AUTH_TOKEN` included
 
 ```bash
 doppler run --project worker --config dev -- make api

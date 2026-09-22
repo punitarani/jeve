@@ -11,6 +11,7 @@ How jeve runs in production (OPS-0001), and how to operate it.
 | Daemon (`py/src/jeve/sim`) | Fly.io process group `sim` | No ingress; the only writer, on the direct DSN |
 | Postgres | Fly Postgres (or any managed PG) | us-east-1; app region `iad` |
 | Secrets | Doppler → `fly secrets` / GitHub Actions | Nothing sensitive in `fly.toml`/`wrangler.toml` |
+| Errors, traces, metrics, logs | Sentry, three projects: `api`, `sim`, `web` | Off without a DSN (CORE-0012); Braintrust keeps what the model said (LLM-0008) |
 
 ```mermaid
 flowchart LR
@@ -51,6 +52,10 @@ fly secrets set JEVE_DATABASE_URL=postgresql://...@jeve-db.internal:5432/jeve
 # Config Sync. `/state`'s `health.tracing` says whether the app has the key.
 fly secrets set BRAINTRUST_API_KEY=...
 fly secrets set BRAINTRUST_PROJECT_ID=...        # unset: a project named jeve
+# Optional, same shape (CORE-0012): one Sentry project per process group.
+# Without them jeve.telemetry never imports the SDK and opens no socket;
+# `/state`'s `health.sentry` says whether the API has its key.
+fly secrets set SENTRY_DSN_API=... SENTRY_DSN_SIM=...
 # Optional, if you front Postgres with a transaction-mode pooler:
 fly secrets set JEVE_DATABASE_POOLED_URL=postgresql://...:6432/jeve
 
@@ -61,6 +66,11 @@ cd apps/web && NEXT_PUBLIC_JEVE_API=https://jeve-api.punitarani.com \
 
 CI does the same on push to `main` (`deploy-backend`, `deploy-web` in
 `.github/workflows/ci.yml`), gated on tests, contracts drift and image builds.
+The web build reads repository variables `NEXT_PUBLIC_SENTRY_DSN`,
+`SENTRY_ORG` and `SENTRY_PROJECT`, and `SENTRY_AUTH_TOKEN` from Doppler
+`infra/ci` when it exists; without the token no source maps are generated,
+and any that a failed upload leaves behind are scrubbed from `out/` before
+the deploy.
 
 ## Production bootstrap (what the first real deploy needed)
 
@@ -132,6 +142,38 @@ account cap were ever unset. OpenRouter's own cap is the real ceiling.
 `GET /encounters/{seq}/dialogue` — typed record always; prose only from the
 cache in production (`JEVE_DIALOGUE_GENERATE=off`), because the endpoint is
 unauthenticated and can spend.
+
+## Sentry (CORE-0012)
+
+Three projects in one org, one per deploy target. What lands where:
+
+| Project | Issues | Traces | Metrics | Logs |
+|---|---|---|---|---|
+| `sim` | every halt (exit 4–7, tagged `sim.exit_code` and `sim.status`), a stale writer lock (exit 3), any crash | one `sim.tick` root per tick, `jev.decide` → `http.client` under it | `jeve.sim.tick.*`, `jeve.sim.status`, `jeve.sim.weather`, `jeve.sim.spend.run_usd`, `jeve.llm.*` | `sim status: …` on every transition |
+| `api` | 5xx, a wedged stream poll (once per streak) | one root per request, named by route; `/health` and `/stream` never | `jeve.api.stream.*`, `jeve.api.health.failed`, `jeve.llm.*` (dialogue) | `stream poll recovered` |
+| `web` | uncaught render errors, contract mismatches | page loads and navigations, with the `/state` fetch connected to the API's trace | `jeve.web.api.request` per route template | `api unreachable`, `api request failed` |
+
+Weather (SIM-0002 — a 520, a timeout, a malformed reply) is a
+`jeve.sim.weather` count and a warning line, never an issue: the retry is the
+answer, and an issue per one would bury the halts that need a person.
+
+**First run**: with the DSNs in the environment,
+
+```bash
+doppler run --project worker --config prd -- make sentry-probe SERVICE=sim
+doppler run --project worker --config prd -- make sentry-probe SERVICE=api
+```
+
+sends one `ProbeError` issue, one `probe` span, one `jeve.probe` count and one
+log line to each project; resolve the issues once seen. Then
+`curl https://jeve-api.punitarani.com/state | jq .health.sentry` should be
+`true`, and a page load on the site should appear as a browser → API trace in
+the `web` project.
+
+**Alerts worth creating**: no `sim.tick` span for five minutes (the world
+stopped and nothing said so); `jeve.sim.status` with `status` in
+`waiting_on_model`, `waiting_on_budget` or `halted`; any new issue in `sim`;
+API roots with error status.
 
 ## Operations
 

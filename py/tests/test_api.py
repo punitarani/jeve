@@ -18,6 +18,7 @@ from jeve.core.clock import SimTime, at
 from jeve.decide.policy import RulesPolicy
 from jeve.world.engine import Engine, skip_to_next_open
 from jeve.world.seed_world import ROOT_SEED, seed
+from tests.conftest import Captured
 
 pytestmark = pytest.mark.timeout(300)
 
@@ -93,6 +94,22 @@ def test_state_says_whether_this_deployment_traces(
 
     monkeypatch.setenv("BRAINTRUST_API_KEY", "sk-test")
     assert client.get("/state").json()["health"]["tracing"] is True
+
+
+def test_state_says_whether_this_deployment_reports_to_sentry(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CORE-0012: the same flag for the second backend. The API's own DSN, or
+    the shared one — never the daemon's, which would be the wrong project."""
+
+    assert client.get("/state").json()["health"]["sentry"] is False
+    monkeypatch.setenv("SENTRY_DSN_SIM", "https://s@o1.ingest.sentry.io/1")
+    assert client.get("/state").json()["health"]["sentry"] is False
+    monkeypatch.setenv("SENTRY_DSN", "https://a@o1.ingest.sentry.io/2")
+    assert client.get("/state").json()["health"]["sentry"] is True
+    monkeypatch.delenv("SENTRY_DSN")
+    monkeypatch.setenv("SENTRY_DSN_API", "https://b@o1.ingest.sentry.io/3")
+    assert client.get("/state").json()["health"]["sentry"] is True
 
 
 def test_state_tells_a_dead_daemon_from_a_sleeping_one(client: TestClient) -> None:
@@ -484,3 +501,83 @@ def test_movement_stays_out_of_the_timeline_unless_asked_for(
 
     everything = client.get("/events?limit=1000&background=true").json()["events"]
     assert any(e["kind"] == "agent.moved" for e in everything)
+
+
+# -- CORE-0012: what Sentry sees of the API ------------------------------------
+
+
+@pytest.fixture
+def sentry_client(
+    client: TestClient, sentry_api: Captured
+) -> Iterator[tuple[TestClient, Captured]]:
+    """The app rebuilt under a live client.
+
+    The FastAPI integration names a service span by its route template at
+    *decoration* time. `jeve.api.app` was imported at collection, before any
+    client existed, so its routes would report `/causal/4117` rather than
+    `/causal/{seq}` for the life of the process. Reloading re-decorates them
+    under the patch; the module's own import-time `init` is a no-op behind the
+    fixture's. The module-scoped `client` keeps working: its `_pool` is gone
+    after the reload and `_db()` falls back to a direct connection.
+    """
+
+    import importlib
+
+    import jeve.api.app as module
+
+    reloaded = importlib.reload(module)
+    with TestClient(reloaded.app) as test_client:
+        yield test_client, sentry_api
+
+
+def test_a_request_is_one_service_span_named_by_its_route(
+    sentry_client: tuple[TestClient, Captured],
+) -> None:
+    """`/causal/{seq}`, never `/causal/4117`: one series per route, not one per
+    event a viewer clicked."""
+
+    test_client, seen = sentry_client
+    assert test_client.get("/state").status_code == 200
+    assert test_client.get("/causal/999999999").status_code == 404
+
+    assert {root["name"] for root in seen.roots()} == {"/state", "/causal/{seq}"}
+    (state,) = seen.spans_named("/state")
+    reads = [
+        span
+        for span in seen.spans()
+        if span.get("parent_span_id") == state["span_id"]
+        and span["attributes"].get("sentry.op") == "db"
+    ]
+    assert reads, "the database read under /state should be a span"
+    assert state["attributes"]["service"] == "api"
+
+
+def test_health_and_stream_are_not_traced(
+    sentry_client: tuple[TestClient, Captured],
+) -> None:
+    """Fly probes `/health` every ten seconds and `/stream` is a 900-second
+    body whose duration means nothing. Neither is a trace; nor is the hub's
+    poll under either of them."""
+
+    test_client, seen = sentry_client
+    assert test_client.get("/health").status_code == 200
+    with test_client.stream("GET", "/stream?after=0&lifetime_s=1") as response:
+        assert response.status_code == 200
+        response.read()
+
+    names = [span["name"] for span in seen.spans()]
+    assert not [n for n in names if n.endswith("/health") or n.endswith("/stream")]
+    assert not [span for span in seen.roots() if span["name"] == "db"]
+    gauge = [m["value"] for m in seen.metrics_named("jeve.api.stream.subscribers")]
+    assert gauge == [1.0, 0.0]
+
+
+def test_a_failing_health_check_is_counted(
+    sentry_client: tuple[TestClient, Captured], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    test_client, seen = sentry_client
+    monkeypatch.setenv("JEVE_DATABASE_URL", "postgresql://jeve:jeve@127.0.0.1:1/nope")
+    assert test_client.get("/health").status_code == 503
+
+    (failed,) = seen.metrics_named("jeve.api.health.failed")
+    assert failed["attributes"]["error"] == "OperationalError"

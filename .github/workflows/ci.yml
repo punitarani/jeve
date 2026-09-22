@@ -189,7 +189,7 @@ jobs:
       - name: No credentials in the tree
         working-directory: .
         run: |
-          if git grep -nE 'sk-or-v1-[A-Za-z0-9]' -- ':!*.md'; then
+          if git grep -nE 'sk-or-v1-[A-Za-z0-9]|sntrys_[A-Za-z0-9]' -- ':!*.md'; then
             echo "::error::An API key is committed. Rotate it."
             exit 1
           fi
@@ -281,14 +281,10 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # NEXT_PUBLIC_* is inlined at build time — wrangler vars are not (the
-      # site is a static export, WEB-0005).
-      - env:
-          NEXT_PUBLIC_JEVE_API: ${{ vars.NEXT_PUBLIC_JEVE_API }}
-        run: pnpm --filter @jeve/web build
       # The only secret in this repo is DOPPLER_TOKEN: a read-only service
       # token scoped to infra/ci, which holds just the deploy credentials —
-      # rotating a token in Doppler is the whole rotation.
+      # rotating a token in Doppler is the whole rotation. Fetched before the
+      # build, because the source-map upload happens inside it (CORE-0012).
       - uses: dopplerhq/cli-action@v4
       - name: Fetch deploy credentials from Doppler
         env:
@@ -299,6 +295,34 @@ jobs:
             echo "::add-mask::$v"
             echo "$s=$v" >> "$GITHUB_ENV"
           done
+          # Optional until the Sentry org exists: without it the build simply
+          # ships no source maps, and the deploy is unaffected.
+          if v="$(doppler secrets get SENTRY_AUTH_TOKEN -p infra -c ci --plain 2>/dev/null)" \
+             && [ -n "$v" ]; then
+            echo "::add-mask::$v"
+            echo "SENTRY_AUTH_TOKEN=$v" >> "$GITHUB_ENV"
+          else
+            echo "SENTRY_AUTH_TOKEN is not in Doppler infra/ci: no source-map upload"
+          fi
+      # NEXT_PUBLIC_* is inlined at build time — wrangler vars are not (the
+      # site is a static export, WEB-0005). The Sentry DSN is baked the same
+      # way; SENTRY_ORG/SENTRY_PROJECT say where the source maps go.
+      - env:
+          NEXT_PUBLIC_JEVE_API: ${{ vars.NEXT_PUBLIC_JEVE_API }}
+          NEXT_PUBLIC_SENTRY_DSN: ${{ vars.NEXT_PUBLIC_SENTRY_DSN }}
+          NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_PROJECT }}
+        run: pnpm --filter @jeve/web build
+      - name: No source maps reach the CDN
+        # Sentry deletes the maps it uploaded; a failed upload (an outage, a
+        # stale token) would leave them in `out/`, which is served whole.
+        # Scrubbed rather than failed: Sentry being down must not block a
+        # deploy, and the build log already carries the upload warning.
+        run: |
+          maps="$(find apps/web/out -name '*.map' | wc -l)"
+          find apps/web/out -name '*.map' -delete
+          echo "source maps removed from out/: $maps"
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:

@@ -23,6 +23,12 @@ COPY packages ./packages
 # it later, so the compose file passes the browser-visible API origin.
 ARG NEXT_PUBLIC_JEVE_API=http://127.0.0.1:8000
 ENV NEXT_PUBLIC_JEVE_API=$NEXT_PUBLIC_JEVE_API
+# CORE-0012: the browser's Sentry project, baked in the same way. Empty means
+# the SDK initialises as a no-op and nothing leaves the page.
+ARG NEXT_PUBLIC_SENTRY_DSN=
+ENV NEXT_PUBLIC_SENTRY_DSN=$NEXT_PUBLIC_SENTRY_DSN
+ARG NEXT_PUBLIC_SENTRY_ENVIRONMENT=production
+ENV NEXT_PUBLIC_SENTRY_ENVIRONMENT=$NEXT_PUBLIC_SENTRY_ENVIRONMENT
 
 # `output: "export"` makes this emit plain files to apps/web/out
 RUN pnpm --filter @jeve/web build

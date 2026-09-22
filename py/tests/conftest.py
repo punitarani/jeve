@@ -6,6 +6,7 @@ still works with no Docker); CI and `make e2e` run them for real.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -18,7 +19,10 @@ import pytest
 from psycopg import Connection, sql
 from psycopg.rows import DictRow
 
-from jeve import db, tracing
+from jeve import db, telemetry, tracing
+from jeve.config import Settings
+
+SENTRY_ENV = ("SENTRY_DSN", "SENTRY_DSN_API", "SENTRY_DSN_SIM")
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -33,6 +37,13 @@ def pytest_configure(config: pytest.Config) -> None:
     subprocesses in `test_resume` and `test_daemon` inherit the environment,
     and they must write to the same database their parent is watching.
     """
+
+    # CORE-0012: `jeve.api.app` binds telemetry at import, and `test_api.py`
+    # imports it at *collection* — before any fixture runs. A developer with a
+    # DSN exported would open a real client there. Scrubbed here, where every
+    # xdist worker passes first, and inherited by the daemon subprocesses.
+    for name in SENTRY_ENV:
+        os.environ.pop(name, None)
 
     worker = os.environ.get("PYTEST_XDIST_WORKER")
     if not worker:
@@ -209,9 +220,112 @@ def _tracing_off(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     Dropping the key rather than only resetting state, because a developer
     with `BRAINTRUST_API_KEY` exported must still get an offline run: "every
     module testable without network" is not conditional on someone's shell.
+    The same for a Sentry DSN (CORE-0012).
     """
 
     monkeypatch.delenv("BRAINTRUST_API_KEY", raising=False)
+    for name in SENTRY_ENV:
+        monkeypatch.delenv(name, raising=False)
     tracing.reset()
+    telemetry.reset()
     yield
     tracing.reset()
+    telemetry.reset()
+
+
+# -- telemetry (CORE-0012) --------------------------------------------------
+
+FAKE_DSN = "https://abc@o1.ingest.sentry.io/1"
+"""Syntactically valid, and never contacted: the transport below is ours."""
+
+
+def _flat(attributes: dict[str, Any] | None) -> dict[str, Any]:
+    """Stream-mode attributes arrive as `{key: {"type": ..., "value": ...}}`."""
+
+    return {key: entry["value"] for key, entry in (attributes or {}).items()}
+
+
+@dataclass
+class Captured:
+    """Everything the SDK handed its transport, parsed on demand.
+
+    Spans, logs and metrics sit in the SDK's batchers until a timer or a flush
+    moves them, so every accessor flushes first. Each `span`, `log` and
+    `trace_metric` envelope item is a container whose `items` are the rows; an
+    `event` item is the event itself.
+    """
+
+    envelopes: list[Any] = field(default_factory=list)
+
+    def _rows(self, kind: str) -> list[dict[str, Any]]:
+        telemetry.flush()
+        found: list[dict[str, Any]] = []
+        for envelope in self.envelopes:
+            for item in envelope.items:
+                if item.type != kind:
+                    continue
+                payload = item.payload.json
+                if payload is None:
+                    payload = json.loads(item.payload.get_bytes())
+                if kind == "event":
+                    found.append(payload)
+                    continue
+                for row in payload["items"]:
+                    found.append({**row, "attributes": _flat(row.get("attributes"))})
+        return found
+
+    def events(self) -> list[dict[str, Any]]:
+        return self._rows("event")
+
+    def spans(self) -> list[dict[str, Any]]:
+        return self._rows("span")
+
+    def logs(self) -> list[dict[str, Any]]:
+        return self._rows("log")
+
+    def metrics(self) -> list[dict[str, Any]]:
+        return self._rows("trace_metric")
+
+    def spans_named(self, name: str) -> list[dict[str, Any]]:
+        return [span for span in self.spans() if span["name"] == name]
+
+    def roots(self) -> list[dict[str, Any]]:
+        return [span for span in self.spans() if span.get("is_segment")]
+
+    def metrics_named(self, name: str) -> list[dict[str, Any]]:
+        return [metric for metric in self.metrics() if metric["name"] == name]
+
+
+def capture_telemetry(service: telemetry.Service) -> Captured:
+    """Telemetry on for `service`, pointed at memory. Nothing leaves the process.
+
+    The SDK import lives in here, never at module level: a test run with no
+    DSN must not load `sentry_sdk` as a side effect of collecting fixtures.
+    """
+
+    from sentry_sdk.transport import Transport
+
+    captured = Captured()
+
+    class Recording(Transport):
+        def capture_envelope(self, envelope: Any) -> None:
+            captured.envelopes.append(envelope)
+
+    assert telemetry.init(
+        service, settings=Settings(sentry_dsn=FAKE_DSN), transport=Recording()
+    )
+    return captured
+
+
+@pytest.fixture
+def sentry() -> Captured:
+    """The daemon's project, in memory."""
+
+    return capture_telemetry("sim")
+
+
+@pytest.fixture
+def sentry_api() -> Captured:
+    """The API's project, in memory — with the API's ignore list and integrations."""
+
+    return capture_telemetry("api")
