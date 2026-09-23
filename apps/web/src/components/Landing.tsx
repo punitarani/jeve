@@ -13,6 +13,7 @@ import { fetchLatestEvents, fetchState } from "@/lib/api";
 import { JellyLoader } from "@/components/block/jelly-loader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dashboard } from "./Dashboard";
+import { SiteFooter } from "./SiteFooter";
 import { WorldHero } from "./WorldHero";
 
 type Loaded = { state: WorldState; page: EventPage };
@@ -68,6 +69,7 @@ export function Landing() {
 					Start it with <code>make api</code>, and the world with{" "}
 					<code>make fixture</code>.
 				</p>
+				<SiteFooter />
 			</main>
 		);
 	}
@@ -87,6 +89,11 @@ export function Landing() {
 			) : (
 				<Dashboard initialState={data.state} initialPage={data.page} />
 			)}
+			<div className="section-pad">
+				<SiteFooter>
+					<span>jeve · four firms, one street, every decision a typed question</span>
+				</SiteFooter>
+			</div>
 		</>
 	);
 }
