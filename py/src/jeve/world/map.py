@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import heapq
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache, partial
+from typing import Any
 
 from jeve.core.orgs import ORGS, OrgSpec
 
@@ -106,35 +107,68 @@ class TownMap:
     entries: tuple[Tile, ...]
     """Where someone coming from home steps onto the map: the road ends."""
     fountain: tuple[Tile, ...]
+    _index: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
+    """Lookup tables built on first use: the map is frozen, so they are too."""
 
     def building(self, zone: str) -> Building:
-        for b in self.buildings:
-            if b.zone == zone:
-                return b
-        raise KeyError(f"no building for zone {zone!r}")
+        b = self._by_zone().get(zone)
+        if b is None:
+            raise KeyError(f"no building for zone {zone!r}")
+        return b
+
+    # -- the lookups a path search leans on ---------------------------------
+    #
+    # `walkable` and `kind` are called a few million times per sim-day: A* asks
+    # them for every neighbour of every node it opens, and the district is
+    # 80x56 over three storeys. Written the obvious way they scan the twelve
+    # buildings and twenty-seven storeys each time, which is how a two-day run
+    # came to spend fifteen of its thirty-eight seconds inside `find_path`.
+    # The map never changes once built, so each lookup is a table computed on
+    # first use and kept on the (frozen) map itself.
+
+    def _by_zone(self) -> dict[str, Building]:
+        table = self._index.get("by_zone")
+        if table is None:
+            table = {b.zone: b for b in self.buildings}
+            self._index["by_zone"] = table
+        return table
+
+    def _kinds(self) -> dict[Node, str]:
+        """Every node of every upper storey, by kind. The ground is `tiles`,
+        which is already a grid, so it stays out of here."""
+
+        table = self._index.get("kinds")
+        if table is None:
+            table = {}
+            for storey in self.storeys:
+                if storey.floor == 0:
+                    continue
+                b = self._by_zone().get(storey.zone)
+                if b is None:
+                    continue
+                for dy, row in enumerate(storey.tiles):
+                    for dx, tile in enumerate(row):
+                        table[(b.x0 + dx, b.y0 + dy, storey.floor)] = tile
+            self._index["kinds"] = table
+        return table
 
     def kind(self, node: Node) -> str:
         x, y, floor = node
         if floor == 0:
             return self.tiles[y][x]
-        zone = self.zones[y][x]
-        for storey in self.storeys:
-            if storey.zone == zone and storey.floor == floor:
-                b = self.building(zone)
-                return storey.tiles[y - b.y0][x - b.x0]
-        return "void"
+        return self._kinds().get(node, "void")
 
     def walkable(self, node: Node) -> bool:
         x, y, floor = node
-        if not (0 <= x < self.width and 0 <= y < self.height and floor >= 0):
-            return False
         if floor == 0:
-            return self.tiles[y][x] in WALKABLE
-        zone = self.zones[y][x]
-        b = next((b for b in self.buildings if b.zone == zone), None)
-        if b is None or floor >= b.floors or not b.contains((x, y)):
+            return (
+                0 <= x < self.width
+                and 0 <= y < self.height
+                and self.tiles[y][x] in WALKABLE
+            )
+        if floor < 0 or not (0 <= x < self.width and 0 <= y < self.height):
             return False
-        return self.kind(node) in WALKABLE
+        return self._kinds().get(node, "void") in WALKABLE
 
     def zone_of(self, tile: Tile) -> str:
         x, y = tile
@@ -974,6 +1008,7 @@ WIDTH = town().width
 HEIGHT = town().height
 
 
+@cache
 def find_path(start: Node, goal: Node) -> list[Node]:
     """A* over walkable nodes, four-connected on a floor and up or down a stair.
     Includes both ends.
@@ -981,6 +1016,14 @@ def find_path(start: Node, goal: Node) -> list[Node]:
     Deterministic: ties on cost break on the node itself, so the same two
     points give the same route on every run and every machine. Returns an
     empty list when there is no route, which on this map means a bug.
+
+    Cached, because the map is fixed and the district walks the same routes
+    over and over: two hundred people go from the same door to the same desk
+    every morning, and the same desk to the same counter at noon. The search
+    is a pure function of its two ends (`town()` is a singleton built once),
+    so the second caller gets the first one's answer. The list it returns is
+    shared — nobody may mutate it, and nobody does: `_place` writes it to the
+    database and `space` reads it as steps.
     """
 
     world = town()

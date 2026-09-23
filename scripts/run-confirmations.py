@@ -39,6 +39,12 @@ INDEX = ROOT / "decisions" / "index.jsonl"
 # silently pass it to `b`, which is a different command entirely.
 PYTEST = re.compile(r"^cd py && uv run pytest(?: [^&|;<>`$()]+)?$")
 
+# OPS-0004: a confirmation never re-runs the suite. `make check` is lint, types
+# and the whole suite; in collect mode the job has already run all three, and
+# running them again single-process is what took the python job past its
+# budget. Stripped only in collect mode — locally `make check` means itself.
+MAKE_CHECK = re.compile(r"^make check(?: && )?")
+
 
 def load(index: Path):
     """Commands in first-seen order, each with the ids that ask for it."""
@@ -62,15 +68,22 @@ def load(index: Path):
 
 
 def rewrite(command: str, pytest_mode: str) -> str:
-    """`--collect-only` for plain pytest commands; everything else verbatim.
+    """`--collect-only` for plain pytest commands, `make check` dropped from
+    the front of any other, and everything else verbatim (OPS-0004).
 
     No extra `-q`: pytest's own `addopts` already carries one, and a second
     collapses the output to a bare count. One `-q` lists the node ids, which
     is the evidence worth having in the log.
     """
 
-    if pytest_mode == "collect" and PYTEST.match(command):
+    if pytest_mode == "run":
+        return command
+    if PYTEST.match(command):
         return command + " --collect-only"
+    if MAKE_CHECK.match(command):
+        # What is left is whatever the record asks for beyond the suite; a
+        # confirmation that is only `make check` has nothing left to prove.
+        return MAKE_CHECK.sub("", command) or "true"
     return command
 
 

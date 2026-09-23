@@ -389,6 +389,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### OPS-0004: A confirmation never re-runs the suite
+
+**Status**: accepted (2026-09-23)  
+**Scope**: `scripts/run-confirmations.py`, `scripts/test_run_confirmations.py`  
+**Tags**: ci, cost, agent-decided
+
+In collect mode the runner strips a leading `make check &&` from a confirmation, because the suite that command would run is the one CI has already run; a confirmation that is nothing but `make check` becomes a no-op.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### SIM-0001: One run loop, a horizon, a single-writer lock, and a governor that pauses
 
 **Status**: accepted (2026-09-20)  
