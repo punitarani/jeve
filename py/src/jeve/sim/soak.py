@@ -441,7 +441,13 @@ def _ensure_database(name: str) -> None:
 
 
 def run_world(
-    name: str, *, days: int, policy: str, calls: str, outage: bool, max_wait: float
+    name: str,
+    *,
+    days: int,
+    policy: str,
+    calls: str,
+    outage: bool,
+    max_wait: float,
 ) -> int:
     """Seed `name` and run it to `days` through the daemon loop. Returns its exit."""
 

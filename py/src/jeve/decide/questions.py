@@ -209,7 +209,17 @@ def lateness_words(days_until_due: object) -> str:
     return "the invoice is more than a month overdue"
 
 
-def chased_words(chased: object, in_person: object) -> str:
+def chased_words(chased: object, in_person: object, promised: object = False) -> str:
+    """How hard this bill has been pushed.
+
+    The `promised` branch is new (WORLD-0006) and is deliberately additive: the
+    three older strings are byte-identical to what they were, so every recorded
+    call whose payer had not promised anything still hits its cached answer.
+    Wording is the cache key, and a state nobody can reach yet costs nothing.
+    """
+
+    if promised:
+        return "they have given their word to pay it by a set day"
     if in_person:
         return "someone from the firm they owe brought it up with them in person"
     if chased:
@@ -413,7 +423,9 @@ def _prepare_payment(ctx: DecisionContext) -> Prepared:
             "invoice": lateness_words(ctx.facts.get("days_until_due")),
             "cash": runway_words(ctx.facts.get("runway_days")),
             "chased": chased_words(
-                ctx.facts.get("chased"), ctx.facts.get("reminded_in_person")
+                ctx.facts.get("chased"),
+                ctx.facts.get("reminded_in_person"),
+                ctx.facts.get("promised"),
             ),
         },
     )
@@ -977,6 +989,234 @@ def _interpret_chase(
     return Outcome({"chase": bool(got["chase"].value)}, {})
 
 
+# -- episode.round: one round of a bounded group interaction (WORLD-0006) -----
+#
+# An encounter is one question about the present moment. An episode is several,
+# in sequence, about a matter the people present have between them — and the
+# only reason to run one is that round two can see what round one did. Jev
+# answers the questions in a request independently, so a round is one request
+# per participant and the sequence lives in code.
+#
+# Three rules shape the set, each from a failure the one-shot encounter cannot
+# have:
+#
+# 1.  **What a person may do depends on whether they can act on the matter.**
+#     The firm whose software is down can press; the vendor can promise. Offering
+#     `promise` to someone with nothing to promise invites mass on an option the
+#     world would have to ignore.
+# 2.  **Irreversible acts are asked once.** Telling someone something cannot be
+#     untold, so `mention` is asked in the first round it is possible for that
+#     speaker and never again — otherwise three rounds thin one propensity into
+#     near-certainty, which is the hazard-rate trap (DECIDE-0001) inside an
+#     episode instead of across a day.
+# 3.  **No round number reaches the model.** Progress is described (`so_far`),
+#     never counted: Jev is weak at numbers, and two tables at the same point in
+#     the same kind of conversation should share one cached call.
+
+_ACT_WORDS: dict[str, str] = {
+    "press": "Push the other side to deal with the matter now.",
+    "promise": "Give their word to deal with it, by a definite day.",
+    "explain": "Set out their own side of it, without pushing or promising.",
+    "decline": "Say plainly that it is not going to happen.",
+    "ask": "Ask the others what they know, or what they mean to do.",
+    "small_talk": "Let the matter drop and talk about something else.",
+    "leave": "Break off and get back to their own day.",
+    "other": "Something else.",
+}
+
+# Declared order is the sampling order (see `Ask.options`), so it is written
+# once here and filtered by role, never rebuilt per call site.
+_ACT_ORDER: tuple[str, ...] = (
+    "press",
+    "promise",
+    "explain",
+    "decline",
+    "ask",
+    "small_talk",
+    "leave",
+    "other",
+)
+
+# Who may do what. `holder` can act on the matter, `asker` wants them to, and a
+# `bystander` is only in the room.
+_ACTS_BY_ROLE: dict[str, frozenset[str]] = {
+    "holder": frozenset(
+        {"promise", "explain", "decline", "ask", "small_talk", "leave"}
+    ),
+    "asker": frozenset({"press", "explain", "ask", "small_talk", "leave"}),
+    "bystander": frozenset({"ask", "small_talk", "leave"}),
+}
+
+STAKE_WORDS: dict[str, str] = {
+    "outage": (
+        "A feature of the software they use for work has stopped responding, "
+        "and the people here are affected by it."
+    ),
+    "invoice": "A bill between their two firms has not been paid.",
+    "news": "Nothing in particular; they have simply ended up together.",
+}
+
+TELLABLE_WORDS: dict[str, str] = {
+    "outage": "that a feature of the software they all use has stopped working",
+    "price_rise": "that the software company is planning to put its prices up",
+}
+
+
+def stake_words(ctx: DecisionContext) -> str:
+    """What the people here have between them, in words.
+
+    The lateness of a bill is bucketed by the same function the payment question
+    uses, so "a few days overdue" means the same thing in both — a reader
+    comparing an episode with the decision it changed is comparing like with
+    like.
+    """
+
+    stake = str(ctx.facts.get("stake", "news"))
+    if stake == "invoice":
+        late = lateness_words(-_number(ctx.facts.get("days_late"), 7.0))
+        size = (
+            "one of the larger amounts"
+            if ctx.facts.get("large")
+            else "a fairly modest amount"
+        )
+        return f"A bill between their two firms is unpaid: {late}, and it is {size}."
+    if stake == "outage":
+        module = ctx.facts.get("module")
+        if module:
+            return (
+                f"The {module} feature of the software they use for work has "
+                "stopped responding, and the people here are affected by it."
+            )
+    return STAKE_WORDS.get(stake, STAKE_WORDS["news"])
+
+
+def so_far_words(ctx: DecisionContext) -> str:
+    """How the conversation stands. The whole reason a second round differs
+    from the first, so it is described rather than counted."""
+
+    if ctx.facts.get("promised"):
+        return "Someone has already given their word to deal with it."
+    if ctx.facts.get("refused"):
+        return "Someone has already said plainly that it will not happen."
+    if ctx.facts.get("pressed"):
+        return "Someone has already pushed hard for it to be dealt with."
+    if ctx.facts.get("raised"):
+        return "The matter has been brought up, and nothing is settled yet."
+    return "They have only just fallen into conversation."
+
+
+def tension_words(level: object) -> str:
+    value = int(_number(level))
+    if value <= 0:
+        return "Easy; nobody has taken offence."
+    if value == 1:
+        return "A little awkward."
+    return "Tense; somebody is annoyed."
+
+
+_SETTLED = Ask(
+    "settled",
+    "J",
+    Noul(
+        instructions=(
+            "Has the matter these people came together about now been dealt "
+            "with, so that there is nothing left to say about it today?"
+        ),
+        criteria=_yes_no(
+            "It is dealt with: someone has agreed to act, or it is plainly "
+            "going nowhere and both sides know it.",
+            "It is not dealt with; there is more to say.",
+        ),
+    ),
+)
+
+
+def _mention(topic: str) -> Ask:
+    return Ask(
+        "mention",
+        "P",
+        Noul(
+            instructions=(
+                "Does this person tell the others "
+                f"{TELLABLE_WORDS.get(topic, 'a piece of news they have heard')}?"
+            ),
+            criteria=_yes_no(
+                "They bring it up and pass it on.",
+                "They keep it to themselves for now.",
+            ),
+        ),
+    )
+
+
+def _act(role: str) -> Ask:
+    """The verbs open to this person, in declared order.
+
+    `other` is always last and always present: mass on it is an ontology gap,
+    which is the project's primary research measurement (DECIDE-0001).
+    """
+
+    allowed = _ACTS_BY_ROLE.get(role, _ACTS_BY_ROLE["bystander"])
+    criteria: dict[str, str | dict[str, object] | list[object] | None] = {
+        name: _ACT_WORDS[name]
+        for name in _ACT_ORDER
+        if name in allowed or name == "other"
+    }
+    return Ask(
+        "act",
+        "P",
+        Choice(
+            instructions="What does this person do next in this conversation?",
+            criteria=criteria,
+        ),
+    )
+
+
+def _prepare_episode_round(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    here = str(ctx.facts.get("here", ""))
+    role = str(ctx.facts.get("role_in_stake", "bystander"))
+    present = _present(ctx)
+
+    state: dict[str, object] = {
+        "person": f"a {ctx.role.replace('_', ' ')} at {ORG_WORDS.get(org, 'a firm')}",
+        "temperament": trait_words("sociability", ctx.traits.get("sociability")),
+        "speaks_up": trait_words("vocality", ctx.traits.get("vocality")),
+        "where": _PLACE_WORDS.get(here, here),
+        "time": time_of_day_words(ctx.sim_time),
+        "who_is_here": {slot(i): describe(p) for i, p in enumerate(present)},
+        "what_this_is_about": stake_words(ctx),
+        "their_part_in_it": _ROLE_WORDS[role],
+        "so_far": so_far_words(ctx),
+        "mood_of_the_room": tension_words(ctx.facts.get("tension")),
+    }
+    asks: list[Ask] = [_act(role), _SETTLED, _MOOD]
+    topic = ctx.facts.get("tellable_topic")
+    if isinstance(topic, str) and topic:
+        asks.append(_mention(topic))
+    return Prepared(ctx.kind, asks=tuple(asks), state=state)
+
+
+_ROLE_WORDS: dict[str, str] = {
+    "holder": "They are the one who could actually do something about it.",
+    "asker": "It is their work that is held up, and they cannot fix it themselves.",
+    "bystander": "It is not their problem either way.",
+}
+
+
+def _interpret_episode_round(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome(
+        {
+            "act": str(got["act"].value),
+            "settled": bool(got["settled"].value),
+            "mood": int(str(got["mood"].value)),
+            "mention": bool("mention" in got and got["mention"].value),
+        },
+        {},
+    )
+
+
 QUESTION_SETS: dict[str, QuestionSet] = {
     s.kind: s
     for s in (
@@ -992,5 +1232,6 @@ QUESTION_SETS: dict[str, QuestionSet] = {
         QuestionSet("catering.order", _prepare_catering, _interpret_catering),
         QuestionSet("ticket.confirm", _prepare_confirm, _interpret_confirm),
         QuestionSet("chase.invoice", _prepare_chase, _interpret_chase),
+        QuestionSet("episode.round", _prepare_episode_round, _interpret_episode_round),
     )
 }
