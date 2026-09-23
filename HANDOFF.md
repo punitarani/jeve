@@ -11,8 +11,8 @@ Cloudflare site.
 
 ## Verified state (branch `claude/simulation-entity-expansion-b9bh1k`, PR #15)
 
-* `make check` — ruff, `mypy --strict` (69 files), 397 tests, contracts in
-  sync, 52 decision records. `make soak` — 35 sim-days on rules, 12 of 12
+* `make check` — ruff, `mypy --strict` (73 files), 406 tests, contracts in
+  sync, 55 decision records. `make soak` — 35 sim-days on rules, 12 of 12
   invariants (`ops/soak.md`): rent paid, shelves restocked, every line of
   credit serviced, both vendors triaged, churn and the price rise's
   diffusion measured. Playwright passes against a rules stack
