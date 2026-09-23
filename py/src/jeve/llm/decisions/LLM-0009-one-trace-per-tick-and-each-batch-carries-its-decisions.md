@@ -3,7 +3,7 @@ id: "LLM-0009"
 title: "one trace per tick, and each batch carries its decisions"
 status: "accepted"
 date: 2026-09-23
-deciders: ["punitarani", "claude"]
+deciders: ["claude"]
 scope: ["py/src/jeve/tracing.py", "py/src/jeve/world/engine.py", "py/src/jeve/decide/jev_policy.py", "py/src/jeve/llm/gateway.py", "py/src/jeve/api/app.py", "py/src/jeve/sim/daemon.py", "py/tests/test_tracing.py", "py/tests/test_jev_policy.py"]
 tags: ["observability", "braintrust", "llm", "agent-decided"]
 supersedes: ["LLM-0008"]
@@ -27,7 +27,8 @@ the root sat, made every trace look empty.
 
 ## Considered Options
 
-- **A tick is the root; each batch lists its decisions** — taken.
+- **A tick is the root; each batch lists its decisions** — taken; the
+  maintainer chose the root and the level of detail.
 - **Keep the batch as the root, with input and output** — three traces a tick,
   most of them cache lookups, with nothing tying them to the moment.
 - **Trace only batches that call the model** — cache-served decisions vanish

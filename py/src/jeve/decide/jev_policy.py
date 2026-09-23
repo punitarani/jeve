@@ -372,6 +372,10 @@ def _asked(ctx: DecisionContext) -> dict[str, object]:
 
 
 def _settled_by(digest: str | None, live: set[str]) -> SettledBy:
+    """How one decision was settled. Rows count decisions, not calls: two
+    people in the same situation share one live request, so both rows say
+    `live` with the same `model_call`, and `live_calls` counts it once."""
+
     if digest is None:
         return "gated"
     return "live" if digest in live else "cache"

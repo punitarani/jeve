@@ -286,13 +286,16 @@ def run(args: argparse.Namespace) -> int:
         summarise = False
         raise
     finally:
-        if summarise:
-            _report(policy, args, totals)
-        elif isinstance(policy, JevPolicy):
-            policy.close()
-        # Every tick is a trace (LLM-0009), including a rules run's and one
-        # that never opened a gateway — whose own flush would not happen.
-        tracing.flush()
+        try:
+            if summarise:
+                _report(policy, args, totals)
+            elif isinstance(policy, JevPolicy):
+                policy.close()
+        finally:
+            # Every tick is a trace (LLM-0009), including a rules run's and one
+            # that never opened a gateway, whose own flush would not happen —
+            # and the last of them explain a run whose summary failed.
+            tracing.flush()
 
 
 def _supervise(

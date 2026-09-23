@@ -460,6 +460,10 @@ class Engine:
                     # transaction, never before it.
                     span.log(input=report.clock())
                     self._advance(report, SimTime(report.sim_time))
+                    # Inside the transaction too: nothing the trace needs is
+                    # computed after the commit, where a failure would reach
+                    # the daemon as a tick that had in fact advanced.
+                    span.log(output=report.summary())
             except BaseException:
                 # The rows are gone but the ids they drew are not. Put the
                 # counters back before anything retries, or the retry numbers
@@ -468,7 +472,6 @@ class Engine:
                     db.resync_sequences(self._conn)
                     self._conn.commit()
                 raise
-            span.log(output=report.summary())
         return report
 
     def _advance(self, report: TickReport, now: SimTime) -> None:

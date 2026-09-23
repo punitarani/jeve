@@ -366,7 +366,10 @@ def test_a_replayed_tick_is_one_trace_whose_batches_carry_their_decisions(
         by = Counter(row["settled_by"] for row in settled)
         assert by["cache"] == data["cache_hits"] == data["lookups"]
         assert by["gated"] == data["contexts"] - data["lookups"]
-        assert by["live"] == data["live_calls"] == 0
+        # Rows count decisions and `live_calls` counts requests; in a replay
+        # both are zero, and the shared-call test below pulls them apart.
+        assert by["live"] == data["lookups"] - data["cache_hits"] == 0
+        assert data["live_calls"] == 0
         assert data["distinct_requests"] <= data["lookups"]
         for row in settled:
             if row["settled_by"] == "gated":
@@ -444,6 +447,69 @@ def test_a_gated_batch_says_so_without_asking_anyone(spans: RecordingSink) -> No
     ]
     assert mixed.fields["output"][1]["chosen"] == {"file": False}
     assert mixed.fields["metadata"]["lookups"] == 0
+
+
+def test_two_decisions_that_share_a_live_call_are_two_rows_and_one_call(
+    spend_table: Connection[DictRow],
+    spans: RecordingSink,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Rows count decisions; `live_calls` counts requests.
+
+    Two people in the same situation in one batch share one request, so both
+    rows say `live` and name the same call, the batch counts one live call,
+    and there is one `llm` span under it — the cost is on that span once.
+    """
+
+    subject = "tracing: two people, one question"
+    forget = (
+        "DELETE FROM model_calls WHERE kind = 'ticket.triage' "
+        "AND request->'state'->>'ticket_subject' = %s"
+    )
+
+    def gateway(**_: object) -> Gateway:
+        return Gateway(
+            settings=wire_settings(tmp_path),
+            transport=WireRecorder().transport(),
+            backoff_base_s=0.0,
+        )
+
+    def asked(person: str) -> DecisionContext:
+        return DecisionContext(
+            person_id=person,
+            role="customer",
+            sim_time=at(0, 9),
+            kind="ticket.triage",
+            facts={"subject": subject},
+            decision_seq=0,
+        )
+
+    monkeypatch.setattr(jev_policy, "Gateway", gateway)
+    monkeypatch.setattr(jev_policy, "_Bridge", Bridge)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    # `model_calls` outlives the test: a row left by an earlier run would make
+    # this a cache hit, and a row left by this one would do so for the next.
+    spend_table.execute(forget, (subject,))
+    spend_table.commit()
+    policy = JevPolicy(ROOT_SEED, Recorder(mode="record"))
+    try:
+        policy.decide_many([asked("p1"), asked("p2")])
+    finally:
+        policy.close()
+        spend_table.execute(forget, (subject,))
+        spend_table.commit()
+
+    batch = spans.only("decide ticket.triage")
+    data = batch.fields["metadata"]
+    assert data["lookups"] == 2
+    assert data["cache_hits"] == 0
+    assert data["distinct_requests"] == data["live_calls"] == 1
+
+    settled = batch.fields["output"]
+    assert [row["settled_by"] for row in settled] == ["live", "live"]
+    assert settled[0]["model_call"] == settled[1]["model_call"] is not None
+    assert [child.name for child in batch.children] == ["jev.decide"]
 
 
 def test_a_call_is_parented_by_its_batch_across_the_gateway_thread(

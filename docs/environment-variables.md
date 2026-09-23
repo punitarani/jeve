@@ -70,6 +70,12 @@ its choice, distributions and whether it was gated, cached or live out) →
 about 30KB per tick (58KB at most), or about 1.3MB per sim-day, three quarters
 of it the `agent.tick` batch.
 
+The key traces every run that has it, not only the deployed daemon: with it in
+a local `.env`, `make soak` sends a trace per tick and `make e2e` a replay's
+worth. Give local runs a `BRAINTRUST_PROJECT_ID` of their own. Inside a
+project, `metadata.policy` on `sim.tick` and `metadata.mode` on each batch tell
+rules, replay and recording runs apart.
+
 Spans carry OpenRouter's reported cost as `metrics.estimated_cost`, so a trace
 and the `spend_entries` ledger price a call the same way. A tracing failure is
 never fatal: it prints one line and latches off for the process.
