@@ -16,27 +16,28 @@ encounters resolve among the people co-located now; then everyone moves. Jev
 answers the questions in one request independently, so "where next" cannot
 depend on "whom did I talk to" — and asking both about the present moment is
 what keeps it to one call per person per tick.
+
+What a meeting *changes* lives in `episodes.py`, at either resolution: the
+one-shot encounter below calls `episodes.escalate` for its single consequence,
+and a meeting with a real stake becomes a multi-round episode instead. This
+module is about where people are and who stops to talk; that one is about what
+comes of it.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from jeve.core.clock import TICK, SimTime
 from jeve.core.seed import derive_seed
 from jeve.decide.policy import DecisionContext
+from jeve.world import episodes
 from jeve.world.map import ORG_ZONE, Tile, Zone, entry_for, find_path, spot_for
 
 if TYPE_CHECKING:
     from jeve.world.engine import Engine, Made, TickReport
-
-# What an escalation buys: the vendor drops everything, and the time left to
-# fix is cut to a quarter — never to less than half an hour, and only once per
-# incident however many people complain.
-ESCALATION_KEEPS = 4
-ESCALATION_FLOOR = 2 * TICK
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,25 +185,6 @@ def send(
     return runner.id
 
 
-def _known_outage(engine: Engine, org: str, down: list[str]) -> str | None:
-    """A broken module this person has reason to know about.
-
-    The vendor's own staff know about anything that is down. Everyone else
-    knows only about what their firm subscribes to.
-    """
-
-    if not down:
-        return None
-    if org == "tallybird":
-        return down[0]
-    rows = engine.conn.execute(
-        "SELECT module_id FROM subscriptions WHERE org_id = %s AND active "
-        "AND module_id = ANY(%s) ORDER BY module_id",
-        (org, down),
-    ).fetchall()
-    return str(rows[0]["module_id"]) if rows else None
-
-
 def run(engine: Engine, report: TickReport, now: SimTime) -> None:
     """One tick of space: arrive, decide, meet, move."""
 
@@ -243,7 +225,7 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
             if other.id != agent.id
             and not (agent.zone is agent.own_zone and other.org == agent.org)
         ]
-        outage = _known_outage(engine, agent.org, down)
+        outage = episodes.known_outage(engine, agent.org, down)
         contexts.append(
             DecisionContext(
                 person_id=agent.id,
@@ -271,7 +253,13 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
     made = engine.decide_many(report, contexts)
     by_id = {agent.id: agent for agent in present}
     if engine.encounters:
-        _encounters(engine, report, present, made, by_id, down)
+        # A meeting with a real stake gets rounds instead of one shot
+        # (WORLD-0006). What comes back is every pair an episode already
+        # accounted for: resolving the same meeting twice would double-count it.
+        consumed: set[frozenset[str]] = set()
+        if engine.episodes:
+            consumed = episodes.run(engine, report, now, present, made, by_id, down)
+        _encounters(engine, report, present, made, by_id, down, consumed)
 
     # Departures and moves, after everyone has decided from where they stood.
     closing = SimTime(report.sim_time + TICK)
@@ -304,8 +292,9 @@ def _encounters(
     made: list[Made],
     by_id: dict[str, Agent],
     down: list[str],
+    consumed: set[frozenset[str]] | None = None,
 ) -> None:
-    met: set[frozenset[str]] = set()
+    met: set[frozenset[str]] = set(consumed or ())
     for agent, decision in zip(present, made, strict=True):
         other_id = decision.chosen.get("with")
         if not decision.chosen.get("interact") or not isinstance(other_id, str):
@@ -317,7 +306,9 @@ def _encounters(
         met.add(pair)
 
         topic = str(decision.chosen.get("topic") or "small_talk")
-        incident = _open_incident(engine, down) if topic == "the_outage" else None
+        incident = (
+            episodes.open_incident(engine, down) if topic == "the_outage" else None
+        )
         seq = engine.emit(
             report,
             "encounter",
@@ -335,94 +326,14 @@ def _encounters(
             },
         )
         if decision.chosen.get("raise_outage") and other.org == "tallybird":
-            _escalate(engine, report, agent, other, seq, decision)
-
-
-def _open_incident(engine: Engine, down: list[str]) -> dict[str, Any] | None:
-    if not down:
-        return None
-    row = engine.conn.execute(
-        "SELECT id, module_id, cause_event_seq, escalated_sim FROM incidents "
-        "WHERE ended_sim IS NULL AND module_id = ANY(%s) ORDER BY id LIMIT 1",
-        (down,),
-    ).fetchone()
-    if row is None:
-        return None
-    return {
-        "id": int(row["id"]),
-        "module": str(row["module_id"]),
-        "cause": int(row["cause_event_seq"]) if row["cause_event_seq"] else None,
-        "escalated": row["escalated_sim"] is not None,
-    }
-
-
-def _escalate(
-    engine: Engine,
-    report: TickReport,
-    agent: Agent,
-    vendor: Agent,
-    encounter_seq: int,
-    decision: Made,
-) -> None:
-    """A customer has cornered the vendor in person. The fix gets priority."""
-
-    module = _known_outage(
-        engine,
-        agent.org,
-        [
-            str(r["id"])
-            for r in engine.conn.execute(
-                "SELECT id FROM modules WHERE status = 'down' ORDER BY id"
-            ).fetchall()
-        ],
-    )
-    if module is None:
-        return
-    incident = _open_incident(engine, [module])
-    if incident is None or incident["escalated"]:
-        return
-    pending = engine.conn.execute(
-        "SELECT id, due_sim_time FROM scheduled WHERE kind = 'incident.end' "
-        "AND subject_id = %s ORDER BY id LIMIT 1",
-        (module,),
-    ).fetchone()
-    if pending is None:
-        return
-
-    due = int(pending["due_sim_time"])
-    remaining = max(0, due - report.sim_time)
-    keep = max(ESCALATION_FLOOR, remaining // ESCALATION_KEEPS)
-    # Whole ticks: the scheduler only looks once a tick.
-    new_due = min(due, report.sim_time + -(-keep // TICK) * TICK)
-
-    seq = engine.emit(
-        report,
-        "ticket.escalated",
-        actor_id=agent.id,
-        org_id=agent.org,
-        decision_id=decision.id,
-        causes=[encounter_seq] + ([incident["cause"]] if incident["cause"] else []),
-        payload={
-            "module_id": module,
-            "incident_id": incident["id"],
-            "raised_by": agent.id,
-            "raised_with": vendor.id,
-            "zone": agent.zone.value,
-            "minutes_saved": (due - new_due) // 60,
-            "decided_by": decision.source,
-        },
-    )
-    engine.conn.execute(
-        "UPDATE incidents SET escalated_sim = %s, escalation_event_seq = %s "
-        "WHERE id = %s",
-        (report.sim_time, seq, incident["id"]),
-    )
-    engine.conn.execute(
-        "UPDATE scheduled SET due_sim_time = %s WHERE id = %s", (new_due, pending["id"])
-    )
-    # And every open ticket about it jumps the queue.
-    engine.conn.execute(
-        "UPDATE tickets SET severity = 3 WHERE module_id = %s "
-        "AND status IN ('open','triaged')",
-        (module,),
-    )
+            episodes.escalate(
+                engine,
+                report,
+                raised_by=agent.id,
+                org_id=agent.org,
+                raised_with=other.id,
+                zone=agent.zone.value,
+                cause_seq=seq,
+                decision_id=decision.id,
+                decided_by=decision.source,
+            )

@@ -387,6 +387,88 @@ class EncounterDialogue(BaseModel):
     reason: str | None
 
 
+# -- episodes (WORLD-0006) --------------------------------------------------
+
+
+class EpisodeParticipant(BaseModel):
+    """One person at the table. `seat` is speaking order, drawn when the
+    episode opened; `left_round` is set if they walked away early."""
+
+    person_id: str
+    name: str
+    org_id: str | None
+    role: str
+    seat: int
+    left_round: int | None
+    role_in_stake: Literal["holder", "asker", "bystander"] = Field(
+        description="Whether they could settle the matter, wanted it settled, "
+        "or were only in the room. Derived from the acts they were offered."
+    )
+
+
+class EpisodeAct(BaseModel):
+    """What one person did in one round — the typed record, not a line of
+    dialogue. There is no prose here to render."""
+
+    person_id: str
+    act: str
+    seat: int
+
+
+class EpisodeRound(BaseModel):
+    round: int
+    acts: list[EpisodeAct]
+    left: list[str]
+    tension: int
+    decided_by: Literal["rules", "jev", "llm", "episode"]
+
+
+class EpisodeOutcome(BaseModel):
+    """What the episode changed. Every field here reached the world through an
+    event that cites the episode's closing event, never through this record."""
+
+    pressed: bool
+    promised: bool
+    refused: bool
+    tension: int
+    facts_passed: int
+    ontology_gaps: int = Field(
+        description="Acts that landed on `other`: the share of a decision "
+        "surface the typed vocabulary did not cover, which is the project's "
+        "primary research measurement (DECIDE-0001)."
+    )
+
+
+class Episode(BaseModel):
+    """GET /episodes/{id} — a meeting that got more than one round."""
+
+    id: int
+    zone: Zone
+    stake: Literal["outage", "invoice", "news"]
+    stake_ref: str
+    depth: int
+    parent_id: int | None
+    opened_sim: int
+    opened_label: str
+    opened_seq: int
+    closed_sim: int | None
+    closed_seq: int | None
+    rounds: int
+    exit_reason: Literal["settled", "emptied", "rounds"] | None
+    outcome: EpisodeOutcome
+    participants: list[EpisodeParticipant]
+    round_log: list[EpisodeRound]
+    led_to: list[SimEvent] = Field(
+        description="What the episode caused, by following `causes` from its "
+        "closing event — an escalation, a fact passed on, a promise."
+    )
+
+
+class EpisodePage(BaseModel):
+    episodes: list[Episode]
+    more: bool
+
+
 class Economics(BaseModel):
     spend_usd: float
     spend_is_estimated_calls: int
@@ -437,5 +519,11 @@ MODELS: list[type[BaseModel]] = [
     EncounterTyped,
     EncounterProse,
     EncounterDialogue,
+    EpisodeParticipant,
+    EpisodeAct,
+    EpisodeRound,
+    EpisodeOutcome,
+    Episode,
+    EpisodePage,
     Economics,
 ]

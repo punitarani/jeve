@@ -741,6 +741,151 @@ def world_agent(person_id: str) -> dict[str, object]:
     }
 
 
+@app.get("/episodes")
+def episode_list(
+    limit: int = Query(20, ge=1, le=100),
+    before: int | None = Query(None, description="episodes with an id below this"),
+) -> dict[str, object]:
+    """Meetings that got more than one round, newest first (WORLD-0006)."""
+
+    with _db() as conn:
+        # Cast the cursor: an untyped NULL leaves Postgres unable to infer the
+        # parameter's type at all, and the first unpaged request is the one that
+        # sends it.
+        rows = conn.execute(
+            "SELECT id FROM episodes WHERE (%s::bigint IS NULL OR id < %s::bigint) "
+            "ORDER BY id DESC LIMIT %s",
+            (before, before, limit + 1),
+        ).fetchall()
+        more = len(rows) > limit
+        return {
+            "episodes": [_episode(conn, int(row["id"])) for row in rows[:limit]],
+            "more": more,
+        }
+
+
+@app.get("/episodes/{episode_id}")
+def episode_detail(episode_id: int) -> dict[str, object]:
+    """One episode: who was there, what each of them did each round, and what
+    it changed.
+
+    There is no prose here and none is rendered on request. An encounter has a
+    dialogue endpoint because a single exchange reads as a line or two; an
+    episode's record *is* the acts, and a reader following what a conversation
+    changed wants `led_to`, not a transcript (GEN-0001).
+    """
+
+    with _db() as conn:
+        return _episode(conn, episode_id)
+
+
+def _episode(conn: Connection[DictRow], episode_id: int) -> dict[str, object]:
+    row = conn.execute(
+        "SELECT id, zone, stake, stake_ref, depth, parent_id, opened_sim, opened_seq, "
+        "closed_sim, closed_seq, rounds, exit_reason, outcome FROM episodes "
+        "WHERE id = %s",
+        (episode_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, f"no episode {episode_id}")
+
+    people = conn.execute(
+        "SELECT p.person_id, p.seat, p.left_round, s.name, s.org_id, s.role "
+        "FROM episode_participants p JOIN persons s ON s.id = p.person_id "
+        "WHERE p.episode_id = %s ORDER BY p.seat",
+        (episode_id,),
+    ).fetchall()
+    rounds = conn.execute(
+        "SELECT payload FROM events WHERE kind = 'episode.round' "
+        "AND (payload->>'episode_id')::bigint = %s ORDER BY seq",
+        (episode_id,),
+    ).fetchall()
+
+    # Who could have settled it, from the acts they were actually offered. The
+    # role is not stored: it is a property of the stake, and storing it twice
+    # would let the two copies disagree.
+    acts_by_person: dict[str, set[str]] = {}
+    for entry in rounds:
+        for act in entry["payload"].get("acts", []):
+            acts_by_person.setdefault(str(act["person_id"]), set()).add(str(act["act"]))
+
+    def role_in_stake(person_id: str) -> str:
+        acts = acts_by_person.get(person_id, set())
+        if "promise" in acts or "decline" in acts:
+            return "holder"
+        if "press" in acts:
+            return "asker"
+        return "bystander"
+
+    led_to: list[dict[str, Any]] = []
+    if row["closed_seq"] is not None:
+        led_to = _rows(
+            "SELECT seq, sim_time, kind, actor_id, org_id, payload, causes FROM events "
+            "WHERE %s = ANY(causes) ORDER BY seq",
+            (int(row["closed_seq"]),),
+        )
+        for event in led_to:
+            event["label"] = SimTime(int(event["sim_time"])).label()
+
+    return {
+        "id": int(row["id"]),
+        "zone": row["zone"],
+        "stake": row["stake"],
+        "stake_ref": row["stake_ref"],
+        "depth": int(row["depth"]),
+        "parent_id": int(row["parent_id"]) if row["parent_id"] is not None else None,
+        "opened_sim": int(row["opened_sim"]),
+        "opened_label": SimTime(int(row["opened_sim"])).label(),
+        "opened_seq": int(row["opened_seq"]),
+        "closed_sim": int(row["closed_sim"]) if row["closed_sim"] is not None else None,
+        "closed_seq": int(row["closed_seq"]) if row["closed_seq"] is not None else None,
+        "rounds": int(row["rounds"]),
+        "exit_reason": row["exit_reason"],
+        "outcome": {
+            "pressed": bool(row["outcome"].get("pressed")),
+            "promised": bool(row["outcome"].get("promised")),
+            "refused": bool(row["outcome"].get("refused")),
+            "tension": int(row["outcome"].get("tension", 0)),
+            "facts_passed": int(row["outcome"].get("facts_passed", 0)),
+            "ontology_gaps": int(row["outcome"].get("ontology_gaps", 0)),
+        },
+        "participants": [
+            {
+                "person_id": str(person["person_id"]),
+                "name": str(person["name"]),
+                "org_id": person["org_id"],
+                "role": str(person["role"]),
+                "seat": int(person["seat"]),
+                "left_round": (
+                    int(person["left_round"])
+                    if person["left_round"] is not None
+                    else None
+                ),
+                "role_in_stake": role_in_stake(str(person["person_id"])),
+            }
+            for person in people
+        ],
+        "round_log": [
+            {
+                "round": int(entry["payload"].get("round", index)),
+                "acts": [
+                    {
+                        "person_id": str(act["person_id"]),
+                        "act": str(act["act"]),
+                        "seat": int(act["seat"]),
+                    }
+                    for act in entry["payload"].get("acts", [])
+                ],
+                "left": list(entry["payload"].get("left", [])),
+                "tension": int(entry["payload"].get("tension", 0)),
+                "decided_by": str(entry["payload"].get("decided_by", "rules")),
+            }
+            for index, entry in enumerate(rounds)
+        ],
+        "led_to": led_to,
+    }
+
+
 @app.get("/orgs/{org_id}")
 def org_detail(org_id: str) -> dict[str, object]:
     """One firm: its books, its people, and what is going on there."""

@@ -331,6 +331,77 @@ export const EncounterDialogue = z.object({
 });
 export type EncounterDialogue = z.infer<typeof EncounterDialogue>;
 
+/** One person at the table. `seat` is speaking order, drawn when the episode opened; `left_round` is set if they walked away early. */
+export const EpisodeParticipant = z.object({
+  person_id: z.string(),
+  name: z.string(),
+  org_id: z.string().nullable(),
+  role: z.string(),
+  seat: z.number().int(),
+  left_round: z.number().int().nullable(),
+  /** Whether they could settle the matter, wanted it settled, or were only in the room. Derived from the acts they were offered. */
+  role_in_stake: z.enum(["holder", "asker", "bystander"]),
+});
+export type EpisodeParticipant = z.infer<typeof EpisodeParticipant>;
+
+/** What one person did in one round — the typed record, not a line of dialogue. There is no prose here to render. */
+export const EpisodeAct = z.object({
+  person_id: z.string(),
+  act: z.string(),
+  seat: z.number().int(),
+});
+export type EpisodeAct = z.infer<typeof EpisodeAct>;
+
+export const EpisodeRound = z.object({
+  round: z.number().int(),
+  acts: z.array(EpisodeAct),
+  left: z.array(z.string()),
+  tension: z.number().int(),
+  decided_by: z.enum(["rules", "jev", "llm", "episode"]),
+});
+export type EpisodeRound = z.infer<typeof EpisodeRound>;
+
+/** What the episode changed. Every field here reached the world through an event that cites the episode's closing event, never through this record. */
+export const EpisodeOutcome = z.object({
+  pressed: z.boolean(),
+  promised: z.boolean(),
+  refused: z.boolean(),
+  tension: z.number().int(),
+  facts_passed: z.number().int(),
+  /** Acts that landed on `other`: the share of a decision surface the typed vocabulary did not cover, which is the project's primary research measurement (DECIDE-0001). */
+  ontology_gaps: z.number().int(),
+});
+export type EpisodeOutcome = z.infer<typeof EpisodeOutcome>;
+
+/** GET /episodes/{id} — a meeting that got more than one round. */
+export const Episode = z.object({
+  id: z.number().int(),
+  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  stake: z.enum(["outage", "invoice", "news"]),
+  stake_ref: z.string(),
+  depth: z.number().int(),
+  parent_id: z.number().int().nullable(),
+  opened_sim: z.number().int(),
+  opened_label: z.string(),
+  opened_seq: z.number().int(),
+  closed_sim: z.number().int().nullable(),
+  closed_seq: z.number().int().nullable(),
+  rounds: z.number().int(),
+  exit_reason: z.enum(["settled", "emptied", "rounds"]).nullable(),
+  outcome: EpisodeOutcome,
+  participants: z.array(EpisodeParticipant),
+  round_log: z.array(EpisodeRound),
+  /** What the episode caused, by following `causes` from its closing event — an escalation, a fact passed on, a promise. */
+  led_to: z.array(SimEvent),
+});
+export type Episode = z.infer<typeof Episode>;
+
+export const EpisodePage = z.object({
+  episodes: z.array(Episode),
+  more: z.boolean(),
+});
+export type EpisodePage = z.infer<typeof EpisodePage>;
+
 export const Economics = z.object({
   spend_usd: z.number(),
   spend_is_estimated_calls: z.number().int(),

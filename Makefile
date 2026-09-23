@@ -93,6 +93,10 @@ fixture: ## Run the golden fixture. POLICY=jev|rules CALLS=replay|record
 soak: ## 35 sim-days on rules, on its own database; checks invariants, writes ops/soak.md. POLICY= CALLS= DAYS= COUNTERFACTUAL=1
 	$(UV) python scripts/soak.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS)) $(if $(COUNTERFACTUAL),--counterfactual)
 
+.PHONY: episodes
+episodes: ## Does giving a meeting rounds change anything? Two arms, one seed, free. DAYS= SEEDS=
+	$(UV) python scripts/episodes_report.py $(if $(DAYS),--days $(DAYS)) $(if $(SEEDS),--seeds $(SEEDS))
+
 .PHONY: sim
 sim: ## The ever-running world: Jev live, paced, budget-governed, restart-safe
 	npx nx run sim:run --args="--calls $(or $(CALLS),record) $(if $(POLICY),--policy $(POLICY)) --verbose"

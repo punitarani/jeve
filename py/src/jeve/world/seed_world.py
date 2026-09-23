@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-from jeve import db
+from jeve import db, memory
 from jeve.core.clock import DAY, at
 from jeve.core.orgs import ORGS as ORG_SPECS
 from jeve.core.seed import derive_rng
@@ -115,7 +115,9 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             TRUNCATE sim_meta, scheduled, events, orgs, persons, accounts,
                      ledger_txns, ledger_entries, modules, incidents,
                      subscriptions, tickets, invoices, payments, cafe_sales,
-                     decisions, positions, outage_notices
+                     decisions, positions, outage_notices,
+                     facts, knowledge, episodes, episode_participants,
+                     commitments
                      RESTART IDENTITY CASCADE
             """
         )
@@ -244,6 +246,15 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             "VALUES (%s, %s, %s, %s)",
             subs,
         )
+
+        # One thing known to exactly one person on day zero (MEM-0002). The
+        # scenario calls for it: the share of the town holding it over time is
+        # the diffusion measure, and it means something only because nobody
+        # else starts with it. An engineer, not the founder — the founder talks
+        # to everyone, which would make the measure about their diary.
+        rise = memory.Fact.price_rise("tallybird")
+        memory.record_fact(conn, rise, sim_time=0)
+        memory.learn(conn, "tallybird.engineer.2", rise.id, sim_time=0)
 
         # Receivables already in flight, some falling due inside the window.
         invoices: list[tuple[str, str | None, str | None, int, int, int, str]] = [
