@@ -186,12 +186,16 @@ class Engine:
             (before,),
         )
         # The vendor's staff knew at once; everyone whose notice had come knew
-        # first-hand, as `_customers` writes it down.
+        # first-hand, as `_customers` writes it down. Which vendor is the one
+        # that sells the broken module (CORE-0012) — the district has two, and
+        # Quill's engineers do not hear about Tallybird's register.
         self._conn.execute(
             "INSERT INTO knowledge (person_id, fact_id, learned_sim, learned_seq) "
             "SELECT p.id, 'outage:' || i.id, i.started_sim, i.cause_event_seq "
-            "FROM incidents i CROSS JOIN persons p "
-            "WHERE i.id = ANY(%s) AND p.org_id = 'tallybird' AND p.kind = 'staff'",
+            "FROM incidents i "
+            "JOIN modules m ON m.id = i.module_id "
+            "JOIN persons p ON p.org_id = m.org_id AND p.kind = 'staff' "
+            "WHERE i.id = ANY(%s)",
             (before,),
         )
         self._conn.execute(
@@ -576,8 +580,8 @@ class Engine:
         fact = memory.Fact.outage(incident_id, module_id)
         memory.record_fact(self._conn, fact, sim_time=report.sim_time, seq=seq)
         for person in self._conn.execute(
-            "SELECT id FROM persons WHERE org_id = 'tallybird' AND kind = 'staff' "
-            "ORDER BY id"
+            "SELECT id FROM persons WHERE org_id = %s AND kind = 'staff' ORDER BY id",
+            (module_owner(module_id),),
         ).fetchall():
             memory.learn(
                 self._conn,
