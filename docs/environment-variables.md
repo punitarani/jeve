@@ -10,8 +10,9 @@ this table, setting it does nothing. Sources: `py/src/jeve/config.py`,
 | Variable | Read by | Default | Notes |
 |---|---|---|---|
 | `JEVE_DATABASE_URL` | everything | `postgresql://jeve:jeve@127.0.0.1:55432/jeve` | The **direct** DSN. The daemon's writer lock and migrations require it — never a transaction-mode pooler. |
-| `DATABASE_URL` | everything | — | Fallback; `fly postgres attach` writes this. |
-| `JEVE_DATABASE_POOLED_URL` | api | falls back to `DATABASE_URL` then `JEVE_DATABASE_URL` | Pooled reads for HTTP requests. |
+| `DATABASE_URL` | everything | — | Fallback when `JEVE_DATABASE_URL` is unset; `fly postgres attach` writes this. |
+| `MIGRATIONS_DB_URL` | `fly.toml` `release_command` | falls back to `JEVE_DATABASE_URL` | The DDL-capable role migrations run under, so the app keeps its least-privilege DSN. |
+| `JEVE_DATABASE_POOLED_URL` | api | falls back to the direct DSN above | Pooled reads for HTTP requests. |
 | `JEVE_PG_PORT` | `db.dsn()` | `55432` | Local-only default port when no URL is set. |
 
 ## Money (`jeve.llm`, LLM-0004/LLM-0007)
@@ -87,11 +88,17 @@ the codebase reads them; they authenticate the deploy jobs.
 
 Three projects, matching the `.env.*.example` files:
 
-* **app** — `NEXT_PUBLIC_JEVE_API` (build-time only)
-* **worker** — everything above for api + sim; synced to `fly secrets`
-* **infra** — the CI/CD credentials
+* **app** — `NEXT_PUBLIC_JEVE_API` (build-time only). CI does not read it
+  from here: `deploy-web` builds with the GitHub repository variable
+  `vars.NEXT_PUBLIC_JEVE_API`, so change that to move the site's API host.
+* **worker** — `dev` holds the variables above for local api + sim runs.
+  `prd` is synced to the `jeve-backend` app's `fly secrets` by Doppler's
+  Fly.io sync, and a secret beats a `fly.toml` `[env]` value of the same
+  name, so `prd` holds only what production needs beyond `fly.toml` (the list
+  is in `docs/deployment.md`) — never the knobs `fly.toml` sets
+* **infra** — the CI/CD credentials; CI reads them from `infra/ci`
 
 ```bash
 doppler run --project worker --config dev -- make api
-doppler run --project infra  --config prd -- make deploy
+doppler run --project infra  --config ci  -- make deploy
 ```

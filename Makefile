@@ -141,14 +141,19 @@ deploy-web: ## Deploy web app to Cloudflare Workers (builds first: NEXT_PUBLIC_*
 
 .PHONY: deploy-api
 deploy-api: ## Deploy API to Fly.io
-	fly deploy --config fly.toml --process-groups api
+	fly deploy --config fly.toml --process-groups api --ha=false
 
 .PHONY: deploy-sim
 deploy-sim: ## Deploy simulation worker to Fly.io
-	fly deploy --config fly.toml --process-groups sim
+	fly deploy --config fly.toml --process-groups sim --ha=false
 
 .PHONY: deploy
-deploy: deploy-web deploy-api deploy-sim ## Deploy all services
+# Backend first, then the page that validates against it (OPS-0003) — in one
+# recipe, because prerequisite order does not hold under `make -j`. One
+# `fly deploy` ships both groups from one image and one release, as CI does.
+deploy: ## Deploy all services: api + sim, then web
+	fly deploy --config fly.toml --ha=false
+	$(MAKE) deploy-web
 
 .PHONY: e2e
 e2e: ## Full stack from a clean checkout, plus the economics report
