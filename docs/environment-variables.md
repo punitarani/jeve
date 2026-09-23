@@ -55,12 +55,19 @@ more than an afternoon wants the same, plus an account cap at OpenRouter.
 | `JEVE_DIALOGUE_GENERATE` | `on` | `off`/`0`/`false`: `/encounters/{seq}/dialogue` serves the typed record and cached prose only — no spend. |
 | `JEVE_OPS_DIR` | repo `ops/` | Where the `spend.json` checkpoint and `discrepancies.jsonl` land. |
 
-## Observability (`jeve.tracing`, LLM-0008)
+## Observability (`jeve.tracing`, LLM-0009)
 
 | Variable | Default | Notes |
 |---|---|---|
 | `BRAINTRUST_API_KEY` | unset | The only switch. Absent, `jeve.tracing` never imports the SDK and opens no socket — CI and a clean clone trace nothing. Unset it to turn tracing off. |
 | `BRAINTRUST_PROJECT_ID` | unset | Which project spans land in; unset falls back to a project named `jeve`. An id rather than a name, so renaming the project does not strand its spans. |
+
+With the key set, each sim tick is one trace: `sim.tick` (the clock in, what the
+tick did out) → `decide <kind>` per decision batch (every decision's facts in;
+its choice, distributions and whether it was gated, cached or live out) →
+`jev.decide` per live model call → `openrouter.attempt` per HTTP try. Ingest is
+about 30KB per tick (58KB at most), or about 1.3MB per sim-day, three quarters
+of it the `agent.tick` batch.
 
 Spans carry OpenRouter's reported cost as `metrics.estimated_cost`, so a trace
 and the `spend_entries` ledger price a call the same way. A tracing failure is

@@ -105,7 +105,7 @@ def spend_table(db_conn: Connection[DictRow]) -> Connection[DictRow]:
     return db_conn
 
 
-# -- spans (LLM-0008) ------------------------------------------------------
+# -- spans (LLM-0009) ------------------------------------------------------
 
 
 @dataclass

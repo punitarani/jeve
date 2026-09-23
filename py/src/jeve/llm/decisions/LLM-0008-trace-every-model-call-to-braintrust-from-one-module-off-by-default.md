@@ -1,13 +1,13 @@
 ---
 id: LLM-0008
 title: trace every model call to braintrust, from one module, off by default
-status: accepted
+status: superseded
 date: 2026-09-21
 deciders: ["claude"]
 scope: ["py/src/jeve/tracing.py", "py/src/jeve/llm/gateway.py", "py/src/jeve/decide/jev_policy.py", "py/src/jeve/api/app.py", "py/tests/test_tracing.py"]
 tags: ["observability", "braintrust", "llm", "agent-decided"]
 supersedes: []
-superseded-by: null
+superseded-by: LLM-0009
 relates-to: ["LLM-0001", "LLM-0004", "LLM-0007", "DECIDE-0004", "CORE-0005"]
 confirmation: "cd py && uv run pytest tests/test_tracing.py"
 ---

@@ -1,4 +1,9 @@
-"""Braintrust spans for every model call. Off unless a key is set (LLM-0008).
+"""Braintrust traces, one per sim tick. Off unless a key is set (LLM-0009).
+
+A trace is a tick (`sim.tick`, from `Engine.tick`), and reads top down: each
+decision batch the tick asked for (`decide <kind>`, from `JevPolicy`) with
+every decision's facts and how it was settled, then the live model calls the
+cache could not answer (`jev.decide`), then each HTTP try.
 
 A module rather than a package, for the same reason `config.py` and `db.py`
 are: it cuts across the layering instead of sitting in it, and
@@ -223,7 +228,8 @@ def span(
     place: `JevPolicy._Bridge` runs the gateway on its own event loop on its
     own thread, and `asyncio.run_coroutine_threadsafe` copies the context on
     *that* thread, so the batch span opened on the engine thread is invisible
-    there. Everywhere else the ambient parent is the right one and this stays
+    there. Everywhere else — tick to batch on the engine thread, call to try on
+    the gateway's loop — the ambient parent is the right one and this stays
     None.
     """
 

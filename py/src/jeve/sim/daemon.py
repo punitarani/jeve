@@ -32,7 +32,7 @@ import psycopg
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-from jeve import db
+from jeve import db, tracing
 from jeve.core.clock import DAY, TICK, SimTime
 from jeve.decide.jev_policy import JevPolicy
 from jeve.decide.policy import Policy
@@ -290,6 +290,9 @@ def run(args: argparse.Namespace) -> int:
             _report(policy, args, totals)
         elif isinstance(policy, JevPolicy):
             policy.close()
+        # Every tick is a trace (LLM-0009), including a rules run's and one
+        # that never opened a gateway — whose own flush would not happen.
+        tracing.flush()
 
 
 def _supervise(

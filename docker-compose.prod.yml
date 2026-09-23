@@ -81,7 +81,7 @@ services:
       - JEVE_EXPLORE_CEILING_USD=${JEVE_EXPLORE_CEILING_USD:-10000}
       - JEVE_HALT_CEILING_USD=${JEVE_HALT_CEILING_USD:-10000}
       - JEVE_HARD_CEILING_USD=${JEVE_HARD_CEILING_USD:-10000}
-      # LLM-0008: unset key means tracing is simply off, which is the default
+      # LLM-0009: unset key means tracing is simply off, which is the default
       # here — the daemon behaves exactly as it did before either way.
       - BRAINTRUST_API_KEY=${BRAINTRUST_API_KEY:-}
       - BRAINTRUST_PROJECT_ID=${BRAINTRUST_PROJECT_ID:-}

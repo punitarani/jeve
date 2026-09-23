@@ -21,7 +21,7 @@ import asyncio
 import json
 import threading
 from collections.abc import Coroutine, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from jeve import tracing
 from jeve.config import Settings, load_settings
@@ -86,7 +86,7 @@ class _Bridge:
         `run_coroutine_threadsafe` schedules onto this loop, which copies the
         context on *this* thread — so the batch span open on the caller's
         thread is not the current span here, and a call would otherwise land
-        at the root of its own trace (LLM-0008).
+        at the root of its own trace (LLM-0009).
         """
 
         return self.run(self._fetch(requests, parent), timeout=CALL_TIMEOUT_S)
@@ -153,13 +153,17 @@ class JevPolicy:
         return self.decide_many([ctx])[0]
 
     def decide_many(self, contexts: Sequence[DecisionContext]) -> list[Decision]:
-        # The batch is the root of the trace, not the call: identical
-        # situations in one tick share a request, and only here is the fan-in
-        # — and the cache hit rate, which is the whole cost story — visible
-        # (LLM-0008). A hit never reaches the gateway, so it is counted, not
-        # given a span of its own.
+        # LLM-0009: the batch is the fan-in under the tick's span. Identical
+        # situations in one tick share a request, so only here are the cache
+        # hit rate — the whole cost story — and each decision's settling
+        # visible together. A hit never reaches the gateway, so it is a row of
+        # this span's output rather than a span of its own; the input is
+        # logged up front so a batch that fails still says what it was asked.
         with tracing.span(
-            "decide.batch", type="task", metadata={"mode": self._recorder.mode}
+            _batch_name(contexts),
+            type="task",
+            input=[_asked(ctx) for ctx in contexts],
+            metadata={"mode": self._recorder.mode},
         ) as span:
             prepared = [self._prepare(ctx) for ctx in contexts]
             requests: dict[str, tuple[Prepared, DecisionRequest]] = {}
@@ -199,10 +203,20 @@ class JevPolicy:
                 # Exported on this thread, because the gateway is not on it.
                 stored |= self._fill(missing, requests, parent=span.export() or None)
 
-            return [
+            decisions = [
                 self._decide_one(ctx, item, stored[maybe] if maybe else None)
                 for ctx, item, maybe in zip(contexts, prepared, hashes, strict=True)
             ]
+            live = set(missing)
+            span.log(
+                output=[
+                    _settled(ctx, decision, _settled_by(maybe, live))
+                    for ctx, decision, maybe in zip(
+                        contexts, decisions, hashes, strict=True
+                    )
+                ]
+            )
+            return decisions
 
     def _prepare(self, ctx: DecisionContext) -> Prepared:
         if ctx.kind not in QUESTION_SETS:
@@ -325,6 +339,58 @@ class JevPolicy:
             prng_path=path,
             model_call=call.hash,
         )
+
+
+type SettledBy = Literal["gated", "cache", "live"]
+
+
+def _batch_name(contexts: Sequence[DecisionContext]) -> str:
+    """`decide <kind>`, so a trace's children say what was being decided.
+
+    Every call site asks one kind at a time, so the names are bounded by the
+    question sets; a mixed batch keeps the generic name rather than minting
+    one per combination.
+    """
+
+    kinds = {ctx.kind for ctx in contexts}
+    return f"decide {kinds.pop()}" if len(kinds) == 1 else "decide.batch"
+
+
+def _asked(ctx: DecisionContext) -> dict[str, object]:
+    """One decision's input, as the world handed it over. Read, never copied:
+    the span serialises it, and nothing here may touch what is hashed."""
+
+    return {
+        "person_id": ctx.person_id,
+        "role": ctx.role,
+        "kind": ctx.kind,
+        "decision_seq": ctx.decision_seq,
+        "sim_time": ctx.sim_time,
+        "facts": ctx.facts,
+        "traits": ctx.traits,
+    }
+
+
+def _settled_by(digest: str | None, live: set[str]) -> SettledBy:
+    if digest is None:
+        return "gated"
+    return "live" if digest in live else "cache"
+
+
+def _settled(
+    ctx: DecisionContext, decision: Decision, settled_by: SettledBy
+) -> dict[str, object]:
+    """One decision's output: what was chosen and what it was chosen from."""
+
+    return {
+        "person_id": ctx.person_id,
+        "settled_by": settled_by,
+        "chosen": decision.chosen,
+        "distributions": decision.distributions,
+        "draws": decision.draws,
+        "prng_path": decision.prng_path,
+        "model_call": decision.model_call,
+    }
 
 
 def _provider(payload: dict[str, Any]) -> str | None:

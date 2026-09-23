@@ -46,7 +46,7 @@ fly postgres attach jeve-db --app jeve-backend   # sets DATABASE_URL
 fly secrets set OPENROUTER_API_KEY=...           # the only billable path
 fly secrets set JEVE_DATABASE_URL=postgresql://...@jeve-db.internal:5432/jeve
 # Optional. Without a key, jeve.tracing is a no-op and nothing is traced —
-# silently, by design (LLM-0008). Nothing in CI sets these: `flyctl deploy`
+# silently, by design (LLM-0009). Nothing in CI sets these: `flyctl deploy`
 # does not read Doppler, so they arrive by `fly secrets set` or a Doppler
 # Config Sync. `/state`'s `health.tracing` says whether the app has the key.
 fly secrets set BRAINTRUST_API_KEY=...

@@ -1,10 +1,12 @@
-"""LLM-0008: the three properties the tracing seam is allowed to have.
+"""LLM-0009: the three properties the tracing seam is allowed to have.
 
 Off by default, never fatal, and a pure side effect. Nothing here opens a
 socket or imports `braintrust`; the sink is the one in `conftest.py`.
 """
 
 from __future__ import annotations
+
+import threading
 
 import pytest
 
@@ -200,11 +202,16 @@ def test_the_real_sdk_produces_the_span_shape_we_meant() -> None:
     """The contract with a dependency we do not own.
 
     Spans here are hand-built — there is no LLM SDK to wrap, because the
-    gateway posts raw httpx (LLM-0008). That makes `start_span`'s keywords, the
+    gateway posts raw httpx (LLM-0009). That makes `start_span`'s keywords, the
     `llm` type and `metrics.estimated_cost` an API we are coupled to without a
     wrapper to absorb a change. This runs the real braintrust logger against
     its own in-memory backend, so an upgrade that moves any of them fails here
     rather than in production. No socket is opened.
+
+    The shape is the whole trace: a tick, a batch under it by ambient context,
+    and a call under the batch from another thread by exported handle — the
+    `JevPolicy._Bridge` hop. The root carries an input and an output, because a
+    root without them is exactly the empty trace this shape replaced.
     """
 
     from braintrust import logger as bt
@@ -213,25 +220,56 @@ def test_the_real_sdk_produces_the_span_shape_we_meant() -> None:
     simulate_login()
     init_test_logger("jeve-span-shape")
     with bt._internal_with_memory_background_logger() as memory:
+
+        def gateway_thread(handle: str) -> None:
+            # The memory backend is thread-local; production's is not.
+            bt._state._override_bg_logger.logger = memory
+            try:
+                with tracing.span("jev.decide", type="llm", parent=handle) as call:
+                    call.log(
+                        output={"urgent": 0.9},
+                        metrics={"tokens": 430, "estimated_cost": 1.68e-05},
+                    )
+            finally:
+                bt._state._override_bg_logger.logger = None
+
         tracing.reset()
         assert tracing.configure(settings=Settings(braintrust_api_key=bt.TEST_API_KEY))
-        with tracing.span("decide.batch", type="task", metadata={"mode": "record"}):
-            with tracing.span("jev.decide", type="llm", input={"state": "x"}) as call:
-                call.log(
-                    output={"urgent": 0.9},
-                    metrics={"tokens": 430, "estimated_cost": 1.68e-05},
-                )
+        with tracing.span(
+            "sim.tick", type="task", input={"label": "d0 Mon 09:00"}
+        ) as tick_span:
+            with tracing.span(
+                "decide cafe.purchase",
+                type="task",
+                input=[{"person_id": "p1", "facts": {"queue_length": 2}}],
+            ) as batch:
+                worker = threading.Thread(target=gateway_thread, args=(batch.export(),))
+                worker.start()
+                worker.join()
+                batch.log(output=[{"person_id": "p1", "settled_by": "live"}])
+            # Logged last, as `Engine.tick` does once the tick has committed.
+            tick_span.log(output={"decisions": 1})
         rows = memory.pop()
 
-    batch, decide = rows
-    assert batch["span_attributes"]["name"] == "decide.batch"
-    assert batch["span_attributes"]["type"] == "task"
-    assert not batch["span_parents"]
+    by_name = {row["span_attributes"]["name"]: row for row in rows}
+    tick, batch, decide = (
+        by_name["sim.tick"],
+        by_name["decide cafe.purchase"],
+        by_name["jev.decide"],
+    )
+    assert tick["span_attributes"]["type"] == "task"
+    assert not tick["span_parents"]
+    assert tick["input"] == {"label": "d0 Mon 09:00"}
+    assert tick["output"] == {"decisions": 1}
+
+    assert batch["span_parents"] == [tick["span_id"]]
+    assert batch["input"] == [{"person_id": "p1", "facts": {"queue_length": 2}}]
+    assert batch["output"] == [{"person_id": "p1", "settled_by": "live"}]
 
     assert decide["span_attributes"]["type"] == "llm"
     assert decide["span_parents"] == [batch["span_id"]]
-    assert decide["input"] == {"state": "x"}
     assert decide["output"] == {"urgent": 0.9}
     # The field Braintrust prefers over its own registry estimate — the point
     # of logging it at all, since the registry has never heard of jev.
     assert decide["metrics"]["estimated_cost"] == 1.68e-05
+    assert {row["root_span_id"] for row in rows} == {tick["root_span_id"]}
