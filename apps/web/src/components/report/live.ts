@@ -110,8 +110,10 @@ export function liveFindings(r: FieldReport): Finding[] {
 		add(
 			"economy",
 			c.overdue === 0 ? "good" : c.overdue > 10 ? "high" : "note",
-			c.overdue === 0 ? "Bills get paid" : `${fmt(c.overdue)} invoices are overdue`,
-			`${fmt(c.paid)} payments, ${c.mean_days_late?.toFixed(2) ?? "0"} days late on average and never more than ${c.max_days_late ?? 0}. ${c.overdue === 0 ? "Nothing is overdue" : `${fmt(c.overdue)} of ${fmt(c.open)} open invoices are past due`}${c.written_off ? `, and ${fmt(c.written_off)} were written off` : ""}.`,
+			c.overdue === 0
+				? "Bills get paid"
+				: `${fmt(c.overdue)} ${c.overdue === 1 ? "invoice is" : "invoices are"} overdue`,
+			`${fmt(c.paid)} payments, ${c.mean_days_late?.toFixed(2) ?? "0"} days late on average and never more than ${c.max_days_late ?? 0}. ${c.overdue === 0 ? "Nothing is overdue" : `${fmt(c.overdue)} of ${fmt(c.open)} open invoices ${c.overdue === 1 ? "is" : "are"} past due`}${c.written_off ? `, and ${fmt(c.written_off)} were written off` : ""}.`,
 			"payments · invoices where paid_sim is null",
 		);
 	}
