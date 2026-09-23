@@ -662,11 +662,16 @@ class Engine:
         again at quarter past.
         """
 
+        # `heard_hops` is read before this tick writes anyone's first-hand
+        # knowledge below: somebody who was told before they noticed knows it
+        # at second hand, and that is what their first decision should see.
         waiting = self._conn.execute(
             "SELECT n.incident_id, n.person_id, n.asked_day, i.module_id, "
-            "  i.started_sim, i.cause_event_seq, p.traits "
+            "  i.started_sim, i.cause_event_seq, p.traits, k.hops AS heard_hops "
             "FROM outage_notices n JOIN incidents i ON i.id = n.incident_id "
             "JOIN persons p ON p.id = n.person_id "
+            "LEFT JOIN knowledge k ON k.person_id = n.person_id "
+            "  AND k.fact_id = 'outage:' || n.incident_id "
             "WHERE i.ended_sim IS NULL AND n.ticket_id IS NULL "
             "  AND n.notice_sim <= %s ORDER BY n.incident_id, n.person_id",
             (report.sim_time,),
@@ -705,6 +710,11 @@ class Engine:
                         "already_open": open_already is not None,
                         "hours_down": (report.sim_time - int(row["started_sim"]))
                         // HOUR,
+                        # Only the first time they are asked. A day later they
+                        # have had every chance to hit it themselves.
+                        "heard_hops": int(row["heard_hops"] or 0)
+                        if row["asked_day"] is None
+                        else 0,
                     },
                     traits=dict(row["traits"] or {}),
                 )

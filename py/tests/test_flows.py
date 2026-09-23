@@ -129,14 +129,16 @@ def test_a_credit_is_never_more_than_is_still_owed(conn: Connection[DictRow]) ->
 
 def test_a_conversation_in_the_cafe_reaches_money(conn: Connection[DictRow]) -> None:
     """The longest chain in the world, end to end: two people meet, one presses
-    the other, the outage ends sooner, and a credit moves on the ledger."""
+    the other, the outage ends sooner, and a credit moves on the ledger. The
+    meeting is whichever kind it was — an episode when they had a stake between
+    them, an encounter when not (WORLD-0007)."""
 
     run(conn, days=5)
     reached = conn.execute(
         """
         WITH RECURSIVE downstream AS (
             SELECT seq, kind, 0 AS depth FROM events
-            WHERE kind = 'encounter' AND seq IN (
+            WHERE kind IN ('encounter', 'episode.closed') AND seq IN (
                 SELECT unnest(causes) FROM events WHERE kind = 'ticket.escalated')
             UNION
             SELECT e.seq, e.kind, d.depth + 1
