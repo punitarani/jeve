@@ -568,7 +568,7 @@ def economics() -> dict[str, object]:
 
 
 _report_lock: asyncio.Lock | None = None
-_report_memo: tuple[tuple[object, ...], dict[str, object]] | None = None
+_report_memo: tuple[tuple[str, str, int, int], dict[str, object]] | None = None
 
 
 def _report_meta() -> tuple[dict[str, Any], int]:
@@ -604,7 +604,7 @@ async def field_report() -> dict[str, object]:
 
     global _report_lock, _report_memo
     meta, seq = await asyncio.to_thread(_report_meta)
-    key = (meta["db"], meta["run_id"], int(meta["tick_seq"]), seq)
+    key = (str(meta["db"]), str(meta["run_id"]), int(meta["tick_seq"]), seq)
     # An asyncio lock, so the crowd waits on the event loop. A threading lock
     # in a sync endpoint parks each waiter on a worker thread, and forty of
     # those is the whole threadpool: /state and /health would stall behind
@@ -613,10 +613,15 @@ async def field_report() -> dict[str, object]:
     if _report_lock is None:
         _report_lock = asyncio.Lock()
     async with _report_lock:
-        if _report_memo is None or _report_memo[0] != key:
-            body = await asyncio.to_thread(_report_body, SimTime(int(meta["sim_time"])))
-            _report_memo = (key, body)
-        body = _report_memo[1]
+        # A memo at least as new as this request's key will do: a reader who
+        # read the clock just before a tick is not owed the older world, and
+        # recomputing it would evict the newer one everyone else is asking for.
+        memo = _report_memo
+        if memo is None or memo[0][:2] != key[:2] or memo[0][2:] < key[2:]:
+            now = SimTime(int(meta["sim_time"]))
+            memo = (key, await asyncio.to_thread(_report_body, now))
+            _report_memo = memo
+        body = memo[1]
     return {
         "seq": seq,
         "as_of": str(meta["as_of"]),
