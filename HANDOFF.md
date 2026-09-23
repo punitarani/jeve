@@ -22,7 +22,7 @@ Cloudflare site.
 * `fly config validate` and `wrangler deploy --dry-run` are clean.
 * 36 audit screenshots in `docs/audit/shots/` at ~61fps on SwiftShader.
 
-## Since then: episodes (WORLD-0006, WORLD-0007, MEM-0002)
+## Since then: episodes (WORLD-0006, WORLD-0007, WORLD-0008, MEM-0002)
 
 A meeting with a stake between the people in it can now get up to three rounds
 instead of one shot, and has somewhere to write the result: facts that travel,
@@ -30,12 +30,19 @@ promises that are scored. **On in every world the daemon runs**, with no flag
 (WORLD-0007); the one-shot encounter still resolves every meeting without a
 stake, and is the control arm `make episodes` compares against.
 
+* WORLD-0008, from the first live episodes: rounds are told what happened in
+  the last one, each person says whether they have had their say, a round that
+  repeats the last ends the episode as `stalled`, and recursion goes two deep —
+  news ripples a table further, and a pair with a second matter between them
+  takes it aside. Hearsay distance reaches the decision to report an outage, and
+  a broken promise reaches the next conversation about a bill.
 * `make episodes` plays the same 21 sim-days twice, with and without, and writes
   `ops/episodes.md`. Over five seeds on rules: episodes cut total outage minutes
-  by about a fifth (2,703 → 2,100) and bring the first services invoice forward
-  about 3½ hours, at +2.4% decisions — and the two resolutions **disagree**
-  about how often a conversation gets an outage escalated (mean gap +0.51), so
-  the dial moves base rates too. That gap is an upper bound; separating
+  by about a quarter (2,703 → 2,058) and bring the first services invoice
+  forward about 7 hours, at +2.4% decisions — and the two resolutions
+  **disagree** about how often a conversation gets an outage escalated (mean gap
+  +0.47; +0.59 live in production before WORLD-0008), so the dial moves base
+  rates too. That gap is an upper bound; separating
   selection from resolution needs a shadow arm that computes episodes everywhere
   and applies them nowhere. It is the next piece of work; until it runs, read the
   default world's escalation rate as a property of this resolution, not a

@@ -195,7 +195,10 @@ class RulesPolicy:
 
         vocality = _num(ctx.traits.get("vocality"), 0.4)
         draw = _uniform(rng)
-        return {"file": draw < vocality}, {"file": draw}
+        # Second-hand news is acted on less than a thing you hit yourself, and
+        # a rumour less again (WORLD-0008). One draw on every branch.
+        credence = _CREDENCE.get(min(int(_num(ctx.facts.get("heard_hops"), 0)), 2), 1.0)
+        return {"file": draw < vocality * credence}, {"file": draw}
 
     def _ticket_confirm(
         self, ctx: DecisionContext, rng: object
@@ -320,6 +323,13 @@ class RulesPolicy:
         vocality = _num(ctx.traits.get("vocality"), 0.4)
         sociability = _num(ctx.traits.get("sociability"), 0.5)
         tension = _num(ctx.facts.get("tension"), 0.0)
+        rounds_done = _num(ctx.facts.get("rounds_done"), 0.0)
+        # Somebody who did not push at the start is less likely to start later:
+        # each round they let pass is evidence about them, not a fresh coin
+        # (WORLD-0008). And a payer who broke their last promise to this firm is
+        # pushed harder than one who kept it.
+        urge = (0.3 + 0.6 * vocality) * 0.6**rounds_done
+        urge += _RECORD_URGE.get(str(ctx.facts.get("track_record")), 0.0)
 
         if role == "holder":
             # Pressed, and with nothing yet given: most people give their word.
@@ -333,7 +343,7 @@ class RulesPolicy:
             if ctx.facts.get("promised"):
                 act = "small_talk"
             elif not ctx.facts.get("pressed"):
-                act = "press" if move < 0.3 + 0.6 * vocality else "explain"
+                act = "press" if move < urge else "explain"
             else:
                 act = "ask" if move < 0.5 else "small_talk"
         else:
@@ -344,20 +354,23 @@ class RulesPolicy:
         if stop < 0.12 + 0.18 * tension - 0.1 * sociability:
             act = "leave"
 
-        # Settled means "nothing left to say about it". For the two sides of a
-        # stake that is a promise or a refusal; for somebody who is only in the
-        # room it is having nothing left to pass on. Without that second clause
-        # a conversation between bystanders could never end except by running
-        # out of rounds, and `exit_reason` stopped telling us anything.
+        # Done means "has had their say". For the two sides of a stake that is a
+        # promise or a refusal, or having pushed and been heard; for somebody
+        # who is only in the room it is having nothing left to pass on. Without
+        # the last clause a conversation between bystanders could never end
+        # except by running out of rounds, and `exit_reason` stopped telling us
+        # anything.
         tellable = bool(ctx.facts.get("tellable_topic"))
-        settled = bool(ctx.facts.get("promised") or ctx.facts.get("refused")) or (
-            role == "bystander" and not tellable
+        done = (
+            bool(ctx.facts.get("promised") or ctx.facts.get("refused"))
+            or (role == "asker" and bool(ctx.facts.get("pressed")) and rounds_done > 0)
+            or (role == "bystander" and not tellable)
         )
         mention = tellable and tell < 0.35 + 0.5 * vocality
         return (
             {
                 "act": act,
-                "settled": settled,
+                "done": done,
                 "mood": 1 if tension >= 2 else 2,
                 "mention": mention,
             },
@@ -374,6 +387,12 @@ class RulesPolicy:
         small, large = (0.45, 0.2) if stressed else (0.3, 0.1)
         order = "large" if roll < large else "small" if roll < large + small else "none"
         return {"order": order}, {"order": roll}
+
+
+_CREDENCE: dict[int, float] = {0: 1.0, 1: 0.7, 2: 0.4}
+"""How much of a report's weight hearsay carries, by removes from first hand."""
+
+_RECORD_URGE: dict[str, float] = {"broken": 0.2, "kept": -0.1}
 
 
 def _num(value: object, default: float) -> float:

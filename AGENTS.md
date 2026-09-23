@@ -567,3 +567,15 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### WORLD-0008: Conversations remember their rounds, end when people are done, and recurse two deep
+
+**Status**: accepted (2026-09-23)  
+**Scope**: `py/src/jeve/world/episodes.py`, `py/src/jeve/decide/questions.py`, `py/src/jeve/decide/policy.py`, `py/src/jeve/memory/store.py`, `py/migrations/0010_episode_depth_and_stall.sql`, `py/tests/test_episodes.py`  
+**Tags**: episodes, recursion, realism, memory, resolution
+
+- **Rounds remember.** Every round's state says what each person did in the round just gone (by the same neutral labels) and how long they have been at it, so round N depends on round N−1. - **People end conversations.** Each person is asked whether they have had their say, not whether the matter is solved. A round in which everyone repeats their last act ends the episode as `stalled`, as the recursion research pre-registered ("rounds continue only on state change"). - **Two deep, by dependency.** `MAX_DEPTH = 2`, in code and in migration 0010. After an episode closes, a pair who have a *different* outage or bill between them take it aside (never a matter an ancestor was about), and news can ripple a second table further. Both count against the daily ceiling. - **Memory is read back.** How someone heard of an outage reaches their first decision to report it; a payer's last kept or broken promise to a firm reaches the next conversation about a bill. Both are appended only when present, so first-hand and first-time questions keep their bytes.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+

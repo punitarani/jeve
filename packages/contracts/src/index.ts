@@ -387,7 +387,7 @@ export const Episode = z.object({
   closed_sim: z.number().int().nullable(),
   closed_seq: z.number().int().nullable(),
   rounds: z.number().int(),
-  exit_reason: z.enum(["settled", "emptied", "rounds"]).nullable(),
+  exit_reason: z.enum(["settled", "emptied", "rounds", "stalled"]).nullable(),
   outcome: EpisodeOutcome,
   participants: z.array(EpisodeParticipant),
   round_log: z.array(EpisodeRound),

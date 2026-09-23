@@ -30,6 +30,7 @@ from psycopg.rows import DictRow
 from jeve import db, memory
 from jeve.core.clock import DAY, TICK, SimTime, at
 from jeve.decide.policy import Decision, DecisionContext, Policy, RulesPolicy, Source
+from jeve.decide.questions import QUESTION_SETS
 from jeve.sim import advance, daemon
 from jeve.world import episodes, space
 from jeve.world.engine import Engine, Made, TickReport
@@ -86,19 +87,23 @@ class Scripted:
         self._rules = RulesPolicy(root_seed)
         self._script = script
         self._turn: dict[str, int] = {}
+        self.asked: list[DecisionContext] = []
+        """Every context this policy was handed, in order — what each person
+        was told, which is what the round-memory tests read back."""
 
     def decide(self, ctx: DecisionContext) -> Decision:
+        self.asked.append(ctx)
         if ctx.kind != "episode.round":
             return self._rules.decide(ctx)
         lines = self._script.get(ctx.person_id)
         if not lines:
             return Decision(
-                chosen={"act": "small_talk", "settled": True, "mood": 2},
+                chosen={"act": "small_talk", "done": True, "mood": 2},
                 source=self.source,
             )
         index = min(self._turn.get(ctx.person_id, 0), len(lines) - 1)
         self._turn[ctx.person_id] = index + 1
-        chosen = {"act": "small_talk", "settled": False, "mood": 2, **lines[index]}
+        chosen = {"act": "small_talk", "done": False, "mood": 2, **lines[index]}
         return Decision(chosen=chosen, source=self.source)
 
     def decide_many(self, contexts: Sequence[DecisionContext]) -> list[Decision]:
@@ -359,7 +364,7 @@ def test_a_promise_is_recorded_and_raises_the_pressure_on_the_bill(
     creditor = "ledgerline.client_admin.17"
     policy = Scripted(
         ROOT_SEED,
-        {payer: [{"act": "promise", "settled": True}], creditor: [{"act": "press"}]},
+        {payer: [{"act": "promise", "done": True}], creditor: [{"act": "press"}]},
     )
     engine, report = fresh(conn, policy)
     bill = conn.execute(
@@ -519,6 +524,208 @@ def test_the_vendor_cannot_escalate_to_itself(conn: Connection[DictRow]) -> None
     conn.rollback()
 
 
+# -- WORLD-0008: rounds that remember, endings people choose, a second matter ----
+
+# Halloran's office manager pays Halloran's bills and runs on invoicing; the
+# seed has Tallybird's bill to Halloran falling due on day two. So cornering
+# Tallybird's support desk about an invoicing outage leaves the same two people
+# with a second matter between them.
+CUSTOMER = "halloran.office_manager.12"
+VENDOR = "tallybird.support.6"
+
+
+def _hold_outage(conn: Connection[DictRow], policy: Scripted) -> None:
+    engine, report = fresh(conn, policy)
+    outage(engine, report)
+    present, made, by_id = stage(engine, conn, [CUSTOMER, VENDOR], Zone.CAFE)
+    episodes.run(
+        engine, report, SimTime(report.sim_time), present, made, by_id, ["invoicing"]
+    )
+
+
+def _outage_rounds(policy: Scripted, person: str) -> list[DecisionContext]:
+    return [
+        ctx
+        for ctx in policy.asked
+        if ctx.kind == "episode.round"
+        and ctx.person_id == person
+        and ctx.facts.get("stake") == "outage"
+    ]
+
+
+def test_each_round_is_told_what_happened_in_the_last(
+    conn: Connection[DictRow],
+) -> None:
+    """Round two has to be a different question from round one, or its answer
+    is only a second draw of the same propensity."""
+
+    policy = Scripted(
+        ROOT_SEED,
+        {
+            CUSTOMER: [{"act": "explain"}, {"act": "press"}, {"act": "ask"}],
+            VENDOR: [{"act": "ask"}, {"act": "explain"}, {"act": "promise"}],
+        },
+    )
+    _hold_outage(conn, policy)
+    rounds = _outage_rounds(policy, CUSTOMER)
+    assert len(rounds) == 3
+    first, second = rounds[0], rounds[1]
+    assert first.facts["rounds_done"] == 0 and first.facts["my_last_act"] is None
+    assert second.facts["rounds_done"] == 1
+    assert second.facts["my_last_act"] == "explain"
+    present = second.facts["present"]
+    assert isinstance(present, list)
+    assert [p["last_act"] for p in present] == ["ask"]
+    ask = QUESTION_SETS["episode.round"]
+    before, after = ask.prepare(first).state, ask.prepare(second).state
+    assert before is not None and after is not None
+    assert "just_now" not in before and "just_now" in after
+    conn.rollback()
+
+
+def test_a_conversation_going_in_circles_ends_as_stalled(
+    conn: Connection[DictRow],
+) -> None:
+    """Everybody doing what they did last round is not a conversation making
+    progress, and a third round would only re-draw the same propensities."""
+
+    policy = Scripted(ROOT_SEED, {CUSTOMER: [{"act": "ask"}], VENDOR: [{"act": "ask"}]})
+    _hold_outage(conn, policy)
+    row = conn.execute(
+        "SELECT exit_reason, rounds FROM episodes WHERE depth = 0"
+    ).fetchone()
+    assert row is not None
+    assert (row["exit_reason"], row["rounds"]) == ("stalled", 2)
+    conn.rollback()
+
+
+def test_people_who_have_had_their_say_end_the_conversation(
+    conn: Connection[DictRow],
+) -> None:
+    policy = Scripted(
+        ROOT_SEED,
+        {
+            CUSTOMER: [{"act": "press", "done": True}],
+            VENDOR: [{"act": "promise", "done": True}],
+        },
+    )
+    _hold_outage(conn, policy)
+    row = conn.execute(
+        "SELECT exit_reason, rounds FROM episodes WHERE depth = 0"
+    ).fetchone()
+    assert row is not None
+    assert (row["exit_reason"], row["rounds"]) == ("settled", 1)
+    conn.rollback()
+
+
+def test_a_second_matter_between_two_of_them_is_taken_aside(
+    conn: Connection[DictRow],
+) -> None:
+    """The recursion the research pre-registered: a child only where the parent
+    leaves a subset of its people with a stake of their own — and never about
+    the matter the parent was already about."""
+
+    policy = Scripted(
+        ROOT_SEED, {CUSTOMER: [{"act": "press"}], VENDOR: [{"act": "promise"}]}
+    )
+    _hold_outage(conn, policy)
+    rows = conn.execute(
+        "SELECT id, parent_id, depth, stake, stake_ref FROM episodes ORDER BY id"
+    ).fetchall()
+    parent, child = rows[0], rows[1]
+    assert (parent["depth"], parent["stake"]) == (0, "outage")
+    assert (child["depth"], child["stake"], child["parent_id"]) == (
+        1,
+        "invoice",
+        parent["id"],
+    )
+    assert child["stake_ref"] != parent["stake_ref"]
+    seated = {
+        str(r["person_id"])
+        for r in conn.execute(
+            "SELECT person_id FROM episode_participants WHERE episode_id = %s",
+            (child["id"],),
+        ).fetchall()
+    }
+    assert seated == {CUSTOMER, VENDOR}
+    # Nothing below it went back to the outage the parent was about.
+    assert not any(
+        r["stake_ref"] == parent["stake_ref"] for r in rows if r["depth"] > 0
+    )
+    conn.rollback()
+
+
+def test_hearsay_reaches_the_decision_to_report_as_hearsay(
+    conn: Connection[DictRow],
+) -> None:
+    """How someone knows is written down for every fact that travels. It has to
+    reach the one decision it bears on, or it is decoration."""
+
+    policy = Scripted(ROOT_SEED, {})
+    engine, report = fresh(conn, policy)
+    incident = outage(engine, report)
+    told, saw = "ledgerline.client_admin.17", CUSTOMER
+    memory.learn(
+        conn,
+        told,
+        memory.Fact.outage(incident, "invoicing").id,
+        sim_time=report.sim_time,
+        from_person_id=VENDOR,
+        hops=1,
+    )
+    conn.execute(
+        "UPDATE outage_notices SET notice_sim = %s WHERE incident_id = %s "
+        "AND person_id = ANY(%s)",
+        (report.sim_time, incident, [told, saw]),
+    )
+    engine._customers(report, SimTime(report.sim_time))
+    heard = {
+        ctx.person_id: ctx.facts["heard_hops"]
+        for ctx in policy.asked
+        if ctx.kind == "file.ticket"
+    }
+    assert heard[told] == 1
+    assert heard[saw] == 0
+    conn.rollback()
+
+
+def test_a_broken_promise_is_remembered_at_the_next_bill(
+    conn: Connection[DictRow],
+) -> None:
+    """A promise is scored so that the next conversation about money can see
+    how the last one went (MEM-0002). Scored and never read, it was nothing."""
+
+    engine, report = fresh(conn, RulesPolicy(ROOT_SEED))
+    present, _made, by_id = stage(engine, conn, [CUSTOMER, VENDOR], Zone.CAFE)
+    now = SimTime(report.sim_time)
+    stake = episodes._invoice_stake(engine, present, now)
+    assert stake is not None and stake.track_record is None
+
+    seq = engine.emit(report, "episode.closed", payload={})
+    conn.execute(
+        "INSERT INTO episodes (id, zone, depth, stake, stake_ref, opened_sim, "
+        "opened_seq) VALUES (1, 'cafe', 0, 'invoice', %s, %s, %s)",
+        (stake.ref, report.sim_time, seq),
+    )
+    assert stake.invoice_id is not None
+    memory.promise(
+        conn,
+        episode_id=1,
+        from_person_id=CUSTOMER,
+        to_person_id=VENDOR,
+        invoice_id=stake.invoice_id,
+        sim_time=report.sim_time,
+        seq=seq,
+        due_sim=report.sim_time + DAY,
+    )
+    memory.close_commitments_for(
+        conn, stake.invoice_id, sim_time=report.sim_time + DAY, kept=False
+    )
+    again = episodes._invoice_stake(engine, [by_id[CUSTOMER], by_id[VENDOR]], now)
+    assert again is not None and again.track_record == "broken"
+    conn.rollback()
+
+
 def test_nobody_is_pulled_into_two_conversations_at_once(
     conn: Connection[DictRow],
 ) -> None:
@@ -532,8 +739,9 @@ def test_nobody_is_pulled_into_two_conversations_at_once(
     episodes.run(
         engine, report, SimTime(report.sim_time), present, made, by_id, ["invoicing"]
     )
+    # One meeting, one conversation — and whatever it took aside (WORLD-0008).
+    assert _count(conn, "SELECT count(*) AS n FROM episodes WHERE depth = 0") == 1
     first = _count(conn, "SELECT count(*) AS n FROM episodes")
-    assert first == 1
 
     later = TickReport(tick_seq=2, sim_time=report.sim_time + TICK)
     episodes.run(
@@ -561,8 +769,9 @@ def test_the_seeded_fact_starts_in_exactly_one_head(
 
 
 def test_every_episode_ends_and_says_how(conn: Connection[DictRow]) -> None:
-    """Settled, emptied, or out of rounds. An episode with no exit reason is one
-    that is still running when the tick that spawned it has committed."""
+    """Everyone had their say, the room emptied, it went round in circles, or it
+    ran out of rounds. An episode with no exit reason is one that is still
+    running when the tick that spawned it has committed."""
 
     run(conn, days=WORLD_DAYS, episodes_on=True)
     rows = conn.execute(
@@ -574,11 +783,12 @@ def test_every_episode_ends_and_says_how(conn: Connection[DictRow]) -> None:
         conn, "SELECT count(*) AS n FROM episodes WHERE closed_sim IS NULL"
     )
     assert unfinished == 0
+    exits = {"settled", "emptied", "rounds", "stalled"}
     for row in rows:
-        assert row["exit_reason"] in ("settled", "emptied", "rounds")
+        assert row["exit_reason"] in exits
         assert int(row["longest"]) <= episodes.MAX_ROUNDS
-    # All three ways out are reachable, or one of them is dead code.
-    assert {str(row["exit_reason"]) for row in rows} == {"settled", "emptied", "rounds"}
+    # All four ways out are reachable, or one of them is dead code.
+    assert {str(row["exit_reason"]) for row in rows} == exits
 
 
 def test_every_stake_a_room_can_hold_actually_occurs(
@@ -592,29 +802,36 @@ def test_every_stake_a_room_can_hold_actually_occurs(
     assert {str(row["stake"]) for row in rows} == {"invoice", "news", "outage"}
 
 
-def test_a_side_conversation_never_has_a_side_conversation(
+def test_recursion_reaches_two_levels_and_stops_there(
     conn: Connection[DictRow],
 ) -> None:
-    """Depth is capped at one, in code and in the schema.
+    """Depth is capped at two, in code and in the schema, and both levels occur.
 
     Unbounded nesting is what the multi-resolution literature calls chain
     disaggregation: one refinement forces its neighbours to refine, and the run
-    stops being a simulation and becomes a fan-out.
+    stops being a simulation and becomes a fan-out. A cap nothing reaches is
+    untested, so the second level has to happen too.
     """
 
     run(conn, days=WORLD_DAYS, episodes_on=True)
     deepest = _count(conn, "SELECT COALESCE(max(depth), 0) AS n FROM episodes")
-    assert deepest <= episodes.MAX_DEPTH
-    assert _count(conn, "SELECT count(*) AS n FROM episodes WHERE depth = 1") > 0, (
-        "a side conversation never happened, so the recursion is untested"
-    )
+    assert deepest == episodes.MAX_DEPTH == 2
+    assert _count(conn, "SELECT count(*) AS n FROM episodes WHERE depth = 1") > 0
+    # Every child hangs off an episode exactly one level up.
     orphans = _count(
         conn,
         "SELECT count(*) AS n FROM episodes c "
         "LEFT JOIN episodes p ON p.id = c.parent_id "
-        "WHERE c.depth = 1 AND (p.id IS NULL OR p.depth <> 0)",
+        "WHERE c.depth > 0 AND (p.id IS NULL OR p.depth <> c.depth - 1)",
     )
     assert orphans == 0
+    # Both triggers fire: news carried on, and a second matter taken aside.
+    assert _count(
+        conn, "SELECT count(*) AS n FROM episodes WHERE depth > 0 AND stake = 'news'"
+    )
+    assert _count(
+        conn, "SELECT count(*) AS n FROM episodes WHERE depth > 0 AND stake <> 'news'"
+    ), "no pair ever took a second matter aside"
 
 
 def test_the_day_has_a_ceiling_on_conversations(conn: Connection[DictRow]) -> None:
@@ -829,13 +1046,18 @@ def test_a_world_begun_before_episodes_carries_on_with_them(
         "DROP TABLE commitments, episode_participants, episodes, knowledge, facts "
         "CASCADE"
     )
-    conn.execute("DELETE FROM schema_migrations WHERE name = '0009_episodes.sql'")
+    # Every migration from 0009 on: the code before episodes had none of them,
+    # and forgetting only 0009 re-created its tables under a later migration's
+    # record, so the schema the rest of the module ran on was 0009's alone.
+    conn.execute("DELETE FROM schema_migrations WHERE name >= '0009'")
     _hand_the_world_to_the_daemon(conn)
 
     assert daemon.main(["--until-day", "6", *DAEMON]) == 0
 
     with db.connect(autocommit=True) as watch:
-        assert "0009_episodes.sql" in db.applied(watch)
+        assert {"0009_episodes.sql", "0010_episode_depth_and_stall.sql"} <= db.applied(
+            watch
+        )
         incident = watch.execute(
             "SELECT id, ended_sim FROM incidents WHERE module_id = 'invoicing' "
             "AND started_sim < %s ORDER BY started_sim DESC LIMIT 1",

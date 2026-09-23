@@ -45,6 +45,7 @@ from jeve.core.clock import DAY, SimTime
 from jeve.decide.policy import RulesPolicy
 from jeve.sim.runner import advance
 from jeve.world.engine import Engine
+from jeve.world.episodes import MAX_DEPTH, PER_DAY
 from jeve.world.seed_world import ROOT_SEED, seed
 
 REPORT = find_repo_root() / "ops" / "episodes.md"
@@ -69,6 +70,9 @@ class Arm:
     escalations: int = 0
     paid_late_days: float = 0.0
     facts_reach: int = 0
+    exits: dict[str, int] = field(default_factory=dict)
+    depths: dict[int, int] = field(default_factory=dict)
+    days_at_ceiling: int = 0
 
     @property
     def escalation_rate(self) -> float:
@@ -158,6 +162,27 @@ def measure(
         )
 
     arm.facts_reach = _one(conn, "SELECT count(*) AS n FROM knowledge WHERE hops > 0")
+    if episodes_on:
+        # How conversations ended and how deep they went: the two things
+        # WORLD-0008 changed, and the ones a reader cannot see in event counts.
+        arm.exits = {
+            str(r["exit_reason"]): int(r["n"])
+            for r in conn.execute(
+                "SELECT exit_reason, count(*) AS n FROM episodes GROUP BY 1"
+            ).fetchall()
+        }
+        arm.depths = {
+            int(r["depth"]): int(r["n"])
+            for r in conn.execute(
+                "SELECT depth, count(*) AS n FROM episodes GROUP BY 1"
+            ).fetchall()
+        }
+        arm.days_at_ceiling = _one(
+            conn,
+            "SELECT count(*) AS n FROM (SELECT opened_sim / %s AS d FROM episodes "
+            "GROUP BY 1 HAVING count(*) >= %s) t",
+            (DAY, PER_DAY),
+        )
     return arm
 
 
@@ -296,6 +321,34 @@ def render(pairs: list[tuple[Arm, Arm]]) -> str:
         "`ops/economics.md`, and before any cache sharing between rooms in the "
         "same state, the extra rounds above would add roughly "
         f"${(on_rounds - 0) * 0.0000384 / days:,.4f} per sim-day.",
+        "",
+    ]
+    exits = {
+        reason: sum(on.exits.get(reason, 0) for on, _ in pairs)
+        for reason in ("settled", "stalled", "emptied", "rounds")
+    }
+    depths = {
+        level: sum(on.depths.get(level, 0) for on, _ in pairs)
+        for level in range(MAX_DEPTH + 1)
+    }
+    at_ceiling = sum(on.days_at_ceiling for on, _ in pairs)
+    lines += [
+        "## How conversations ended, and how deep they went",
+        "",
+        "Episodes on, every seed together. `settled`: everyone still there had "
+        "had their say. `stalled`: a round repeated the one before it. "
+        "`emptied`: people left. `rounds`: the cap ended it (WORLD-0008).",
+        "",
+        "| ended | episodes |",
+        "|---|---:|",
+        *(f"| {reason} | {n} |" for reason, n in exits.items()),
+        "",
+        "| depth | episodes |",
+        "|---|---:|",
+        *(f"| {level} | {n} |" for level, n in depths.items()),
+        "",
+        f"The daily ceiling of {PER_DAY} was reached on {at_ceiling} of "
+        f"{days * len(pairs)} sim-days.",
         "",
         "## What happened, by event",
         "",
