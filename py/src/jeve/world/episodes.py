@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from jeve import db, memory
 from jeve.core.clock import DAY, TICK, SimTime
+from jeve.core.orgs import module_owner, uses
 from jeve.core.seed import derive_rng
 from jeve.decide.gates import ASK_FROM_DAYS_BEFORE_DUE
 from jeve.decide.policy import DecisionContext
@@ -161,31 +162,22 @@ class Local:
 # -- what an outage is, and who can hear about it -------------------------------
 
 
-def known_outage(engine: Engine, org: str, down: list[str]) -> str | None:
-    """A broken module this person has reason to know about.
+def known_outage(org: str, down: list[str]) -> str | None:
+    """A broken module this firm has reason to know about: one it runs on, or,
+    for a vendor, one it sells. The roster says which (CORE-0012), so this is a
+    set intersection rather than a query per person in the room."""
 
-    The vendor's own staff know about anything that is down. Everyone else
-    knows only about what their firm subscribes to.
-    """
-
-    if not down:
-        return None
-    if org == "tallybird":
-        return down[0]
-    rows = engine.conn.execute(
-        "SELECT module_id FROM subscriptions WHERE org_id = %s AND active "
-        "AND module_id = ANY(%s) ORDER BY module_id",
-        (org, down),
-    ).fetchall()
-    return str(rows[0]["module_id"]) if rows else None
+    known = sorted(set(down) & uses(org))
+    return known[0] if known else None
 
 
 def open_incident(engine: Engine, down: list[str]) -> dict[str, Any] | None:
     if not down:
         return None
     row = engine.conn.execute(
-        "SELECT id, module_id, cause_event_seq, escalated_sim FROM incidents "
-        "WHERE ended_sim IS NULL AND module_id = ANY(%s) ORDER BY id LIMIT 1",
+        "SELECT id, module_id, cause_event_seq, escalated_sim, started_sim "
+        "FROM incidents WHERE ended_sim IS NULL AND module_id = ANY(%s) "
+        "ORDER BY id LIMIT 1",
         (down,),
     ).fetchone()
     if row is None:
@@ -195,6 +187,9 @@ def open_incident(engine: Engine, down: list[str]) -> dict[str, Any] | None:
         "module": str(row["module_id"]),
         "cause": int(row["cause_event_seq"]) if row["cause_event_seq"] else None,
         "escalated": row["escalated_sim"] is not None,
+        # How long it has been down is what the vendor's reliability is scored
+        # on (MEM-0003), so it is read with the rest rather than queried again.
+        "started": int(row["started_sim"]),
     }
 
 
@@ -219,7 +214,6 @@ def escalate(
     """
 
     module = known_outage(
-        engine,
         org_id,
         [
             str(r["id"])
@@ -287,15 +281,17 @@ def escalate(
 def _outage_stake(engine: Engine, group: list[Agent], down: list[str]) -> Stake | None:
     """A module is down, someone here can work on it, and someone here is stuck."""
 
-    vendor = next((a for a in group if a.org == "tallybird"), None)
+    # Whoever sells a module that is down, if they are standing here. Two
+    # vendors sell to this district (CORE-0012), so which one matters: a
+    # Quill engineer cannot fix Tallybird's register.
+    owners = {module_owner(module) for module in down}
+    vendor = next((a for a in group if a.org in owners), None)
     if vendor is None:
         return None
     # The vendor's staff know about every outage but are not stuck on any: one
     # of them pressing a colleague is not a customer cornering the vendor, and
     # the one-shot never let it happen (`test_space`).
-    affected = {
-        a.id: known_outage(engine, a.org, down) for a in group if a.org != "tallybird"
-    }
+    affected = {a.id: known_outage(a.org, down) for a in group if a.org != vendor.org}
     askers = frozenset(person for person, module in affected.items() if module)
     if not askers:
         return None
@@ -448,10 +444,11 @@ def run(
     engine: Engine,
     report: TickReport,
     now: SimTime,
-    present: list[Agent],
+    deciding: list[Agent],
     made: list[Made],
     by_id: dict[str, Agent],
     down: list[str],
+    room: list[Agent] | None = None,
 ) -> set[frozenset[str]]:
     """Open and run every episode this tick. Returns the pairs it consumed.
 
@@ -459,15 +456,21 @@ def run(
     encounter: the same meeting resolved twice would double-count its effects,
     which is the oldest trap in multi-resolution modelling. The caller seeds its
     own dedupe set with what comes back.
+
+    Only somebody who was asked this tick can start a meeting (WORLD-0009), so
+    `deciding` is what the decisions line up with; `room` is everyone standing
+    there, which is who an episode may grow into. They differ since movement
+    became a decision point: most of the room is mid-dwell and was not asked.
     """
 
+    present = room if room is not None else deciding
     consumed: set[frozenset[str]] = set()
-    for agent, decision in zip(present, made, strict=True):
+    for agent, decision in zip(deciding, made, strict=True):
         other_id = decision.chosen.get("with")
         if not decision.chosen.get("interact") or not isinstance(other_id, str):
             continue
         other = by_id.get(other_id)
-        if other is None or other.zone is not agent.zone:
+        if other is None or (other.zone, other.floor) != (agent.zone, agent.floor):
             continue
         pair = frozenset({agent.id, other_id})
         if pair in consumed:
@@ -520,13 +523,13 @@ def _grow(
     for candidate in sorted(present, key=lambda a: a.id):
         if len(members) >= MAX_PARTICIPANTS:
             break
-        if candidate.id in (first.id, second.id) or candidate.zone is not first.zone:
+        if candidate.id in (first.id, second.id) or (
+            candidate.zone,
+            candidate.floor,
+        ) != (first.zone, first.floor):
             continue
         # Colleagues at their own desks are not in a conversation (WORLD-0003).
-        if candidate.zone is candidate.own_zone and candidate.org in (
-            first.org,
-            second.org,
-        ):
+        if candidate.at_workplace and candidate.org in (first.org, second.org):
             continue
         if _joins(engine, stake, candidate, down, holders):
             members.append(candidate)
@@ -548,9 +551,10 @@ def _joins(
     """
 
     if stake.kind == "outage":
-        return candidate.org == "tallybird" or bool(
-            known_outage(engine, candidate.org, down)
-        )
+        module = stake.module_id
+        if module is not None and candidate.org == module_owner(module):
+            return True
+        return bool(known_outage(candidate.org, down))
     if stake.kind == "invoice":
         return candidate.id in stake.askers or candidate.id == stake.holder
     # News travels to whoever has not heard it.
@@ -631,7 +635,7 @@ def _open(
             "episode_id": episode_id,
             "stake": stake.kind,
             "stake_ref": stake.ref,
-            "zone": zone.value,
+            "zone": zone,
             "participants": [seat.agent.id for seat in seats],
             "depth": depth,
             "parent_id": parent_id,
@@ -642,7 +646,7 @@ def _open(
         "opened_sim, opened_seq) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
         (
             episode_id,
-            zone.value,
+            zone,
             parent_id,
             depth,
             stake.kind,
@@ -730,7 +734,7 @@ def _context(
         kind="episode.round",
         facts={
             "org": agent.org,
-            "here": agent.zone.value,
+            "here": agent.zone,
             "stake": stake.kind,
             "module": stake.module_id,
             "days_late": stake.days_late,
@@ -883,7 +887,7 @@ def _close(
         causes=list(stake.causes),
         payload={
             "episode_id": episode_id,
-            "zone": seats[0].agent.zone.value,
+            "zone": seats[0].agent.zone,
             "participants": [seat.agent.id for seat in seats],
             "exit_reason": exit_reason,
             **outcome,
@@ -913,7 +917,7 @@ def _close(
                 raised_by=asker.id,
                 org_id=asker.org,
                 raised_with=stake.holder,
-                zone=asker.zone.value,
+                zone=asker.zone,
                 cause_seq=closed_seq,
                 decision_id=None,
                 decided_by="episode",
@@ -1106,7 +1110,7 @@ def _carry_the_news(
             agent
             for agent in sorted(present, key=lambda a: a.id)
             if agent.id not in inside
-            and agent.zone is carrier.zone
+            and (agent.zone, agent.floor) == (carrier.zone, carrier.floor)
             and agent.id not in holders
         ]
         if not outsiders:

@@ -26,6 +26,7 @@ from psycopg_pool import ConnectionPool
 from jeve import db, tracing
 from jeve.config import load_settings
 from jeve.core.clock import SimTime
+from jeve.core.orgs import BY_ID, modules_of, social_places
 
 _pool: ConnectionPool[Connection[DictRow]] | None = None
 
@@ -171,11 +172,13 @@ def state() -> dict[str, object]:
         orgs = [
             {
                 **dict(row),
+                # Colours are data in the roster, not in the client (CORE-0012).
+                "palette": _palette(str(row["id"])),
                 "cash_cents": cash.get(str(row["id"]), 0),
                 "receivable_cents": receivable.get(str(row["id"]), 0),
             }
             for row in conn.execute(
-                "SELECT id, name, kind FROM orgs ORDER BY id"
+                "SELECT id, name, kind, archetype FROM orgs ORDER BY id"
             ).fetchall()
         ]
 
@@ -231,6 +234,16 @@ def state() -> dict[str, object]:
         }
 
 
+def _palette(org_id: str) -> dict[str, str]:
+    palette = BY_ID[org_id].palette
+    return {
+        "wall": palette.wall,
+        "floor": palette.floor,
+        "body": palette.body,
+        "accent": palette.accent,
+    }
+
+
 STALE_AFTER_S = 30.0
 """Six missed beats (SIM-0002). The daemon beats every five seconds whatever it
 is doing, asleep for the night included, so silence this long means no process."""
@@ -272,8 +285,8 @@ def _health(meta: dict[str, Any]) -> dict[str, object]:
 #
 # Retail joined them when the cafe got its arrival curve: a sale per customer is
 # a couple of hundred lines a day, and the first outage of the week was no longer
-# among the first four hundred events the timeline loaded.
-BACKGROUND_EVENTS = ("agent.moved", "cafe.sale", "cafe.walkout")
+# among the first four hundred events the timeline loaded. Four tills now.
+BACKGROUND_EVENTS = ("agent.moved", "retail.sale", "retail.walkout")
 
 
 @app.get("/events")
@@ -284,6 +297,11 @@ def events(
     kind: str | None = None,
     org: str | None = None,
     kinds: str | None = Query(None, description="comma-separated; overrides `kind`"),
+    exclude: str | None = Query(
+        None,
+        description="comma-separated kinds to leave out, on top of the background "
+        "cut: the dashboard opens without staff small-talk and fetches it on request",
+    ),
     background: bool = Query(False, description="include movement and retail"),
     latest: bool = Query(False, description="the newest `limit` instead of the oldest"),
 ) -> dict[str, object]:
@@ -307,6 +325,10 @@ def events(
     elif not background:
         clauses.append("kind <> ALL(%s)")
         params.append(list(BACKGROUND_EVENTS))
+    left_out = [k for k in (exclude or "").split(",") if k]
+    if left_out and not wanted:
+        clauses.append("kind <> ALL(%s)")
+        params.append(left_out)
     if org:
         clauses.append("org_id = %s")
         params.append(org)
@@ -383,14 +405,26 @@ def causal(
 @app.get("/persons")
 def persons(
     org: str | None = None,
+    team: str | None = None,
+    q: str | None = Query(None, description="a name or role, matched anywhere"),
     kind: str = Query("staff", pattern="^(staff|counterparty|all)$"),
-    limit: int = Query(60, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=500),
 ) -> dict[str, object]:
+    """People, narrowed by firm, team, or a fragment of a name or role. Two
+    hundred and twenty-five staff do not fit in a list; a search does."""
+
     clauses: list[str] = []
     params: list[Any] = []
     if org:
         clauses.append("org_id = %s")
         params.append(org)
+    if team:
+        clauses.append("team_id = %s")
+        params.append(team)
+    if q:
+        clauses.append("(name ILIKE %s OR role ILIKE %s)")
+        pattern = f"%{q}%"
+        params.extend((pattern, pattern))
     if kind != "all":
         clauses.append("kind = %s")
         params.append(kind)
@@ -398,11 +432,35 @@ def persons(
     params.append(limit)
     return {
         "persons": _rows(
-            f"SELECT id, org_id, name, role, kind, traits, decision_seq, status "
-            f"FROM persons {where} ORDER BY org_id, role, id LIMIT %s",
+            f"SELECT id, org_id, team_id, name, role, kind, traits, decision_seq, "
+            f"status FROM persons {where} ORDER BY org_id, team_id, role, id LIMIT %s",
             tuple(params),
         )
     }
+
+
+@app.get("/teams")
+def teams() -> dict[str, object]:
+    """Every team of every firm, and how many of each are on their floor now."""
+
+    return {"teams": _rows(_teams_sql())}
+
+
+def _teams_sql(where: str = "") -> str:
+    """A team is a floor (CORE-0012): a member is present when they stand in
+    their own building on their own floor, whatever they are doing there."""
+
+    return (
+        "SELECT t.id, t.org_id, t.name, t.floor, t.layout, "
+        "       count(p.id) AS headcount, "
+        "       count(p.id) FILTER (WHERE s.zone = t.org_id AND s.floor = t.floor) "
+        "         AS present "
+        "FROM teams t "
+        "LEFT JOIN persons p ON p.team_id = t.id "
+        "LEFT JOIN positions s ON s.person_id = p.id "
+        f"{where} GROUP BY t.id, t.org_id, t.name, t.floor, t.layout, t.ord "
+        "ORDER BY t.org_id, t.ord"
+    )
 
 
 @app.get("/persons/{person_id}/decisions")
@@ -417,7 +475,8 @@ def person_decisions(
     """
 
     person = _row(
-        "SELECT id, org_id, name, role, kind, traits FROM persons WHERE id = %s",
+        "SELECT id, org_id, team_id, name, role, kind, traits FROM persons "
+        "WHERE id = %s",
         (person_id,),
     )
     if person is None:
@@ -568,46 +627,61 @@ def economics() -> dict[str, object]:
 def world_map() -> dict[str, object]:
     """The town, as data. Static: safe to cache for the life of the page."""
 
-    from jeve.world.map import BUILDINGS, HEIGHT, WIDTH, ZONE_ORG, Zone, town
-    from jeve.world.seed_world import ORGS
+    from jeve.world.map import PLAZA, town
 
-    names = {org_id: name for org_id, name, _ in ORGS}
     plan = town()
     return {
-        "width": WIDTH,
-        "height": HEIGHT,
+        "width": plan.width,
+        "height": plan.height,
         "tiles": [list(row) for row in plan.tiles],
         "zones": [list(row) for row in plan.zones],
         "buildings": [
             {
-                "zone": b.zone.value,
-                "org_id": ZONE_ORG[b.zone],
-                "name": names[ZONE_ORG[b.zone]],
+                "zone": b.zone,
+                "org_id": b.zone,
+                "name": BY_ID[b.zone].name,
+                "kind": BY_ID[b.zone].kind,
+                "archetype": BY_ID[b.zone].archetype,
+                "palette": _palette(b.zone),
                 "x0": b.x0,
                 "y0": b.y0,
                 "x1": b.x1,
                 "y1": b.y1,
                 "door": list(b.door),
+                "faces_south": b.faces_south,
+                "floors": b.floors,
+                "stair": list(b.stair),
             }
-            for b in BUILDINGS
+            for b in plan.buildings
         ],
-        # Where the sampled crowd of counterparties may stand.
+        "storeys": [
+            {
+                "zone": s.zone,
+                "floor": s.floor,
+                "x0": plan.building(s.zone).x0,
+                "y0": plan.building(s.zone).y0,
+                "tiles": [list(row) for row in s.tiles],
+            }
+            for s in plan.storeys
+        ],
+        # Where the sampled crowd of counterparties may stand: the ground
+        # floor of every place other firms' staff go to, and the plaza.
         "crowd_spots": {
-            Zone.CAFE.value: [list(t) for t in plan.visitor_spots[Zone.CAFE]],
-            Zone.PLAZA.value: [list(t) for t in plan.visitor_spots[Zone.PLAZA]],
+            zone: [list(t) for t in plan.visitor_spots[(zone, 0)]]
+            for zone in (*(org.id for org in social_places()), PLAZA)
         },
         # WEB-0004: the tiles somebody sits on, so a client can draw them
         # sitting. Not `plan.seats`, which is where staff *work*: a barista's
         # place is behind the counter, on her feet.
         "seats": {
-            zone.value: [list(t) for t in plan.sittable(zone)]
-            for zone in plan.visitor_spots
+            f"{zone}/{floor}": [list(t) for t in plan.sittable(zone, floor)]
+            for zone, floor in plan.visitor_spots
         },
     }
 
 
 @app.get("/world/agents")
-def world_agents() -> dict[str, object]:
+def world_agents(org: str | None = None) -> dict[str, object]:
     """The current frame: where every member of staff is, and how they got there."""
 
     with _db() as conn:
@@ -617,27 +691,34 @@ def world_agents() -> dict[str, object]:
         if meta is None:
             raise HTTPException(503, "the world has not been seeded")
         agents = conn.execute(
-            "SELECT p.id, p.name, p.org_id, p.role, s.zone, s.x, s.y, s.path, "
-            "       s.moved_tick, s.mood "
-            "FROM persons p JOIN positions s ON s.person_id = p.id ORDER BY p.id"
+            "SELECT p.id, p.name, p.org_id, p.team_id, p.role, s.zone, s.floor, "
+            "       s.x, s.y, s.path, s.moved_tick, s.mood "
+            "FROM persons p JOIN positions s ON s.person_id = p.id "
+            "WHERE %s::text IS NULL OR p.org_id = %s ORDER BY p.id",
+            (org, org),
         ).fetchall()
         # Counterparties have no positions; they are demand. Draw as many as
-        # actually turned up at the cafe in the last tick that had any.
+        # actually turned up at each till in the last tick that had any.
         crowd = conn.execute(
-            "SELECT count(*) AS n FROM events "
-            "WHERE kind IN ('cafe.sale','cafe.walkout') "
+            "SELECT org_id, count(*) AS n FROM events "
+            "WHERE kind IN ('retail.sale','retail.walkout') "
             "AND tick_seq = (SELECT max(tick_seq) FROM events "
-            "                WHERE kind IN ('cafe.sale','cafe.walkout') "
-            "                  AND tick_seq > %s - 2)",
+            "                WHERE kind IN ('retail.sale','retail.walkout') "
+            "                  AND tick_seq > %s - 2) "
+            "GROUP BY org_id",
             (int(meta["tick_seq"]),),
-        ).fetchone()
+        ).fetchall()
         down = conn.execute(
             "SELECT id FROM modules WHERE status = 'down' ORDER BY id"
         ).fetchall()
         seq = _max_seq(conn)
 
-    in_cafe = int(crowd["n"]) if crowd else 0
     now = SimTime(int(meta["sim_time"]))
+    footfall = {str(row["org_id"]): int(row["n"]) for row in crowd}
+    # The crowd is drawn where other firms' staff go — the social places —
+    # and on the plaza, which borrows from the busiest of them.
+    in_crowd = {place.id: footfall.get(place.id, 0) for place in social_places()}
+    busiest = max(in_crowd.values(), default=0)
     return {
         "seq": seq,
         "tick_seq": int(meta["tick_seq"]),
@@ -645,7 +726,7 @@ def world_agents() -> dict[str, object]:
         "label": now.label(),
         "status": str(meta["status"]),
         "agents": [dict(row) for row in agents],
-        "crowd": {"cafe": in_cafe, "plaza": in_cafe // 2 if now.in_office_hours else 0},
+        "crowd": {**in_crowd, "plaza": busiest // 2 if now.in_office_hours else 0},
         "down_modules": [str(row["id"]) for row in down],
     }
 
@@ -662,9 +743,10 @@ def world_agent(person_id: str) -> dict[str, object]:
 
     with _db() as conn:
         person = conn.execute(
-            "SELECT p.id, p.name, p.org_id, p.role, p.traits, o.name AS org_name, "
-            "       s.zone, s.mood "
+            "SELECT p.id, p.name, p.org_id, p.team_id, p.role, p.traits, "
+            "       o.name AS org_name, t.name AS team_name, s.zone, s.floor, s.mood "
             "FROM persons p JOIN orgs o ON o.id = p.org_id "
+            "JOIN teams t ON t.id = p.team_id "
             "JOIN positions s ON s.person_id = p.id WHERE p.id = %s",
             (person_id,),
         ).fetchone()
@@ -701,8 +783,11 @@ def world_agent(person_id: str) -> dict[str, object]:
         "name": person["name"],
         "org_id": person["org_id"],
         "org_name": person["org_name"],
+        "team_id": person["team_id"],
+        "team_name": person["team_name"],
         "role": person["role"],
         "zone": person["zone"],
+        "floor": int(person["floor"]),
         "mood": int(person["mood"]),
         "traits": traits,
         # The words Jev is actually shown, not the numbers behind them.
@@ -890,13 +975,17 @@ def _episode(conn: Connection[DictRow], episode_id: int) -> dict[str, object]:
 def org_detail(org_id: str) -> dict[str, object]:
     """One firm: its books, its people, and what is going on there."""
 
-    from jeve.world.map import ORG_ZONE
-
+    if org_id not in BY_ID:
+        raise HTTPException(404, f"no org {org_id!r}")
+    spec = BY_ID[org_id]
+    # What is going on at a firm is about the software it lives on: the
+    # modules it subscribes to, or, for a vendor, the ones it owns.
+    concerns = list(modules_of(org_id)) or None
     with _db() as conn:
         org = conn.execute(
-            "SELECT id, name, kind FROM orgs WHERE id = %s", (org_id,)
+            "SELECT id, name, kind, archetype FROM orgs WHERE id = %s", (org_id,)
         ).fetchone()
-        if org is None or org_id not in ORG_ZONE:
+        if org is None:
             raise HTTPException(404, f"no org {org_id!r}")
         money = conn.execute(
             "SELECT a.kind, COALESCE(sum(e.amount_cents),0) AS cents "
@@ -906,15 +995,16 @@ def org_detail(org_id: str) -> dict[str, object]:
         ).fetchall()
         staff = conn.execute(
             "SELECT count(*) AS total, "
-            "       count(*) FILTER (WHERE s.zone = %s) AS present "
+            "       count(*) FILTER (WHERE s.zone = p.org_id) AS present "
             "FROM persons p JOIN positions s ON s.person_id = p.id WHERE p.org_id = %s",
-            (ORG_ZONE[org_id].value, org_id),
+            (org_id,),
         ).fetchone()
+        teams = conn.execute(_teams_sql("WHERE t.org_id = %s"), (org_id,)).fetchall()
         tickets = conn.execute(
-            "SELECT count(*) AS n FROM tickets t "
-            "WHERE t.status <> 'closed' AND (%s = 'tallybird' OR t.module_id IN "
+            "SELECT count(*) AS n FROM tickets t WHERE t.status <> 'closed' AND ("
+            "  t.module_id = ANY(%s) OR t.module_id IN "
             "  (SELECT module_id FROM subscriptions WHERE org_id = %s))",
-            (org_id, org_id),
+            (concerns or [], org_id),
         ).fetchone()
         unpaid = conn.execute(
             "SELECT count(*) AS n FROM invoices WHERE paid_sim IS NULL "
@@ -922,10 +1012,10 @@ def org_detail(org_id: str) -> dict[str, object]:
             (org_id, org_id),
         ).fetchone()
         affected = conn.execute(
-            "SELECT m.id FROM modules m WHERE m.status = 'down' AND (%s = 'tallybird' "
-            "  OR m.id IN (SELECT module_id FROM subscriptions WHERE org_id = %s)) "
-            "ORDER BY m.id",
-            (org_id, org_id),
+            "SELECT m.id FROM modules m WHERE m.status = 'down' AND ("
+            "  m.id = ANY(%s) OR m.id IN "
+            "  (SELECT module_id FROM subscriptions WHERE org_id = %s)) ORDER BY m.id",
+            (concerns or [], org_id),
         ).fetchall()
         blocked = conn.execute(
             "SELECT 1 FROM scheduled WHERE kind = 'invoice.run' AND subject_id = %s "
@@ -942,7 +1032,11 @@ def org_detail(org_id: str) -> dict[str, object]:
         "id": org["id"],
         "name": org["name"],
         "kind": org["kind"],
-        "zone": ORG_ZONE[org_id].value,
+        "archetype": org["archetype"],
+        "palette": _palette(org_id),
+        "zone": org_id,
+        "floors": spec.floors,
+        "teams": [dict(row) for row in teams],
         "cash_cents": cents.get("cash", 0),
         "receivable_cents": cents.get("receivable", 0),
         "staff_present": int(staff["present"]),

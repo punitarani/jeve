@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from jeve.decide import gates
+from jeve.decide import gates, questions
 from jeve.decide.policy import DecisionContext, RulesPolicy
 from jeve.decide.questions import (
     QUESTION_SETS,
@@ -25,7 +25,7 @@ ASKING: dict[str, dict[str, object]] = {
     "ticket.triage": {"subject": "exports fail", "module_down": True, "backlog": 12},
     "ticket.answer": {"backlog": 12},
     "payment.timing": {"days_until_due": -4, "can_afford": True, "runway_days": 9},
-    "cafe.purchase": {"pos_down": True, "queue_length": 3},
+    "retail.purchase": {"org": "thirdrail", "till_down": True, "queue_length": 3},
     "ticket.confirm": {"module_down": False, "days_since_answer": 1},
     "chase.invoice": {"org": "halloran", "days_late": 9, "large": True},
     "credit.decision": {
@@ -43,19 +43,46 @@ ASKING: dict[str, dict[str, object]] = {
         "cash_multiple": 1.4,
         "timesheets_available": False,
     },
+    "supply.order": {
+        "org": "thirdrail",
+        "stock_level": 1,
+        "runway_days": 21,
+        "price_up": True,
+        "can_afford": True,
+    },
+    "credit.draw": {
+        "org": "thirdrail",
+        "runway_days": 9,
+        "debt_cents": 0,
+        "weekly_wages_cents": 900_000,
+    },
+    "credit.approve": {
+        "applicant": "thirdrail",
+        "runway_days": 9,
+        "overdue_bills": 2,
+        "payroll_held": True,
+        "debt_cents": 0,
+        "amount_cents": 3_600_000,
+        "bank_can_lend": True,
+    },
+    "subscription.switch": {
+        "org": "ironworks",
+        "competitor": "tallybird",
+        "reliability": 1,
+    },
     # The richest path through an episode round: somebody who can settle the
     # matter, already pushed, with a piece of news in their pocket — so `act`,
     # `settled`, `mood` and `mention` are all in the request.
     "episode.round": {
         "org": "halloran",
-        "here": "cafe",
+        "here": "thirdrail",
         "stake": "invoice",
         "role_in_stake": "holder",
         "days_late": 9,
         "large": True,
         "present": [
             {
-                "id": "ledgerline.client_admin.17",
+                "id": "ledgerline.client_services.client_admin.1",
                 "org": "ledgerline",
                 "role": "client_admin",
             }
@@ -69,14 +96,26 @@ ASKING: dict[str, dict[str, object]] = {
     },
     "agent.tick": {
         "org": "halloran",
-        "here": "cafe",
-        "own_zone": "law_office",
+        "team": "halloran.partners",
+        "here": "thirdrail",
+        "floor": 0,
+        "own_zone": "halloran",
+        "own_floor": 2,
+        "at_workplace": False,
         "present": [
-            {"id": "tallybird.sre.4", "org": "tallybird", "role": "sre"},
-            {"id": "thirdrail.barista.20", "org": "thirdrail", "role": "barista"},
+            {"id": "tallybird.engineering.sre.1", "org": "tallybird", "role": "sre"},
+            {
+                "id": "thirdrail.front_of_house.barista.3",
+                "org": "thirdrail",
+                "role": "barista",
+            },
         ],
         "outage": "invoicing",
+        "vendor": "tallybird",
         "can_raise": True,
+        "lobby": True,
+        "social": {"cafe": "thirdrail", "gym": "ironworks"},
+        "minds_counter": False,
     },
 }
 TRAITS: dict[str, object] = {
@@ -177,9 +216,9 @@ def test_hard_constraints_are_gates_not_questions() -> None:
     still_down = ctx("ticket.confirm", {"module_down": True})
     assert gates.settle(still_down) == {"confirm": False, "reason": "still_down"}
     # Served at once, till working: they bought a coffee. Not worth a question.
-    no_line = ctx("cafe.purchase", {"queue_length": 0, "pos_down": False})
+    no_line = ctx("retail.purchase", {"queue_length": 0, "till_down": False})
     assert gates.settle(no_line) == {"buy": True, "reason": "no_line"}
-    assert gates.settle(ctx("cafe.purchase", {"queue_length": 3})) is None
+    assert gates.settle(ctx("retail.purchase", {"queue_length": 3})) is None
 
 
 def test_a_gate_costs_neither_policy_any_luck() -> None:
@@ -222,12 +261,21 @@ def test_people_in_the_room_are_described_not_named() -> None:
     prepared = _prepare("agent.tick")
     assert prepared.state is not None
     here = prepared.state["who_is_here"]
-    assert here == {
-        "person_a": "a sre from the software company",
-        "person_b": "a barista from the cafe",
+    assert here == (
+        "a site reliability engineer from the software company; "
+        "a barista from the cafe."
+    )
+    assert "tallybird.engineering.sre.1" not in str(prepared.state)
+    whom = next(ask for ask in prepared.asks if ask.key == "with_whom")
+    assert isinstance(whom.question, Choice)
+    assert whom.question.criteria == {
+        "person_a": "A site reliability engineer from the software company.",
+        "person_b": "A barista from the cafe.",
+        "other": "Nobody in particular.",
     }
-    assert "tallybird.sre.4" not in str(prepared.state)
     keys = [ask.key for ask in prepared.asks]
+    # With an outage on their mind, what they now think of the vendor is
+    # asked last, after everything that moves the world (MEM-0003).
     assert keys == [
         "next_zone",
         "mood",
@@ -235,15 +283,106 @@ def test_people_in_the_room_are_described_not_named() -> None:
         "with_whom",
         "topic",
         "raise_outage",
+        "vendor_reliability",
     ]
 
 
 def test_alone_there_is_nobody_to_ask_about() -> None:
     facts = {**ASKING["agent.tick"], "present": [], "can_raise": False}
     keys = [ask.key for ask in _prepare("agent.tick", facts).asks]
+    assert keys == ["next_zone", "mood", "vendor_reliability"]
+    quiet = {**facts, "outage": None}
+    keys = [ask.key for ask in _prepare("agent.tick", quiet).asks]
     assert keys == ["next_zone", "mood"]
 
 
 def test_raising_the_outage_is_only_asked_of_someone_who_can() -> None:
     facts = {**ASKING["agent.tick"], "can_raise": False}
     assert "raise_outage" not in [a.key for a in _prepare("agent.tick", facts).asks]
+
+
+def _crowd(spec: dict[str, tuple[str, int]]) -> list[dict[str, object]]:
+    """`{"tallybird": ("engineer", 3)}` -> three engineers from Tallybird."""
+
+    return [
+        {"id": f"{org}.x.{role}.{i}", "org": org, "role": role}
+        for org, (role, n) in spec.items()
+        for i in range(n)
+    ]
+
+
+def test_a_crowded_floor_is_counted_not_listed() -> None:
+    """DECIDE-0005: the state is bounded however many people are here, and
+    the vendor whose product is down is named first, colleagues second."""
+
+    present = _crowd(
+        {
+            "halloran": ("paralegal", 2),
+            "tallybird": ("engineer", 3),
+            "ledgerline": ("bookkeeper", 4),
+            "thirdrail": ("barista", 1),
+            "meridian": ("architect", 2),
+            "quill": ("support", 1),
+            "ironworks": ("trainer", 5),
+        }
+    )
+    present.append({"id": "tallybird.x.sales.9", "org": "tallybird", "role": "sales"})
+    facts = {**ASKING["agent.tick"], "present": present, "candidates": None}
+    prepared = _prepare("agent.tick", facts)
+    assert prepared.state is not None
+    here = prepared.state["who_is_here"]
+    assert here == (
+        "three engineers and a salesperson from the software company; "
+        "two paralegals from the law firm; five personal trainers from the gym; "
+        "four bookkeepers from the accounting firm; two architects from the "
+        "architecture studio; and two others."
+    )
+    whom = next(ask for ask in prepared.asks if ask.key == "with_whom")
+    assert isinstance(whom.question, Choice)
+    labels = [k for k in whom.question.criteria if k != "other"]
+    assert len(labels) == 6
+    # The vendor's people, then colleagues, then the rest: the order the
+    # interpretation maps the labels back in.
+    offered = questions._offered(
+        DecisionContext(
+            person_id="p",
+            role="r",
+            decision_seq=0,
+            sim_time=0,
+            kind="agent.tick",
+            facts=facts,
+            traits=TRAITS,
+        )
+    )
+    assert [str(p["org"]) for p in offered] == ["tallybird"] * 4 + ["halloran"] * 2
+    assert not any(str(p["id"]) in str(prepared.state) for p in present)
+
+
+def test_two_rooms_with_the_same_people_in_them_share_a_call() -> None:
+    """Different ids, same roles and firms: the same bytes go out, so the
+    call is shared (DECIDE-0004)."""
+
+    one = _prepare(
+        "agent.tick",
+        {**ASKING["agent.tick"], "present": _crowd({"tallybird": ("engineer", 2)})},
+    )
+    other = _prepare(
+        "agent.tick",
+        {
+            **ASKING["agent.tick"],
+            "present": [
+                {
+                    "id": "tallybird.x.engineer.7",
+                    "org": "tallybird",
+                    "role": "engineer",
+                },
+                {
+                    "id": "tallybird.x.engineer.8",
+                    "org": "tallybird",
+                    "role": "engineer",
+                },
+            ],
+        },
+    )
+    assert one.state == other.state
+    assert [a.question for a in one.asks] == [a.question for a in other.asks]

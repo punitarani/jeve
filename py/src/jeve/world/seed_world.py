@@ -1,4 +1,4 @@
-"""The golden fixture: four orgs, ~424 people, and a calendar that collides.
+"""The golden fixture: twelve firms, ~1,200 people, and a calendar that collides.
 
 Deliberate shape, from the scenario:
 
@@ -10,65 +10,81 @@ Deliberate shape, from the scenario:
   - Receivables are seeded so some fall due *inside* the window, which is what
     makes a payment decision fire at all.
   - One Invoicing outage is scheduled to run into day 4, across month-end.
+
+Who exists comes from the roster (`jeve.core.orgs`, CORE-0012): every member of
+staff a firm lists is made here, on the floor their team works on, with a name
+drawn from a pool and traits drawn from their id. The twenty-four people the
+town started with keep their names.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve import db, memory
-from jeve.core.clock import DAY, at
-from jeve.core.orgs import ORGS as ORG_SPECS
+from jeve.core.clock import DAY, DISTRICT_CLOSE, at
+from jeve.core.names import person_name
+from jeve.core.orgs import (
+    MODULES,
+    ORGS,
+    counterparty_ids,
+    module_owner,
+    role_words,
+    staff_ids,
+    vendors,
+)
 from jeve.core.seed import derive_rng
+from jeve.world.flows import daily_demand
 
 ROOT_SEED = 20260920
 
-MODULES = (("timetrack", "TimeTrack"), ("invoicing", "Invoicing"), ("pos", "POS"))
+HOUSEHOLD_OPENING_CENTS = 180_000_00
+"""What the district's households have in the bank on day zero: a few days of
+what they are collectively paid. Staff spend from it at the cafe and the gym,
+and wages refill it (WORLD-0005)."""
 
-ORGS = tuple((org.id, org.name, org.kind) for org in ORG_SPECS)
+# The people the town started with keep their names; everyone else is named
+# from the pools in `jeve.core.names`.
+NAMED: dict[str, str] = {
+    "tallybird.leadership_ops.founder.0": "Dana Okonkwo",
+    "tallybird.engineering.eng_lead.0": "Petra Halvorsen",
+    "tallybird.engineering.engineer.0": "Mikel Andrade",
+    "tallybird.engineering.engineer.1": "Sara Lindqvist",
+    "tallybird.engineering.sre.0": "Tomas Brandt",
+    "tallybird.support.support_lead.0": "Ruth Adeyemi",
+    "tallybird.support.support.0": "Kwame Boateng",
+    "tallybird.leadership_ops.account_manager.0": "Ingrid Solberg",
+    "halloran.partners.partner.0": "Maeve Halloran",
+    "halloran.associates.senior_associate.0": "Julian Pike",
+    "halloran.associates.junior_associate.0": "Nadia Farrow",
+    "halloran.front_office.paralegal.0": "Owen Castellanos",
+    "halloran.front_office.office_manager.0": "Priya Raghunathan",
+    "ledgerline.accountants.principal.0": "Grace Ledger",
+    "ledgerline.accountants.senior_accountant.0": "Hugo Marchetti",
+    "ledgerline.accountants.staff_accountant.0": "Amara Diallo",
+    "ledgerline.client_services.payroll.0": "Bjorn Aaltonen",
+    "ledgerline.client_services.client_admin.0": "Cleo Vanterpool",
+    "thirdrail.front_of_house.owner.0": "Rosa Etxeberria",
+    "thirdrail.front_of_house.manager.0": "Denny Kowalczyk",
+    "thirdrail.front_of_house.barista.0": "Yusuf Kaplan",
+    "thirdrail.front_of_house.barista.1": "Lila Mbeki",
+    "thirdrail.kitchen.baker.0": "Anton Reyes",
+    "thirdrail.kitchen.kitchen.0": "Fiona Trethewey",
+}
 
-HOUSEHOLD_OPENING_CENTS = 20_000_00
-"""What the town's households have in the bank on day zero: a few days of what
-they are collectively paid. Staff spend from it at the cafe and wages refill it
-(WORLD-0005)."""
-
-# Staff with a full decision surface. Counterparties are generated below.
-STAFF: tuple[tuple[str, str, str], ...] = (
-    ("tallybird", "founder", "Dana Okonkwo"),
-    ("tallybird", "eng_lead", "Petra Halvorsen"),
-    ("tallybird", "engineer", "Mikel Andrade"),
-    ("tallybird", "engineer", "Sara Lindqvist"),
-    ("tallybird", "sre", "Tomas Brandt"),
-    ("tallybird", "support_lead", "Ruth Adeyemi"),
-    ("tallybird", "support", "Kwame Boateng"),
-    ("tallybird", "account_manager", "Ingrid Solberg"),
-    ("halloran", "partner", "Maeve Halloran"),
-    ("halloran", "senior_associate", "Julian Pike"),
-    ("halloran", "junior_associate", "Nadia Farrow"),
-    ("halloran", "paralegal", "Owen Castellanos"),
-    ("halloran", "office_manager", "Priya Raghunathan"),
-    ("ledgerline", "principal", "Grace Ledger"),
-    ("ledgerline", "senior_accountant", "Hugo Marchetti"),
-    ("ledgerline", "staff_accountant", "Amara Diallo"),
-    ("ledgerline", "payroll", "Bjorn Aaltonen"),
-    ("ledgerline", "client_admin", "Cleo Vanterpool"),
-    ("thirdrail", "owner", "Rosa Etxeberria"),
-    ("thirdrail", "shift_lead", "Denny Kowalczyk"),
-    ("thirdrail", "barista", "Yusuf Kaplan"),
-    ("thirdrail", "barista", "Lila Mbeki"),
-    ("thirdrail", "baker", "Anton Reyes"),
-    ("thirdrail", "weekend", "Fiona Trethewey"),
-)
-
-COUNTERPARTIES_PER_ORG = 100
+OPEN_TICKETS = 9
+"""Open tickets at the first vendor on day zero, so support starts warm rather
+than idle; a third as many at the second."""
 
 
 @dataclass(frozen=True, slots=True)
 class SeedSummary:
     orgs: int
+    teams: int
     staff: int
     counterparties: int
     invoices: int
@@ -96,6 +112,20 @@ def _traits(rng: object, role: str) -> dict[str, float]:
     }
 
 
+def _unique_name(root_seed: int, person_id: str, taken: set[str]) -> str:
+    """A name nobody else at the firm has. Drawn from the person's id, and
+    from their id again with a suffix when the first draw is taken, so the
+    result depends on nobody else's id."""
+
+    name = NAMED.get(person_id) or person_name(root_seed, person_id)
+    attempt = 1
+    while name in taken:
+        name = person_name(root_seed, f"{person_id}#{attempt}")
+        attempt += 1
+    taken.add(name)
+    return name
+
+
 def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummary:
     """Populate an empty, migrated database. Idempotent by truncation."""
 
@@ -112,12 +142,12 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
     with conn.transaction():
         conn.execute(
             """
-            TRUNCATE sim_meta, scheduled, events, orgs, persons, accounts,
+            TRUNCATE sim_meta, scheduled, events, orgs, teams, persons, accounts,
                      ledger_txns, ledger_entries, modules, incidents,
-                     subscriptions, tickets, invoices, payments, cafe_sales,
-                     decisions, positions, outage_notices,
-                     facts, knowledge, episodes, episode_participants,
-                     commitments
+                     subscriptions, tickets, invoices, payments, retail_sales,
+                     decisions, positions, outage_notices, loans, beliefs,
+                     relationships, facts, knowledge, episodes,
+                     episode_participants, commitments
                      RESTART IDENTITY CASCADE
             """
         )
@@ -127,12 +157,30 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             (f"golden-{root_seed}", root_seed, at(0, 7)),
         )
         db.executemany(
-            conn, "INSERT INTO modules (id, name) VALUES (%s, %s)", list(MODULES)
+            conn,
+            "INSERT INTO orgs (id, name, kind, archetype, policy) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            [(org.id, org.name, org.kind, org.archetype, "{}") for org in ORGS],
         )
         db.executemany(
             conn,
-            "INSERT INTO orgs (id, name, kind, policy) VALUES (%s, %s, %s, %s)",
-            [(oid, name, kind, "{}") for oid, name, kind in ORGS],
+            "INSERT INTO modules (id, name, org_id, category) VALUES (%s, %s, %s, %s)",
+            [
+                (module.id, module.name, org.id, module.category)
+                for org in vendors()
+                for module in org.modules
+            ],
+        )
+        teams = [
+            (f"{org.id}.{team.id}", org.id, team.name, team.floor, team.layout, ord_)
+            for org in ORGS
+            for ord_, team in enumerate(org.teams)
+        ]
+        db.executemany(
+            conn,
+            "INSERT INTO teams (id, org_id, name, floor, layout, ord) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            teams,
         )
 
         # Accounts. `external` is the outside world: having it as a real
@@ -140,11 +188,11 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         accounts: list[tuple[str, str | None, str, str]] = [
             ("external", None, "Outside world", "external")
         ]
-        for org_id, _, _ in ORGS:
+        for org in ORGS:
             for kind in ("cash", "receivable", "payable", "revenue", "expense"):
-                accounts.append((f"{org_id}.{kind}", org_id, kind.title(), kind))
-        # The people who work in the town, as one purse. No org: they are not a
-        # firm, and the dashboard's per-firm cash must not count them.
+                accounts.append((f"{org.id}.{kind}", org.id, kind.title(), kind))
+        # The people who work in the district, as one purse. No org: they are
+        # not a firm, and the dashboard's per-firm cash must not count them.
         accounts += [
             ("households.cash", None, "Households: cash", "cash"),
             ("households.income", None, "Households: wages received", "revenue"),
@@ -156,8 +204,8 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             accounts,
         )
 
-        # Opening cash, chosen for runway: the cafe is thin, Tallybird is fat.
-        opening = {org.id: org.opening_cash_cents for org in ORG_SPECS}
+        # Opening cash, chosen for runway: the cafe is thin, the bank is fat.
+        opening = {org.id: org.opening_cash_cents for org in ORGS}
         txn = conn.execute(
             "INSERT INTO ledger_txns (sim_time, memo) VALUES (0, 'opening balances') "
             "RETURNING id"
@@ -175,35 +223,43 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             entries,
         )
 
-        # People.
-        persons: list[tuple[str, str, str, str, str, str]] = []
-        import json
-
-        for index, (org_id, role, name) in enumerate(STAFF):
-            rng = derive_rng(root_seed, "staff", index)
-            pid = f"{org_id}.{role}.{index}"
-            persons.append(
-                (pid, org_id, name, role, "staff", json.dumps(_traits(rng, role)))
-            )
+        # People. Staff from the roster, on the floor their team works on.
+        persons: list[tuple[str, str, str | None, str, str, str, str]] = []
+        staff = 0
+        for org in ORGS:
+            taken: set[str] = set()
+            for pid in staff_ids(org.id):
+                _, team, role, _ = pid.split(".")
+                # CORE-0009: about this person, not about their place in a list.
+                rng = derive_rng(root_seed, "traits", pid)
+                persons.append(
+                    (
+                        pid,
+                        org.id,
+                        f"{org.id}.{team}",
+                        _unique_name(root_seed, pid, taken),
+                        role,
+                        "staff",
+                        json.dumps(_traits(rng, role)),
+                    )
+                )
+                staff += 1
 
         counterparties = 0
-        for org_id, _, kind in ORGS:
-            role = {
-                "software": "subscriber",
-                "law": "client",
-                "accounting": "client",
-                "cafe": "customer",
-            }[kind]
-            for index in range(COUNTERPARTIES_PER_ORG):
-                rng = derive_rng(root_seed, "cp", org_id, index)
-                pid = f"{org_id}.{role}.{index}"
+        for org in ORGS:
+            if org.counterparty_role is None:
+                continue
+            role = org.counterparty_role
+            for index, pid in enumerate(counterparty_ids(org.id)):
+                rng = derive_rng(root_seed, "cp", org.id, index)
                 persons.append(
                     (
                         pid,
                         # A counterparty deals *with* the org but is not staff;
                         # org_id records the relationship.
-                        org_id,
-                        f"{role.title()} {index:03d}",
+                        org.id,
+                        None,
+                        f"{role_words(role).title()} {index:03d}",
                         role,
                         "counterparty",
                         json.dumps(_traits(rng, role)),
@@ -212,8 +268,8 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
                 counterparties += 1
         db.executemany(
             conn,
-            "INSERT INTO persons (id, org_id, name, role, kind, traits) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
+            "INSERT INTO persons (id, org_id, team_id, name, role, kind, traits) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             persons,
         )
 
@@ -221,25 +277,25 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         db.executemany(
             conn,
             "INSERT INTO positions (person_id, zone) VALUES (%s, 'home')",
-            [(row[0],) for row in persons if row[4] == "staff"],
+            [(row[0],) for row in persons if row[5] == "staff"],
         )
 
-        # Subscriptions: the three firms use Tallybird, plus outside subscribers.
-        subs: list[tuple[str | None, str | None, str, int]] = [
-            ("halloran", None, "timetrack", 240_00),
-            ("halloran", None, "invoicing", 180_00),
-            ("ledgerline", None, "invoicing", 180_00),
-            ("thirdrail", None, "pos", 120_00),
-            ("thirdrail", None, "timetrack", 90_00),
-        ]
-        # Outside subscribers, spread over the three products. They all used to
-        # be on Invoicing, while any of the first forty could report an outage
-        # of anything; now a person notices an outage of what they use.
-        for index in range(COUNTERPARTIES_PER_ORG):
-            module = ("invoicing", "timetrack", "invoicing", "pos", "invoicing")[
-                index % 5
+        # Subscriptions: what each firm pays for, and each vendor's outside
+        # subscribers spread over its products — invoicing most of all, so a
+        # person notices an outage of what they use.
+        subs: list[tuple[str | None, str | None, str, int]] = []
+        for org in ORGS:
+            for module_id, cents in org.subscribes:
+                subs.append((org.id, None, module_id, cents))
+        for vendor in vendors():
+            spread = [
+                m
+                for m in vendor.modules
+                for _ in (range(2) if m.category == "invoicing" else range(1))
             ]
-            subs.append((None, f"tallybird.subscriber.{index}", module, 49_00))
+            for index, pid in enumerate(counterparty_ids(vendor.id)):
+                module = spread[index % len(spread)]
+                subs.append((None, pid, module.id, module.monthly_cents))
         db.executemany(
             conn,
             "INSERT INTO subscriptions (org_id, person_id, module_id, monthly_cents) "
@@ -250,95 +306,85 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         # One thing known to exactly one person on day zero (MEM-0002). The
         # scenario calls for it: the share of the town holding it over time is
         # the diffusion measure, and it means something only because nobody
-        # else starts with it. An engineer, not the founder — the founder talks
-        # to everyone, which would make the measure about their diary.
-        rise = memory.Fact.price_rise("tallybird")
-        memory.record_fact(conn, rise, sim_time=0)
-        memory.learn(conn, "tallybird.engineer.2", rise.id, sim_time=0)
+        # else starts with it. Somebody on the supplier's own sales desk, not
+        # its owner — the owner talks to everyone, which would make the measure
+        # about their diary. The district's price rise is the provisions
+        # supplier's, which is the one the buyers' orders answer (WORLD-0010).
+        supplier = next((org for org in ORGS if org.archetype == "supplier"), None)
+        teller = (
+            next(
+                (
+                    person
+                    for person in staff_ids(supplier.id)
+                    if ".sales." in person or ".admin." in person
+                ),
+                None,
+            )
+            if supplier is not None
+            else None
+        )
+        if supplier is not None and teller is not None:
+            rise = memory.Fact.price_rise(supplier.id)
+            memory.record_fact(conn, rise, sim_time=0)
+            memory.learn(conn, teller, rise.id, sim_time=0)
 
         # Receivables already in flight, some falling due inside the window.
-        invoices: list[tuple[str, str | None, str | None, int, int, int, str]] = [
-            # The cafe is 12 days late to Ledgerline before the run starts.
-            (
-                "ledgerline",
-                "thirdrail",
-                None,
-                at(-12),
-                at(-12 + 30),
-                1_850_00,
-                "services",
-            ),
-            (
-                "halloran",
-                None,
-                "halloran.client.3",
-                at(-25),
-                at(2, 12),
-                6_400_00,
-                "services",
-            ),
-            (
-                "halloran",
-                None,
-                "halloran.client.7",
-                at(-28),
-                at(1, 12),
-                3_200_00,
-                "services",
-            ),
-            (
-                "ledgerline",
-                None,
-                "ledgerline.client.2",
-                at(-26),
-                at(3, 12),
-                2_100_00,
-                "services",
-            ),
-            (
-                "ledgerline",
-                None,
-                "ledgerline.client.9",
-                at(-31),
-                at(0, 12),
-                1_450_00,
-                "services",
-            ),
-            ("tallybird", "halloran", None, at(-30), at(2, 9), 420_00, "subscription"),
-            (
-                "tallybird",
-                "ledgerline",
-                None,
-                at(-30),
-                at(4, 9),
-                180_00,
-                "subscription",
-            ),
-        ]
+        invoices: list[tuple[str, str | None, str | None, int, int, int, str]] = []
+        # Last month's subscriptions, a couple of days past due: the first thing
+        # every payer is asked about.
+        for org in ORGS:
+            for module_id, cents in org.subscribes:
+                invoices.append(
+                    (
+                        module_owner(module_id),
+                        org.id,
+                        None,
+                        at(-16),
+                        at(-2),
+                        cents,
+                        "subscription",
+                    )
+                )
+        # Last month's close fees, each at a date of its own: some overdue on
+        # day zero, some not yet due.
+        for org in ORGS:
+            if org.accountant is None or org.accountant == org.id:
+                continue
+            rng = derive_rng(root_seed, "closefee", org.accountant, org.id)
+            issued = at(-24 + int(rng.random() * 20))
+            invoices.append(
+                (
+                    org.accountant,
+                    org.id,
+                    None,
+                    issued,
+                    issued + 14 * DAY,
+                    org.close_fee_cents,
+                    "services",
+                )
+            )
         # The books open mid-story (WORLD-0005): last month's client work was
-        # billed four weeks ago on thirty-day terms, so it falls due across the
+        # billed four weeks ago on the firm's terms, so it falls due across the
         # first week. Same draw as the engine's month-end uses, for month -1.
         # Initial conditions: without them nothing is collectable inside ten days.
-        from jeve.world.engine import CLIENT_ENGAGED_PER_MONTH
-
-        for org in ORG_SPECS:
-            if not org.bills_clients_monthly:
+        for org in ORGS:
+            if org.billing is None:
                 continue
-            for index in range(COUNTERPARTIES_PER_ORG):
-                client = f"{org.id}.{org.counterparty_role}.{index}"
+            low, high = org.billing.amount_cents
+            for client in counterparty_ids(org.id):
                 rng = derive_rng(root_seed, "engagement", org.id, client, -1)
-                if rng.random() >= CLIENT_ENGAGED_PER_MONTH:
+                if rng.random() >= org.billing.engaged_per_month:
                     continue
-                amount = 80_000 + int(rng.random() * 540_000)
-                spread = derive_rng(root_seed, "aged", org.id, client)
-                issued = at(-27) + int(spread.random() * 5 * DAY)
+                amount = low + int(rng.random() * (high - low))
+                spread_rng = derive_rng(root_seed, "aged", org.id, client)
+                issued = at(-27) + int(spread_rng.random() * 5 * DAY)
                 invoices.append(
                     (
                         org.id,
                         None,
                         client,
                         issued,
-                        issued + 30 * DAY,
+                        issued + org.billing.terms_days * DAY,
                         amount,
                         "services",
                     )
@@ -372,16 +418,21 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             receivable_legs,
         )
 
-        # Nine open tickets, so support starts warm rather than idle.
-        tickets = [
-            (
-                at(-1, 14),
-                f"tallybird.subscriber.{index}",
-                "invoicing" if index % 2 else "timetrack",
-                f"Export is slow on large accounts ({index})",
-            )
-            for index in range(9)
-        ]
+        # Open tickets, so support starts warm rather than idle.
+        tickets: list[tuple[int, str, str, str]] = []
+        for vendor_index, vendor in enumerate(vendors()):
+            count = OPEN_TICKETS if vendor_index == 0 else OPEN_TICKETS // 3
+            modules = [m.id for m in vendor.modules]
+            for index, reporter in enumerate(counterparty_ids(vendor.id)[:count]):
+                module_id = modules[index % len(modules)]
+                tickets.append(
+                    (
+                        at(-1, 14),
+                        reporter,
+                        module_id,
+                        f"Export is slow on large accounts ({index})",
+                    )
+                )
         db.executemany(
             conn,
             "INSERT INTO tickets (opened_sim, reporter_id, module_id, subject) "
@@ -400,25 +451,61 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
                 "invoicing",
                 '{"severity": 2, "expected_minutes": 1500}',
             ),
-            (at(0, 9), 0, "subscription.run", None, "{}"),
         ]
-        # Payday is Friday at ten, for every firm, run by Ledgerline.
+        schedule += [
+            (at(0, 9), 0, "subscription.run", vendor.id, "{}") for vendor in vendors()
+        ]
+        # Income from beyond the district lands on Monday mornings.
+        schedule += [
+            (at(0, 9, 15), 0, "income.outside", org.id, "{}")
+            for org in ORGS
+            if org.outside_income_cents
+        ]
+        # Payday is Friday at ten, for every firm.
         payday = at(4, 10)
         schedule += [
-            (payday, 0, "payroll.run", org_id, json.dumps({"due": payday}))
-            for org_id, _, _ in ORGS
+            (payday, 0, "payroll.run", org.id, json.dumps({"due": payday}))
+            for org in ORGS
         ]
-        # Ledgerline closes its clients' books the working day after month-end.
+        # An accountant closes its clients' books the working day after month-end.
         closing = at(4, 9)
         schedule += [
-            (closing, 0, "close.run", org_id, json.dumps({"due": closing}))
-            for org_id in ("halloran", "tallybird", "thirdrail")
+            (closing, 0, "close.run", org.id, json.dumps({"due": closing}))
+            for org in ORGS
+            if org.accountant is not None and org.accountant != org.id
         ]
         # Lunch in from the cafe is thought about on Tuesdays and Thursdays.
         schedule += [
-            (at(1, 10), 0, "catering.consider", org_id, "{}")
-            for org_id in ("halloran", "ledgerline", "tallybird")
+            (at(1, 10), 0, "catering.consider", org.id, "{}")
+            for org in ORGS
+            if org.caterer is not None
         ]
+        # Rent goes out on the first working day of the month; supplies are
+        # ordered on Monday mornings; the supplier puts its prices up in the
+        # second week, which is the story's second shock (WORLD-0010).
+        landlords = sorted({org.landlord for org in ORGS if org.landlord is not None})
+        schedule += [
+            (at(1, 9, 30), 0, "rent.run", landlord, '{"month": 0}')
+            for landlord in landlords
+        ]
+        schedule += [
+            (at(0, 9, 30), 0, "supply.order", org.id, "{}")
+            for org in ORGS
+            if org.supplier is not None
+        ]
+        suppliers = sorted({org.supplier for org in ORGS if org.supplier is not None})
+        schedule += [
+            (at(9, 9), 0, "supply.reprice", supplier, "{}") for supplier in suppliers
+        ]
+        # Every night, what fades fades (MEM-0003).
+        schedule.append((at(0) + DISTRICT_CLOSE, 0, "day.end", None, "{}"))
+        # A good week's stock on the shelves to begin with.
+        for org in ORGS:
+            if org.supplier is not None:
+                conn.execute(
+                    "UPDATE orgs SET stock_units = %s WHERE id = %s",
+                    (9 * daily_demand(org.id), org.id),
+                )
         db.executemany(
             conn,
             "INSERT INTO scheduled (due_sim_time, ord, kind, subject_id, payload) "
@@ -426,9 +513,11 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             schedule,
         )
 
+    assert MODULES  # the roster names at least one vendor
     return SeedSummary(
         orgs=len(ORGS),
-        staff=len(STAFF),
+        teams=len(teams),
+        staff=staff,
         counterparties=counterparties,
         invoices=len(invoices),
         tickets=len(tickets),

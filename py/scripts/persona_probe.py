@@ -47,9 +47,24 @@ LOW, HIGH = 0.0, 1.0  # clamped into each trait's bottom and top tertile
 # control cannot tell "Jev respects persona" from "Jev moves whenever any word
 # in the input changes".
 CASES: tuple[tuple[str, str, dict[str, object], bool], ...] = (
-    ("cafe.purchase", "patience", {"pos_down": False, "queue_length": 4}, False),
-    ("cafe.purchase", "patience", {"pos_down": True, "queue_length": 4}, False),
-    ("cafe.purchase", "patience", {"pos_down": False, "queue_length": 0}, True),
+    (
+        "retail.purchase",
+        "patience",
+        {"org": "thirdrail", "till_down": False, "queue_length": 4},
+        False,
+    ),
+    (
+        "retail.purchase",
+        "patience",
+        {"org": "thirdrail", "till_down": True, "queue_length": 4},
+        False,
+    ),
+    (
+        "retail.purchase",
+        "patience",
+        {"org": "thirdrail", "till_down": False, "queue_length": 0},
+        True,
+    ),
     ("ticket.answer", "diligence", {"backlog": 14}, False),
     ("file.ticket", "vocality", {"module_down": True, "already_open": False}, False),
     ("payment.timing", "promptness", {"days_until_due": -2, "runway_days": 60}, False),

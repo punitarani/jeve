@@ -1,10 +1,17 @@
-"""What persists between meetings (MEM-0002).
+"""What an agent carries forward, and what travels between them.
 
-A fact that can travel, a record of who holds it, and a promise that was made.
-Three tables and the queries over them — no generation anywhere, and nothing
-here knows what an episode is. `jeve.world` writes through this module so that
-"what a meeting changed" is one vocabulary rather than SQL scattered across
-flows.
+Two things live here, and they answer different questions:
+
+* `store` — what persists between meetings: a fact that can travel, who holds
+  it, and a promise that was made. `jeve.world` writes through it so that
+  "what a meeting changed" is one vocabulary rather than SQL scattered across
+  flows.
+* `beliefs` — what a person has come to think: four typed slots with four
+  described levels each, revised by a score asked inside a request that is
+  being made anyway, plus the relationships that decide who they talk to.
+
+Neither generates anything. A fact is a row and a belief is a level; the
+words attached to them are fixed sentences, chosen by a number.
 """
 
 from __future__ import annotations

@@ -7,7 +7,7 @@
  *
  * Data flow. One `GET /world/map` (static). One `GET /world/agents` for where
  * everyone is, refreshed whenever a new tick is seen. And the `seq`-cursored
- * event stream, from which `agent.moved` events — each carrying the tiles
+ * event stream, from which `agent.moved` events — each carrying the nodes
  * walked — drive the animation. The same events, fetched as history, drive the
  * idle replay; so live and replay are one mechanism, not two.
  */
@@ -16,16 +16,18 @@ import {
   EventPage,
   SimEvent,
   TownMap,
-  type Zone,
+  type Node,
+  type Palette,
 } from "@jeve/contracts";
 import type { z } from "zod";
 
 import { WorldModel, type Move } from "./model";
 import { WorldView, type ViewTarget } from "./render";
+import { STOREY } from "./voxels";
 
 export { WorldModel } from "./model";
 export type { Walker, Move } from "./model";
-export { buildVoxels } from "./voxels";
+export { STOREY, buildVoxels } from "./voxels";
 
 export type WorldStatus = ReturnType<WorldModel["snapshot"]> & {
   glOk: boolean;
@@ -53,6 +55,25 @@ export type WorldHandle = {
   screenPositionOfBuilding(orgId: string): { x: number; y: number } | null;
   /** A fixed point on the ground: a reference that does not depend on people. */
   screenPositionOfTile(x: number, y: number): { x: number; y: number };
+  /**
+   * A firm's colours, from the map this world already holds — so a panel
+   * beside the scene paints a firm without a fetch of its own. Null before
+   * the map has arrived, or for an id that is not a building.
+   */
+  paletteOf(orgId: string): Palette | null;
+  /**
+   * Cut the buildings at storey `n`: every floor above it is not drawn, and
+   * neither are the people on it. Null shows everything. The explorer's
+   * segmented control drives it; the hero's tour drives its own (each mount
+   * has a model of its own, so neither reaches the other).
+   */
+  setLevelCut(n: number | null): void;
+  readonly levelCut: number | null;
+  /**
+   * How many storeys the tallest building has, from the map this world
+   * holds: what a level-cut control offers. 0 before the map has arrived.
+   */
+  maxFloors(): number;
 };
 
 declare global {
@@ -71,22 +92,64 @@ const TOPIC_WORDS: Record<string, string> = {
 
 type Bubble = { element: HTMLDivElement; personId: string; until: number };
 
+/**
+ * One stop of the hero's tour: where to look, and how the buildings are cut
+ * while looking. A storey stop cuts at its own floor, so the camera looks
+ * into the room rather than at the slab over it; the district and a
+ * single-storey building are seen whole.
+ */
+type Stop = ViewTarget & { cut: number | null };
+
+/**
+ * The tour: the whole district first, then each building in the order the
+ * map lists them, however many there are. A building with storeys is visited
+ * once per floor from the top down, cut at that floor for the stop; the next
+ * stop puts the cut back (to null, or to its own floor). A building's stop is
+ * framed to its width.
+ */
+function tourOf(map: TownMap, whole: ViewTarget): Stop[] {
+  return [
+    { ...whole, cut: null },
+    ...map.buildings.flatMap((b): Stop[] => {
+      const at = {
+        x: (b.x0 + b.x1) / 2,
+        z: (b.y0 + b.y1) / 2,
+        span: Math.max(19, b.x1 - b.x0 + 9),
+      };
+      if (b.floors <= 1) return [{ ...at, cut: null }];
+      return Array.from({ length: b.floors }, (_, i) => ({ ...at, cut: b.floors - 1 - i }));
+    }),
+  ];
+}
+
+/** A node as the payload carries it. The floor is always sent; the type admits its absence so an older log still replays. */
+type Step = [number, number] | [number, number, number];
+
 function toMove(event: SimEvent): Move | null {
   if (event.kind !== "agent.moved") return null;
   const payload = event.payload as {
     person_id?: string;
-    from_zone?: Zone;
-    to_zone?: Zone;
-    path?: [number, number][];
+    from_zone?: string;
+    to_zone?: string;
+    from_floor?: number;
+    to_floor?: number;
+    path?: Step[];
   };
   if (!payload.person_id || !payload.to_zone || !payload.from_zone) return null;
+  const steps = payload.path ?? [];
+  const from = payload.from_floor ?? 0;
+  const to = payload.to_floor ?? 0;
   return {
     seq: event.seq,
     tick: event.tick_seq ?? 0,
     personId: payload.person_id,
     fromZone: payload.from_zone,
     toZone: payload.to_zone,
-    path: payload.path ?? [],
+    // A step without a floor is on the floor the walk left, or, at the far
+    // end, the one it reached.
+    path: steps.map(
+      (step, i): Node => [step[0], step[1], step[2] ?? (i === steps.length - 1 ? to : from)],
+    ),
   };
 }
 
@@ -107,7 +170,7 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
   let stream: EventSource | null = null;
   let frameTimer: ReturnType<typeof setTimeout> | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
-  let tour: ViewTarget[] = [];
+  let tour: Stop[] = [];
   let tourIndex = 0;
   let tourNextAt = 0;
   const bubbles: Bubble[] = [];
@@ -164,8 +227,10 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
       if (payload.raised_by) say(payload.raised_by, `fix ${payload.module_id}!`, now);
       const where = model.walkers.get(payload.raised_by ?? "");
       if (where && options.mode === "hero") {
-        // Something happened: go and look at it.
+        // Something happened: go and look at it — cut to their floor, or the
+        // storeys over them would hide it. The next stop resets the cut.
         view.lookAt({ x: where.x, z: where.y, span: 15 });
+        model.levelCut = where.floor;
         tourNextAt = now + 6500;
       }
     }
@@ -192,7 +257,10 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
     if (disposed) return;
     if (options.mode === "hero" && tour.length > 0 && now >= tourNextAt) {
       const stop = tour[tourIndex % tour.length];
-      if (stop !== undefined) view.lookAt(stop);
+      if (stop !== undefined) {
+        view.lookAt(stop);
+        model.levelCut = stop.cut;
+      }
       tourIndex++;
       tourNextAt = now + 7000;
     }
@@ -205,12 +273,12 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
       if (bubble === undefined) continue;
       const walker = model.walkers.get(bubble.personId);
       const rect = container.getBoundingClientRect();
-      if (now > bubble.until || walker === undefined || !walker.visible) {
+      if (now > bubble.until || walker === undefined || !walker.visible || !model.shown(walker)) {
         bubble.element.remove();
         bubbles.splice(i, 1);
         continue;
       }
-      const p = view.project(walker.x, 1.75, walker.y);
+      const p = view.project(walker.x, 1.75 + walker.floor * STOREY, walker.y);
       // Only in the viewport: a bubble for someone off-screen is not drawn.
       const inside = p.x > 0 && p.y > 0 && p.x < rect.width && p.y < rect.height;
       bubble.element.style.display = inside ? "block" : "none";
@@ -251,6 +319,10 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
     }
   }
 
+  /** Where a person is drawn: from the height of their floor. */
+  const projectPerson = (w: { x: number; y: number; floor: number }) =>
+    view.project(w.x, 0.7 + w.floor * STOREY, w.y);
+
   const handle: WorldHandle = {
     dispose() {
       disposed = true;
@@ -275,8 +347,8 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
     }),
     screenPositionOf(personId) {
       const walker = model.walkers.get(personId);
-      if (walker === undefined || !walker.visible) return null;
-      return view.project(walker.x, 0.7, walker.y);
+      if (walker === undefined || !walker.visible || !model.shown(walker)) return null;
+      return projectPerson(walker);
     },
     screenPositionOfTile: (x, y) => view.project(x, 0, y),
     screenPositionOfBuilding(orgId) {
@@ -286,8 +358,8 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
       // The floor tile furthest, on screen, from anybody: a click there means
       // the building and cannot be mistaken for the person standing next to it.
       const people = [...model.walkers.values()]
-        .filter((w) => w.visible)
-        .map((w) => view.project(w.x, 0.7, w.y));
+        .filter((w) => w.visible && model.shown(w))
+        .map(projectPerson);
       let best: { x: number; y: number } | null = null;
       let bestClearance = -1;
       for (let ty = b.y0 + 1; ty < b.y1; ty++) {
@@ -305,6 +377,18 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
         }
       }
       return best;
+    },
+    paletteOf(orgId) {
+      return model.map?.buildings.find((b) => b.org_id === orgId)?.palette ?? null;
+    },
+    setLevelCut(n) {
+      model.levelCut = n;
+    },
+    get levelCut() {
+      return model.levelCut;
+    },
+    maxFloors() {
+      return Math.max(0, ...(model.map?.buildings.map((b) => b.floors) ?? []));
     },
   };
 
@@ -329,20 +413,19 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
       if (disposed) return;
       model.setMap(map);
       view.build(map);
-      tour = [
-        { x: map.width / 2, z: map.height / 2, span: 41 },
-        ...map.buildings.map((b) => ({
-          x: (b.x0 + b.x1) / 2,
-          z: (b.y0 + b.y1) / 2,
-          span: 19,
-        })),
-      ];
-      view.lookAt(tour[0] ?? { x: 20, z: 14, span: 41 });
+      const whole = { x: map.width / 2, z: map.height / 2, span: view.spanOf(map) + 1 };
+      tour = tourOf(map, whole);
+      view.lookAt(whole);
 
-      const [frame, history] = await Promise.all([
-        getJson("/world/agents", AgentsFrame),
-        getJson("/events?kinds=agent.moved&latest=true&limit=160", EventPage),
-      ]);
+      const frame = await getJson("/world/agents", AgentsFrame);
+      if (disposed) return;
+      // Enough recorded movement for the replay's few ticks even when everyone
+      // walks at once, so it grows with the staff; the API's page is capped.
+      const limit = Math.min(1000, Math.max(160, frame.agents.length * 4));
+      const history = await getJson(
+        `/events?kinds=agent.moved&latest=true&limit=${limit}`,
+        EventPage,
+      );
       if (disposed) return;
       model.applyFrame(frame, performance.now());
       model.seedHistory(history.events.flatMap((e) => toMove(e) ?? []));

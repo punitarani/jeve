@@ -1,6 +1,6 @@
 # jeve
 
-**A small economy that never stops — four firms on one street, running on
+**A small economy that never stops — twelve firms in one district, running on
 typed decisions instead of generated text.**
 
 Generative-agent sims (Smallville, Concordia) drive agents with LLM prose.
@@ -10,22 +10,33 @@ jeve asks how much of that loop can be replaced by three primitives —
 exists, but only as a view: dialogue is rendered on click for a human, and
 nothing that computes the world may read it back.
 
-## The street
+## The district
 
-Four firms, coupled tightly enough that a bad Tuesday at one is a bad Friday
-at another:
+Twelve firms in three rows of buildings, 225 staff on 27 floors, coupled
+tightly enough that a bad Tuesday at one is a bad Friday at another. The
+roster is one spec, `py/src/jeve/core/orgs.py` (CORE-0012); a team is a floor
+of its building (WORLD-0008).
 
-| Firm | Business | Depends on |
-| --- | --- | --- |
-| **Tallybird Software** | Sells the suite the other three run on — TimeTrack, Invoicing, POS | Subscriptions; ships the outages |
-| **Halloran & Pike LLP** | Law firm, bills by the hour | TimeTrack + Invoicing |
-| **Ledgerline Accounting** | Payroll and the monthly close for the street | Invoicing; clients' data on deadline |
-| **Third Rail Cafe** | Feeds everyone | POS + TimeTrack |
+| Firm | Business | Floors | Runs on |
+| --- | --- | --- | --- |
+| **Tallybird Software** | Sells TimeTrack, Invoicing and POS to the street | 3 | Its own suite; ships the outages |
+| **Halloran & Pike LLP** | Law firm, bills by the hour | 3 | Tallybird TimeTrack + Invoicing |
+| **Ledgerline Accounting** | Payroll and the monthly close for everyone else | 2 | Tallybird Invoicing |
+| **Keystone Property** | Every lot's landlord | 2 | Tallybird Invoicing |
+| **Third Rail Cafe** | Feeds everyone; caters the offices | 1 | Tallybird POS + TimeTrack |
+| **Brightwater Dental** | A clinic with a till and an appointment book | 2 | Tallybird Invoicing |
+| **Meridian Studio Architects** | Bills by milestone | 3 | Quill Hours + Billing |
+| **Commonwealth Credit Union** | The bank; keeps its own books | 2 | Nothing of anyone's |
+| **Pemberton Hardware** | A shop floor and a stock room | 2 | Tallybird POS + Invoicing |
+| **Quill Systems** | The other software vendor | 3 | Its own suite |
+| **Ironworks Gym** | Where the street goes after work | 2 | Quill Register + Hours |
+| **Northfield Provisions** | Supplies the cafe and the shop | 2 | Quill Billing |
 
-Invoices, tickets, incidents, payroll, credits, catering, lunch — ten typed
-flows over a double-entry ledger. Emergence comes from the structure, not the
-script: an Invoicing outage at month-end → late bills → late payments → a
-cash trough → a payer who starts stalling *their* suppliers.
+Invoices, tickets, incidents, payroll, credits, catering, four tills, outside
+income — the typed flows run over a double-entry ledger. Emergence comes from
+the structure, not the script: an Invoicing outage at month-end → late bills
+→ late payments → a cash trough → a payer who starts stalling *their*
+suppliers.
 
 ## Why typed
 

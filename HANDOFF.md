@@ -1,18 +1,28 @@
 # Handoff
 
-Jeve is a continuously-running simulation of a four-firm street economy
-(Tallybird Software, Halloran & Pike LLP, Ledgerline Accounting, Third Rail
-Cafe). Agents act through *typed* decisions from Jev over OpenRouter; prose
+Jeve is a continuously-running simulation of a twelve-firm district economy
+(two software vendors, a law firm, an accountancy, a landlord, a cafe, a
+dental clinic, an architecture studio, a credit union, a hardware store, a
+gym and a provisions supplier; the roster is `py/src/jeve/core/orgs.py`).
+Agents act through *typed* decisions from Jev over OpenRouter; prose
 is a projection, never an input. State lives in Postgres; the browser reads
 it through a FastAPI on Fly.io and renders a voxel town from a static
 Cloudflare site.
 
-## Verified state (local `main`, not pushed)
+## Verified state (branch `claude/simulation-entity-expansion-b9bh1k`, PR #15)
 
-* `make check` — ruff, `mypy --strict` (62 files), 259 tests, contracts in
-  sync, 39 decision records. `make e2e` — full stack on cassette replay,
-  14/14 Playwright, $0.00 spend. `make soak` — 35 sim-days on rules, all
-  invariants, counterfactual arms diverge.
+* `make check` — ruff, `mypy --strict` (73 files), 406 tests, contracts in
+  sync, 55 decision records. `make soak` — 35 sim-days on rules, 12 of 12
+  invariants (`ops/soak.md`): rent paid, shelves restocked, every line of
+  credit serviced, both vendors triaged, churn and the price rise's
+  diffusion measured. Playwright passes against a rules stack
+  (`JEVE_E2E_POLICY=rules make e2e`) on the installed Chromium.
+* **No cassette.** The district changed every wire byte, and this box has no
+  `OPENROUTER_API_KEY`, so `py/fixtures/cassettes/golden.jsonl` is gone until
+  `LIVE=1 make e2e` runs on a machine with a key (three phases' worth of
+  wording, one recording, ~$0.10). Until then `make e2e` needs
+  `JEVE_E2E_POLICY=rules`, and `ops/economics.md` describes the four-firm
+  street.
 * Production topology runs locally: `docker compose -f docker-compose.prod.yml
   up` brings postgres → migrate → api+sim → web up in order; the daemon
   ticks with live Jev decisions and the API serves `/state`, `/events`,

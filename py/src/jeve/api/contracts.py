@@ -19,8 +19,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from jeve.world.map import Zone
-
 # sim_meta.status's CHECK constraint is the vocabulary — every status the
 # daemon can write, on the wire verbatim.
 SimStatus = Literal[
@@ -31,7 +29,6 @@ SimStatus = Literal[
     "waiting_on_budget",
     "halted",
 ]
-OrgKind = Literal["software", "law", "accounting", "cafe"]
 # The tile vocabulary lives in world/map.py's layout code, not in an enum —
 # the wire test over /world/map is what keeps this list honest.
 TileKindName = Literal[
@@ -48,6 +45,8 @@ TileKindName = Literal[
     "fountain",
     "chair",
     "bench",
+    "sofa",
+    "stair",
     "whiteboard",
     "server_rack",
     "bookshelf",
@@ -56,9 +55,16 @@ TileKindName = Literal[
     "filing",
     "partition",
     "kitchen",
+    "kitchenette",
+    "shelf",
+    "rack",
+    "equipment",
+    "dental_chair",
+    "teller",
     "plant",
     "planter",
     "lamp",
+    "void",
 ]
 
 
@@ -78,10 +84,26 @@ class Clock(BaseModel):
     run_id: str
 
 
+class Palette(BaseModel):
+    """A firm's colours (CORE-0012): what its building and its people are drawn
+    in. Served rather than hardcoded so a thirteenth firm needs no client
+    change."""
+
+    wall: str
+    floor: str
+    body: str
+    accent: str
+
+
 class Org(BaseModel):
     id: str
     name: str
-    kind: OrgKind
+    kind: str = Field(description="what the firm is: software, law, cafe, gym...")
+    archetype: str = Field(
+        description="which flows it takes part in: vendor, professional_services, "
+        "retail, landlord, supplier or bank (CORE-0012)"
+    )
+    palette: Palette
     cash_cents: int
     receivable_cents: int
 
@@ -170,6 +192,7 @@ class CausalChain(BaseModel):
 class Person(BaseModel):
     id: str
     org_id: str | None
+    team_id: str | None = Field(description="null for a counterparty")
     name: str
     role: str
     kind: Literal["staff", "counterparty"]
@@ -238,16 +261,57 @@ class DecisionsByKind(BaseModel):
 
 
 class Building(BaseModel):
-    """One building's footprint. `door` is the walkable tile in its wall."""
+    """One building's footprint. `door` is the walkable tile in its wall; the
+    zone is the firm's id (WORLD-0008)."""
 
-    zone: Zone
+    zone: str
     org_id: str
     name: str
+    kind: str
+    archetype: str
+    palette: Palette
     x0: int
     y0: int
     x1: int
     y1: int
     door: tuple[int, int]
+    faces_south: bool = Field(
+        description="the door is in the south wall; false means the north wall"
+    )
+    floors: int
+    stair: tuple[int, int] = Field(
+        description="the stair's tile, the same on every floor of the building"
+    )
+
+
+class Storey(BaseModel):
+    """One upper floor of a building, furnished on its own: a local grid over
+    the footprint, `tiles[y - y0][x - x0]`, walls on the edge and no door."""
+
+    zone: str
+    floor: int
+    x0: int
+    y0: int
+    tiles: list[list[TileKindName]]
+
+
+class Team(BaseModel):
+    """A team is a floor (CORE-0012): who sits together, and how many of them
+    are there now."""
+
+    id: str
+    org_id: str
+    name: str
+    floor: int
+    layout: str
+    headcount: int
+    present: int = Field(description="how many of the team are on their floor now")
+
+
+class TeamsResponse(BaseModel):
+    """GET /teams — every team of every firm, with who is on their floor now."""
+
+    teams: list[Team]
 
 
 class TownMap(BaseModel):
@@ -256,10 +320,16 @@ class TownMap(BaseModel):
     width: int
     height: int
     tiles: list[list[TileKindName]]
-    zones: list[list[Zone]]
+    zones: list[list[str]]
     buildings: list[Building]
-    crowd_spots: dict[str, list[tuple[int, int]]]
-    seats: dict[str, list[tuple[int, int]]]
+    storeys: list[Storey]
+    crowd_spots: dict[str, list[tuple[int, int]]] = Field(
+        description="where a sampled crowd may stand, by zone: every social "
+        "firm's ground floor and the plaza"
+    )
+    seats: dict[str, list[tuple[int, int]]] = Field(
+        description="the tiles somebody sits on, keyed `zone/floor`"
+    )
 
 
 class Agent(BaseModel):
@@ -268,12 +338,16 @@ class Agent(BaseModel):
     id: str
     name: str
     org_id: str
+    team_id: str
     role: str
-    zone: Zone
+    zone: str
+    floor: int
     # NULL while at home — present on the wire as null, not omitted.
     x: int | None
     y: int | None
-    path: list[tuple[int, int]]
+    path: list[tuple[int, int, int]] = Field(
+        description="(x, y, floor) nodes, this tick's walk, both ends included"
+    )
     moved_tick: int
     mood: int
 
@@ -312,7 +386,7 @@ class EncounterBrief(BaseModel):
     label: str
     with_id: str
     with_name: str
-    zone: Zone
+    zone: str
     topic: str
     initiated: bool
     led_to: list[str]
@@ -325,8 +399,11 @@ class AgentDetail(BaseModel):
     name: str
     org_id: str
     org_name: str
+    team_id: str
+    team_name: str
     role: str
-    zone: Zone
+    zone: str
+    floor: int
     mood: int
     traits: dict[str, float]
     trait_words: dict[str, str]
@@ -339,8 +416,12 @@ class OrgDetail(BaseModel):
 
     id: str
     name: str
-    kind: OrgKind
-    zone: Zone
+    kind: str
+    archetype: str
+    palette: Palette
+    zone: str
+    floors: int
+    teams: list[Team]
     cash_cents: int
     receivable_cents: int
     staff_present: int
@@ -443,7 +524,8 @@ class Episode(BaseModel):
     """GET /episodes/{id} — a meeting that got more than one round."""
 
     id: int
-    zone: Zone
+    zone: str
+    """Where it happened: the firm's id, `plaza` or `home` (WORLD-0008)."""
     stake: Literal["outage", "invoice", "news"]
     stake_ref: str
     depth: int
@@ -490,6 +572,7 @@ class Economics(BaseModel):
 # load.
 MODELS: list[type[BaseModel]] = [
     Clock,
+    Palette,
     Org,
     Module,
     Health,
@@ -508,6 +591,9 @@ MODELS: list[type[BaseModel]] = [
     DecisionsByModel,
     DecisionsByKind,
     Building,
+    Storey,
+    Team,
+    TeamsResponse,
     TownMap,
     Agent,
     AgentsFrame,

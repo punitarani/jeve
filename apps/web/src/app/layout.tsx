@@ -4,7 +4,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const DESCRIPTION =
-  "A continuously-running simulation of a small interconnected economy — four firms on one street, every decision a typed question.";
+  "A continuously-running simulation of a small interconnected economy — twelve firms in one district, every decision a typed question.";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://jeve.punitarani.com"),
@@ -21,7 +21,7 @@ export const metadata: Metadata = {
         url: "/og.png",
         width: 1200,
         height: 630,
-        alt: "The town of jeve rendered in voxels — four firms on one street.",
+        alt: "The district of jeve rendered in voxels — twelve firms, teams as floors.",
       },
     ],
   },

@@ -52,10 +52,13 @@ TABLES = {
     "payments": "id",
     "incidents": "id",
     "scheduled": "id",
-    "cafe_sales": "id",
+    "retail_sales": "id",
     "persons": "id",
     "modules": "id",
     "outage_notices": "incident_id, person_id",
+    # Stock, prices and lines of credit move with the world (WORLD-0010).
+    "orgs": "id",
+    "loans": "id",
 }
 
 

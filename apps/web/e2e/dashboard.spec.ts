@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
+/** What decided the world under test: `jev` for the fixture, else the rules twin. */
+const POLICY = process.env.JEVE_E2E_POLICY ?? "jev";
+
 /**
  * Gate 5: a human can complete the primary flow in a browser.
  *
@@ -10,36 +13,105 @@ import { expect, test, type Page } from "@playwright/test";
  * Needs the stack up: `make db-up && make fixture && make api` and the web app.
  */
 
+/** The roster as the API serves it: counts and ids are read, never written down here. */
+type State = {
+  persons: Record<string, number>;
+  orgs: { id: string; name: string }[];
+};
+
+/**
+ * The API the page is reading from: the build inlines it, so the test run
+ * that built the page has it in the environment; a page that is already up
+ * says so through the origin of its own `/state` fetch.
+ */
+async function state(page: Page): Promise<State> {
+  const fromEnv = process.env.NEXT_PUBLIC_JEVE_API;
+  const seen =
+    fromEnv ??
+    (await page.evaluate(() => {
+      const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+      return entries.find((entry) => /\/state$/.test(entry.name))?.name.replace(/\/state$/, "") ?? null;
+    })) ??
+    "http://127.0.0.1:8000";
+  const response = await page.request.get(`${seen}/state`);
+  expect(response.ok(), "GET /state").toBe(true);
+  return (await response.json()) as State;
+}
+
+/**
+ * Three times the budget when WebGL turns out to be a CPU rasteriser. The
+ * hero draws the whole district behind this page, and on SwiftShader a frame
+ * costs half a second: every click first waits for the page to hold still, so
+ * a test that works a search, picks somebody and reads their decisions spends
+ * its thirty seconds waiting for frames rather than for the app. Nothing is
+ * skipped and nothing is relaxed — the same assertions, given the time a
+ * machine without a GPU needs to satisfy them (WEB-0003).
+ */
+async function slowOnASoftwareRenderer(page: Page): Promise<void> {
+  const software = await page
+    .waitForFunction(
+      () => {
+        const world = (window as unknown as {
+          __jeveWorld?: { hero?: { status(): { software: string | null } } };
+        }).__jeveWorld;
+        const status = world?.hero?.status();
+        return status === undefined ? null : { software: status.software };
+      },
+      undefined,
+      { timeout: 10_000 },
+    )
+    .then((handle) => handle.jsonValue())
+    .catch(() => null);
+  if (software?.software != null) test.slow();
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("status-strip")).toBeVisible();
+  await slowOnASoftwareRenderer(page);
 });
 
-test("the world is on screen: clock, four orgs, modules, people", async ({
+test("the world is on screen: clock, every org, modules, people", async ({
   page,
 }) => {
   await expect(page.getByTestId("clock")).toContainText(/^d\d+ \w{3} \d\d:\d\d$/);
 
-  for (const org of ["tallybird", "halloran", "ledgerline", "thirdrail"]) {
-    await expect(page.getByTestId(`org-${org}`)).toBeVisible();
+  const { orgs, persons } = await state(page);
+  expect(orgs.length).toBeGreaterThan(0);
+  // Every firm, in one read: a dozen rows probed one expectation at a time
+  // is two dozen round trips to a page that is also drawing the town.
+  const rows = await orgRows(page);
+  for (const org of orgs) {
+    expect(rows[org.id], org.id).toBeDefined();
+    // Money is rendered from integer cents, so it must look like money.
+    expect(rows[org.id]).toMatch(/\$[\d,]+/);
   }
 
-  // Money is rendered from integer cents, so it must look like money.
-  await expect(page.getByTestId("org-tallybird")).toContainText(/\$[\d,]+/);
-
-  await expect(page.getByTestId("status-strip")).toContainText("24 staff");
+  await expect(page.getByTestId("status-strip")).toContainText(`${persons.staff} staff`);
   await expect(page.getByTestId("status-strip")).toContainText(
-    "400 counterparties",
+    `${persons.counterparty} counterparties`,
   );
 });
 
 test("no org is owed a negative amount", async ({ page }) => {
   // A receivable that went negative is money arriving that was never owed —
   // a balance sheet that lies while the ledger still sums to zero.
-  for (const org of ["tallybird", "halloran", "ledgerline", "thirdrail"]) {
-    await expect(page.getByTestId(`org-${org}`)).not.toContainText("-$");
+  const rows = await orgRows(page);
+  for (const org of (await state(page)).orgs) {
+    expect(rows[org.id], org.id).toBeDefined();
+    expect(rows[org.id]).not.toContain("-$");
   }
 });
+
+/** The text of every firm's row, by id, once the table has rendered. */
+async function orgRows(page: Page): Promise<Record<string, string>> {
+  await expect(page.locator('[data-testid^="org-"]').first()).toBeVisible();
+  return page.locator('[data-testid^="org-"]').evaluateAll((els) =>
+    Object.fromEntries(
+      els.map((el) => [el.getAttribute("data-testid")!.slice(4), el.textContent ?? ""]),
+    ),
+  );
+}
 
 test("the primary flow: click an outage and follow what it caused", async ({
   page,
@@ -96,20 +168,42 @@ test("the primary flow: click an outage and follow what it caused", async ({
 test("a person's decisions show what was chosen and the draw behind it", async ({
   page,
 }) => {
-  const select = page.getByTestId("person-select");
-  await expect(select).toBeVisible();
-  await select.click();
+  const search = page.getByTestId("person-select");
+  await expect(search).toBeVisible();
+  await search.click();
 
-  // Base UI renders the select's items as a listbox overlay, not <option>s.
-  const options = await page.getByRole("option").allTextContents();
-  expect(options.length).toBe(24);
+  // A search, not a roster: the district's staff do not fit in a list, so
+  // the empty query shows a screenful and never everyone. The options are
+  // the list under the input, `role=option` each.
+  const staff = (await state(page)).persons.staff ?? 0;
+  expect(staff).toBeGreaterThan(30);
+  await expect
+    .poll(async () => page.getByRole("option").count(), { timeout: 10_000 })
+    .toBeGreaterThan(0);
+  const shown = await page.getByRole("option").count();
+  expect(shown).toBeLessThanOrEqual(30);
+  expect(shown).toBeLessThan(staff);
 
-  // Pick someone who actually decides in the flows that are wired up.
-  const decider = options.find(
-    (o) => o.includes("office_manager") || o.includes("support"),
-  );
+  // Pick someone who actually decides in the flows that are wired up: a
+  // fragment of the role finds them wherever they are on the roster.
+  let decider: string | null = null;
+  for (const role of ["office_manager", "support"]) {
+    await search.fill(role);
+    const match = page.getByRole("option", { name: role }).first();
+    const found = await match.waitFor({ timeout: 5_000 }).then(
+      () => true,
+      () => false,
+    );
+    if (!found) continue;
+    decider = await match.textContent();
+    await match.click();
+    break;
+  }
   expect(decider, "no role in the fixture makes decisions").toBeTruthy();
-  await page.getByRole("option", { name: decider! }).click();
+  // Each line is who, what they do and where — the same line the picked
+  // person is then captioned with.
+  expect(decider).toMatch(/^.+ — .+ @ .+/);
+  await expect(page.getByTestId("person-picked")).toContainText(decider!);
 
   const rows = page.getByTestId("decision-row");
   await expect(rows.first()).toBeVisible({ timeout: 10_000 });
@@ -120,8 +214,10 @@ test("a person's decisions show what was chosen and the draw behind it", async (
   // Something was actually chosen, not left blank. Since WORLD-0003 the most
   // recent thing anyone decided is usually where to go next.
   await expect(first).toContainText(/pay|answer|queue|buy|file|next_zone/);
-  // And this world is decided by the model, not by the rules twin.
-  await expect(rows.filter({ hasText: "jev" }).first()).toBeVisible();
+  // And this world is decided by the model, not by the rules twin — unless
+  // the stack is running free on rules between recordings (JEVE_E2E_POLICY).
+  if (POLICY === "jev")
+    await expect(rows.filter({ hasText: "jev" }).first()).toBeVisible();
 });
 
 /** Every org named by a row on screen, deduplicated. */
@@ -133,19 +229,23 @@ const orgsOnScreen = (page: Page) =>
     );
 
 test("filtering to one org narrows the timeline", async ({ page }) => {
+  // The cafe, whose till makes it the noisiest row, if the roster still has
+  // it; any firm otherwise.
+  const orgs = (await state(page)).orgs;
+  const org = (orgs.find((o) => o.id === "thirdrail") ?? orgs[0])!.id;
   // Not a row count: emptying the lane brings the foot of it into view and
   // pulls older pages in, so the count is the filter's side effect rather than
   // its claim. The claim is that nothing else is left.
-  expect(await orgsOnScreen(page)).not.toEqual(["thirdrail"]);
+  expect(await orgsOnScreen(page)).not.toEqual([org]);
 
   await page
-    .getByTestId("org-thirdrail")
+    .getByTestId(`org-${org}`)
     .getByRole("button", { name: "only" })
     .click();
 
   await expect
     .poll(async () => orgsOnScreen(page), { timeout: 10_000 })
-    .toEqual(["thirdrail"]);
+    .toEqual([org]);
 });
 
 test("encounters start filtered out, and the menu puts them back", async ({

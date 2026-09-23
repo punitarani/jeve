@@ -72,15 +72,31 @@ def _catering_order(ctx: DecisionContext) -> Settled | None:
     return None
 
 
-def _cafe_purchase(ctx: DecisionContext) -> Settled | None:
+def _retail_purchase(ctx: DecisionContext) -> Settled | None:
+    if ctx.facts.get("no_stock"):
+        # Nothing on the shelf to buy: a fact about the shop, not a choice.
+        return {"buy": False, "reason": "no_stock"}
     if not ctx.facts.get("can_afford", True):
         return {"buy": False, "reason": "no_money"}
-    if _number(ctx.facts.get("queue_length")) <= 0 and not ctx.facts.get("pos_down"):
+    if _number(ctx.facts.get("queue_length")) <= 0 and not ctx.facts.get("till_down"):
         # Nobody ahead of them and the till works: someone who walked into a
         # cafe and was served at once has bought a coffee. Asking a model to
         # confirm that was the most-asked, least-informative question in the
         # world (audit B5: max-p above 0.95).
         return {"buy": True, "reason": "no_line"}
+    return None
+
+
+def _supply_order(ctx: DecisionContext) -> Settled | None:
+    if not ctx.facts.get("can_afford", True):
+        return {"order": "none"}
+    return None
+
+
+def _credit_approve(ctx: DecisionContext) -> Settled | None:
+    if not ctx.facts.get("bank_can_lend", True):
+        # The bank cannot lend what it does not have. Never a judgement.
+        return {"decision": "decline", "reason": "bank_short"}
     return None
 
 
@@ -90,7 +106,9 @@ GATES: dict[str, Gate] = {
     "ticket.confirm": _ticket_confirm,
     "payroll.release": _payroll_release,
     "catering.order": _catering_order,
-    "cafe.purchase": _cafe_purchase,
+    "retail.purchase": _retail_purchase,
+    "supply.order": _supply_order,
+    "credit.approve": _credit_approve,
 }
 
 

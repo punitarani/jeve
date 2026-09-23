@@ -1,8 +1,11 @@
 # jeve
 
-A continuously-running simulation of a small interconnected economy: four firms
-on one street — Tallybird Software (whose product the others use), Halloran &
-Pike LLP, Ledgerline Accounting, Third Rail Cafe.
+A continuously-running simulation of a small interconnected economy: twelve
+firms in one district, 225 staff on 27 floors — two software vendors whose
+products the others run on, a law firm, an accountancy, a landlord, a cafe, a
+dental clinic, an architecture studio, a credit union, a hardware store, a gym
+and a provisions supplier. The roster is one spec, `py/src/jeve/core/orgs.py`
+(CORE-0012); nothing else may name a firm.
 
 The research question: how much of a Smallville/Concordia-style agent loop can
 be replaced by *typed decisions* — boolean-with-probability, choice-from-enum,
@@ -231,6 +234,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### CORE-0012: Orgs, teams, roles and modules are one spec in core; nothing else names a firm
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/core/orgs.py`, `py/src/jeve/core/names.py`, `py/src/jeve/core/clock.py`, `py/tests/test_orgs.py`, `py/migrations/0010_district.sql`, `tools/contract-gen/generate_zod.py`  
+**Tags**: world, data, roster, agent-decided
+
+`jeve.core.orgs` describes each firm once — what it is called, what it is, how a question set refers to it, who works there and on which floor, what hours it keeps, what it subscribes to, what it sells, who keeps its books, who its landlord and supplier and caterer are — and every other layer reads the spec; a firm's id may appear in code only in that file, in the seed's name overrides, and in tests.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### DECIDE-0004: The cache key is the bytes that were sent and the model version that answered
 
 **Status**: accepted (2026-09-20)  
@@ -238,6 +253,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: cache, replay, determinism, agent-decided
 
 `DecisionRequest.wire_bytes()` is the one place a decision body is built. The gateway posts exactly those bytes; the policy hashes exactly those bytes.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### DECIDE-0005: Who is here is counted, not listed — bounded state for agent.tick
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/decide/questions.py`, `py/src/jeve/decide/policy.py`, `py/tests/test_questions.py`  
+**Tags**: questions, cache, cost, agent-decided
+
+The state describes the room as counts by role and firm — "two engineers and a salesperson from the software company; a paralegal from the law firm; and three others" — for at most five firms, and `with_whom` offers at most six people under neutral labels, chosen in code: the vendor's staff first when their product is down, colleagues next, then the rest in a stable order.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 
@@ -322,6 +349,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: memory, knowledge, diffusion, commitments, agent-decided
 
 A **fact** is a thing that can be known and passed on, identified by what it is about (`outage:<incident>`, `price_rise:<org>`) rather than minted from a counter, so the same news is the same row in every arm of a counterfactual. **Knowledge** records who holds it, from whom, and at what remove. A **commitment** is a promise to pay a particular bill.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### MEM-0003: Beliefs are four typed slots revised by score questions inside existing requests; relationships decay in SQL
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/memory/**`, `py/migrations/0013_beliefs.sql`, `py/tests/test_beliefs.py`  
+**Tags**: memory, beliefs, diffusion, churn, agent-decided
+
+A belief is a level in one of four slots — `vendor_reliability`, `employer_strain`, `counterparty_trust`, `knows_of` — held by a person about an entity, revised only by a `score` asked inside `agent.tick`, `ticket.confirm` or `chase.invoice`, and read back as the words of its level into the next question it bears on; a relationship is a strength of one to three that a conversation raises and a nightly SQL job lowers.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 
@@ -471,6 +510,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### WEB-0007: Storeys are per-floor instanced groups; the level cut is visibility; camera and haze derive from the map
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `packages/world/src/render.ts`, `packages/world/src/voxels.ts`, `packages/world/src/model.ts`, `packages/world/src/index.ts`, `apps/web/src/components/WorldExplorer.tsx`, `apps/web/e2e/a-world.spec.ts`  
+**Tags**: three.js, rendering, storeys, performance, agent-decided
+
+Every static voxel carries the storey it belongs to, the renderer builds one lit and one glowing instanced mesh per floor, and the level cut is model state that the renderer mirrors as mesh visibility and the model applies to people: someone above the cut is neither drawn nor picked.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### WORLD-0001: Build and tune the world on rules before wiring in any model
 
 **Status**: accepted (2026-09-20)  
@@ -538,6 +589,42 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: episodes, defaults, encounters, resolution
 
 Episodes run in every world the daemon runs, with no flag, environment variable or make variable. The mechanism is WORLD-0006's, with the outage stake corrected (below).
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0008: A district of storeys — zones are buildings, teams are floors, encounters are per floor
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/world/map.py`, `py/src/jeve/world/space.py`, `py/src/jeve/world/seed_world.py`, `py/migrations/0010_district.sql`, `py/tests/test_layouts.py`, `py/tests/test_space.py`, `py/src/jeve/api/contracts.py`  
+**Tags**: space, map, floors, encounters, agent-decided
+
+A zone is a building, named by its firm's id, plus `plaza` and `home`; a team is a floor of it; a place someone can be is a node `(x, y, floor)`; people meet on a floor, not in a firm.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0009: Movement is decided at decision points with a dwell, not every tick
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/world/space.py`, `py/migrations/0011_wake.sql`, `py/tests/test_space.py`  
+**Tags**: space, cadence, cost, agent-decided
+
+A person is asked `agent.tick` when they arrive, when the stay they chose runs out, when a module their firm runs on goes down, when someone from the vendor of a module they know is down walks onto their floor, and at noon; how long a stay lasts is a band of ticks drawn in code about the person and the moment, never a question.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0010: Archetype flows — rent, supplies and stock, credit lines, and a second vendor
+
+**Status**: accepted (2026-09-22)  
+**Scope**: `py/src/jeve/world/flows.py`, `py/migrations/0012_archetypes.sql`, `py/tests/test_flows.py`  
+**Tags**: flows, ledger, economy, agent-decided
+
+Rent is a fact, supplies are a judgement, credit is a judgement on each side and a rule to repay, and every one of them runs on the ledger through the same `bill`, `post` and daily `payment.timing` as before; a sale takes a unit of stock, and a second vendor's outage reaches its own customers' tills.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

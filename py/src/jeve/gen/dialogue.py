@@ -22,7 +22,7 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve.core.hashing import content_hash
-from jeve.decide.questions import MOODS, ORG_WORDS
+from jeve.decide.questions import MOODS, ORG_WORDS, PLACE_WORDS
 from jeve.llm.protocol import ChatMessage
 
 KIND = "dialogue"
@@ -34,13 +34,6 @@ TOPIC_WORDS: dict[str, str] = {
     "money": "bills and invoices; who owes whom",
     "small_talk": "nothing in particular: the weather, the weekend",
     "other": "something unremarkable",
-}
-PLACE_WORDS: dict[str, str] = {
-    "software_office": "the software company's office",
-    "law_office": "the law firm's office",
-    "accounting_office": "the accounting firm's office",
-    "cafe": "the neighbourhood cafe",
-    "plaza": "the plaza, by the fountain",
 }
 
 SCHEMA: dict[str, object] = {

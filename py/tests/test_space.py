@@ -21,18 +21,11 @@ from psycopg.rows import DictRow
 
 from jeve import db
 from jeve.core.clock import SimTime, at
+from jeve.core.orgs import BY_ID, HEADCOUNT, ORGS, module_owner, modules_of
 from jeve.decide.policy import RulesPolicy
 from jeve.sim import advance
 from jeve.world.engine import Engine
-from jeve.world.map import (
-    HEIGHT,
-    ORG_ZONE,
-    WIDTH,
-    Zone,
-    entry_for,
-    find_path,
-    town,
-)
+from jeve.world.map import Node, entry_for, find_path, town
 from jeve.world.seed_world import ROOT_SEED, seed
 from tests.test_world import event_log_hash
 from tests.worldcache import build_once
@@ -79,37 +72,51 @@ def first_services_invoice(conn: Connection[DictRow]) -> int:
 
 def test_every_place_someone_can_stand_is_reachable_from_the_street() -> None:
     world = town()
-    assert len(world.tiles) == HEIGHT and len(world.tiles[0]) == WIDTH
-    for zone in (*ORG_ZONE.values(), Zone.PLAZA):
-        spots = (*world.seats[zone], *world.visitor_spots[zone])
-        assert spots, zone
-        for spot in spots:
-            assert world.walkable(spot), (zone, spot)
-            assert world.zone_of(spot) is zone, (zone, spot)
-            path = find_path(entry_for(spot), spot)
-            assert path and path[-1] == spot, (zone, spot)
+    assert len(world.tiles) == world.height and len(world.tiles[0]) == world.width
+    assert set(world.seats) == set(world.visitor_spots)
+    for (zone, floor), seats in world.seats.items():
+        spots = (*seats, *world.visitor_spots[(zone, floor)])
+        assert spots, (zone, floor)
+        for x, y in spots:
+            node: Node = (x, y, floor)
+            assert world.walkable(node), (zone, node)
+            assert world.zone_of((x, y)) == zone, (zone, node)
+            path = find_path(entry_for((x, y)), node)
+            assert path and path[-1] == node, (zone, node)
 
 
 def test_every_workplace_seats_all_of_its_staff() -> None:
     world = town()
-    from jeve.world.seed_world import STAFF
-
-    for org, zone in ORG_ZONE.items():
-        staff = sum(1 for staff_org, _, _ in STAFF if staff_org == org)
-        assert len(set(world.seats[zone])) >= staff, (org, staff)
+    for org in ORGS:
+        for floor in range(org.floors):
+            seats = set(world.seats[(org.id, floor)])
+            assert len(seats) >= org.staff_on(floor), (org.id, floor)
 
 
 def test_a_path_walks_one_tile_at_a_time_and_never_through_a_wall() -> None:
+    """From a desk on the top floor of the software company to a table at the
+    cafe: down the stair, out of the door, across the street, in at the door."""
+
     world = town()
-    start = world.seats[Zone.SOFTWARE_OFFICE][0]
-    goal = world.visitor_spots[Zone.CAFE][3]
+    software = world.building("tallybird")
+    cafe = world.building("thirdrail")
+    x, y = world.seats[("tallybird", software.floors - 1)][0]
+    start: Node = (x, y, software.floors - 1)
+    x, y = world.visitor_spots[("thirdrail", 0)][3]
+    goal: Node = (x, y, 0)
     path = find_path(start, goal)
     assert path[0] == start and path[-1] == goal
-    for (ax, ay), (bx, by) in pairwise(path):
-        assert abs(ax - bx) + abs(ay - by) == 1
-        assert world.walkable((bx, by))
-    # The only way out of a building is its door.
-    assert (9, 10) in path and (30, 17) in path
+    for (ax, ay, af), (bx, by, bf) in pairwise(path):
+        if af != bf:
+            # A flight of stairs: the same tile, one floor apart, both stairs.
+            assert (ax, ay) == (bx, by) and abs(af - bf) == 1
+            assert world.kind((ax, ay, af)) == world.kind((bx, by, bf)) == "stair"
+        else:
+            assert abs(ax - bx) + abs(ay - by) == 1
+        assert world.walkable((bx, by, bf))
+    # The only way down is the stair, and the only way out is the door.
+    assert (*software.stair, 1) in path
+    assert (*software.door, 0) in path and (*cafe.door, 0) in path
     assert find_path(start, goal) == path
 
 
@@ -124,8 +131,9 @@ def test_there_is_no_path_into_a_desk() -> None:
         if kind == "desk"
     ]
     assert desks
-    for desk in desks:
-        assert find_path((19, 0), desk) == []
+    entry: Node = (*world.entries[0], 0)
+    for x, y in desks:
+        assert find_path(entry, (x, y, 0)) == []
 
 
 # -- people in it ----------------------------------------------------------
@@ -137,20 +145,26 @@ def test_people_are_at_work_when_it_is_open_and_home_when_it_is_not(
     seed(conn, root_seed=ROOT_SEED)
     engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED)
 
-    advance(conn, engine, until=at(0, 8))  # cafe open since 07:00, offices shut
+    # Just after eight in the morning: the cafe, the gym, the yard and the
+    # clinic are open; the offices and the shop are not. Every firm keeps its
+    # own hours, and the eight o'clock tick has run.
+    advance(conn, engine, until=at(0, 8, 15))
     rows = conn.execute(
         "SELECT p.org_id, count(*) FILTER (WHERE s.zone <> 'home') AS out "
         "FROM positions s JOIN persons p ON p.id = s.person_id GROUP BY p.org_id"
     ).fetchall()
     by_org = {str(r["org_id"]): int(r["out"]) for r in rows}
-    assert by_org["thirdrail"] == 6
-    assert by_org["tallybird"] == by_org["halloran"] == by_org["ledgerline"] == 0
+    early = SimTime(at(0, 8))
+    for org in ORGS:
+        expected = org.headcount if early.open_for(org.hours) else 0
+        assert by_org[org.id] == expected, (org.id, by_org[org.id], expected)
+    assert 0 < sum(by_org.values()) < HEADCOUNT
 
     advance(conn, engine, until=at(0, 10))
     out = conn.execute(
         "SELECT count(*) AS n FROM positions WHERE zone <> 'home'"
     ).fetchone()
-    assert out is not None and int(out["n"]) == 24
+    assert out is not None and int(out["n"]) == HEADCOUNT
 
     advance(conn, engine, until=at(1, 7))  # overnight
     out = conn.execute(
@@ -168,15 +182,15 @@ def test_nobody_stands_in_a_wall_or_in_the_wrong_zone(
     advance(conn, engine, until=at(0, 13))  # lunchtime: people are about
     world = town()
     rows = conn.execute(
-        "SELECT person_id, zone, x, y, path FROM positions WHERE zone <> 'home'"
+        "SELECT person_id, zone, floor, x, y, path FROM positions WHERE zone <> 'home'"
     ).fetchall()
-    assert len({(r["x"], r["y"]) for r in rows}) > 12
+    assert len({(r["x"], r["y"], r["floor"]) for r in rows}) > HEADCOUNT // 2
     for row in rows:
-        tile = (int(row["x"]), int(row["y"]))
-        assert world.walkable(tile), row
-        assert world.zone_of(tile).value == row["zone"], row
+        node = (int(row["x"]), int(row["y"]), int(row["floor"]))
+        assert world.walkable(node), row
+        assert world.zone_of(node[:2]) == row["zone"], row
         if row["path"]:
-            assert tuple(row["path"][-1]) == tile
+            assert tuple(row["path"][-1]) == node
 
 
 def test_movement_is_an_event_only_when_the_zone_changes(
@@ -188,13 +202,14 @@ def test_movement_is_an_event_only_when_the_zone_changes(
     run(conn, days=2)
     same = conn.execute(
         "SELECT count(*) AS n FROM events WHERE kind = 'agent.moved' "
-        "AND payload->>'from_zone' = payload->>'to_zone'"
+        "AND payload->>'from_zone' = payload->>'to_zone' "
+        "AND payload->>'from_floor' = payload->>'to_floor'"
     ).fetchone()
     moves = conn.execute(
         "SELECT count(*) AS n FROM events WHERE kind = 'agent.moved'"
     ).fetchone()
     assert same is not None and int(same["n"]) == 0
-    assert moves is not None and 48 <= int(moves["n"]) < 2 * 24 * 40
+    assert moves is not None and 2 * HEADCOUNT <= int(moves["n"]) < 2 * HEADCOUNT * 52
 
 
 def test_an_encounter_is_between_people_who_had_to_move_to_meet(
@@ -202,15 +217,22 @@ def test_an_encounter_is_between_people_who_had_to_move_to_meet(
 ) -> None:
     run(conn, days=2)
     rows = conn.execute(
-        "SELECT e.payload->>'zone' AS zone, a.org_id AS a_org, b.org_id AS b_org "
+        "SELECT e.payload->>'zone' AS zone, (e.payload->>'floor')::int AS floor, "
+        "  a.org_id AS a_org, b.org_id AS b_org, "
+        "  ta.floor AS a_floor, tb.floor AS b_floor "
         "FROM events e JOIN persons a ON a.id = e.payload->>'a' "
-        "JOIN persons b ON b.id = e.payload->>'b' WHERE e.kind = 'encounter'"
+        "JOIN persons b ON b.id = e.payload->>'b' "
+        "JOIN teams ta ON ta.id = a.team_id JOIN teams tb ON tb.id = b.team_id "
+        "WHERE e.kind = 'encounter'"
     ).fetchall()
     assert len(rows) > 10
     for row in rows:
+        # Two colleagues on their own floor of their own building are at
+        # their desks: that is work, not an encounter. The same two meeting
+        # in the lobby downstairs is one.
         colleagues_at_their_desks = (
-            row["a_org"] == row["b_org"]
-            and ORG_ZONE[str(row["a_org"])].value == row["zone"]
+            row["a_org"] == row["b_org"] == row["zone"]
+            and row["a_floor"] == row["b_floor"] == row["floor"]
         )
         assert not colleagues_at_their_desks, row
 
@@ -258,7 +280,13 @@ def test_switching_encounters_off_changes_when_invoices_go_out(
     assert minutes_with < outage_minutes()
     # The outage still bit. Escalation shortens it; it does not unhappen it.
     # (A blocked run says so once per firm, not once per tick it stays blocked.)
-    assert blocked_with == blocked() == 2
+    billing_on_it = [
+        org
+        for org in ORGS
+        if org.billing and modules_of(org.id, "invoicing") == ("invoicing",)
+    ]
+    assert len(billing_on_it) >= 2
+    assert blocked_with == blocked() == len(billing_on_it)
 
 
 def test_a_conversation_in_the_cafe_reaches_an_invoice(
@@ -320,10 +348,113 @@ def test_only_someone_affected_can_escalate_and_only_to_the_vendor(
     ).fetchall()
     assert rows
     for row in rows:
-        assert row["to_org"] == "tallybird"
-        assert row["by_org"] != "tallybird"
+        assert row["to_org"] == module_owner(str(row["m"]))
+        assert row["by_org"] != row["to_org"]
         subscribed = conn.execute(
             "SELECT 1 FROM subscriptions WHERE org_id = %s AND module_id = %s",
             (row["by_org"], row["m"]),
         ).fetchone()
         assert subscribed is not None, row
+
+
+# -- decision points (WORLD-0009) -------------------------------------------
+
+
+def _decisions_by_person_day(conn: Connection[DictRow]) -> list[int]:
+    rows = conn.execute(
+        "SELECT person_id, sim_time / 86400 AS day, count(*) AS n FROM decisions "
+        "WHERE question_set = 'agent.tick' GROUP BY 1, 2"
+    ).fetchall()
+    return [int(r["n"]) for r in rows]
+
+
+def test_people_decide_at_decision_points_not_every_tick(
+    conn: Connection[DictRow],
+) -> None:
+    """Six to sixteen `agent.tick` decisions per person per working day: a
+    handful of stretches at the desk, lunch, the odd outing — not thirty-five
+    quarter-hours. Fewer and the town stands still; more and the tick is the
+    decision point again."""
+
+    run(conn, days=5)
+    counts = _decisions_by_person_day(conn)
+    assert counts
+    mean = sum(counts) / len(counts)
+    assert 6 <= mean <= 16, mean
+    assert max(counts) <= 60
+    # And the town still moves: outings happen, not only arrivals and departures.
+    outings = conn.execute(
+        "SELECT count(*) AS n FROM events WHERE kind = 'agent.moved' "
+        "AND payload->>'from_zone' <> 'home' AND payload->>'to_zone' <> 'home'"
+    ).fetchone()
+    assert outings is not None and int(outings["n"]) > HEADCOUNT
+
+
+def test_nobody_goes_two_hours_without_being_asked(conn: Connection[DictRow]) -> None:
+    """The mandatory timer: the longest dwell band is two hours."""
+
+    run(conn, days=2)
+    gaps = conn.execute(
+        "SELECT max(gap) AS worst FROM ("
+        "  SELECT sim_time - lag(sim_time) OVER ("
+        "    PARTITION BY person_id, sim_time / 86400 ORDER BY sim_time) AS gap "
+        "  FROM decisions WHERE question_set = 'agent.tick') g"
+    ).fetchone()
+    assert gaps is not None and int(gaps["worst"]) <= 2 * 3600
+
+
+def test_noon_wakes_everyone_at_work(conn: Connection[DictRow]) -> None:
+    run(conn, days=1)
+    noon = at(0, 12)
+    at_work = conn.execute(
+        "SELECT count(DISTINCT actor_id) AS n FROM events WHERE kind = 'agent.moved' "
+        "AND sim_time <= %s AND payload->>'to_zone' <> 'home'",
+        (noon,),
+    ).fetchone()
+    asked = conn.execute(
+        "SELECT count(DISTINCT person_id) AS n FROM decisions "
+        "WHERE question_set = 'agent.tick' AND sim_time = %s",
+        (noon,),
+    ).fetchone()
+    assert at_work is not None and asked is not None
+    # Everyone whose firm is open at noon, and nobody's firm shuts for lunch.
+    assert int(asked["n"]) == HEADCOUNT
+    assert int(at_work["n"]) == HEADCOUNT
+
+
+def test_an_outage_wakes_everyone_who_depends_on_the_module(
+    conn: Connection[DictRow],
+) -> None:
+    """The interrupt: a module goes down and, within the tick, everyone whose
+    firm runs on it has been asked what to do about their day."""
+
+    seed(conn, root_seed=ROOT_SEED)
+    engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED)
+    with conn.transaction():
+        conn.execute("DELETE FROM scheduled WHERE kind = 'incident.start'")
+        conn.execute(
+            "INSERT INTO scheduled (due_sim_time, kind, subject_id, payload) "
+            "VALUES (%s, 'incident.start', 'invoicing', %s)",
+            (at(0, 10, 30), '{"severity": 2, "expected_minutes": 180}'),
+        )
+    advance(conn, engine, until=at(0, 10, 45))
+    users = {org.id for org in ORGS if "invoicing" in modules_of(org.id, "invoicing")}
+    asked = {
+        str(r["org_id"])
+        for r in conn.execute(
+            "SELECT DISTINCT p.org_id FROM decisions d "
+            "JOIN persons p ON p.id = d.person_id "
+            "WHERE d.question_set = 'agent.tick' AND d.sim_time = %s",
+            (at(0, 10, 30),),
+        ).fetchall()
+    }
+    assert users <= asked
+    # Every one of them, not a sample.
+    for org in users:
+        woke = conn.execute(
+            "SELECT count(*) AS n FROM decisions d "
+            "JOIN persons p ON p.id = d.person_id "
+            "WHERE d.question_set = 'agent.tick' AND d.sim_time = %s AND p.org_id = %s",
+            (at(0, 10, 30), org),
+        ).fetchone()
+        assert woke is not None and int(woke["n"]) == BY_ID[org].headcount, org

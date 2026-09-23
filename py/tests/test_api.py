@@ -7,16 +7,20 @@ mostly SQL and mocking it would test nothing.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import asdict
 
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
 from jeve import db
+from jeve.api import contracts
 from jeve.api.app import app
 from jeve.core.clock import SimTime, at
+from jeve.core.orgs import BY_ID, HEADCOUNT, MODULES, ORGS, social_places
 from jeve.decide.policy import RulesPolicy
 from jeve.world.engine import Engine, skip_to_next_open
+from jeve.world.map import town
 from jeve.world.seed_world import ROOT_SEED, seed
 
 pytestmark = pytest.mark.timeout(300)
@@ -65,17 +69,17 @@ def test_health_is_not_200_when_the_database_is_gone(
 def test_state_is_one_read_with_a_cursor(client: TestClient) -> None:
     body = client.get("/state").json()
     assert body["seq"] > 0, "state must say what seq it is current as of"
-    assert len(body["orgs"]) == 4
-    assert {o["id"] for o in body["orgs"]} == {
-        "tallybird",
-        "halloran",
-        "ledgerline",
-        "thirdrail",
-    }
-    assert body["persons"]["staff"] == 24
-    assert body["persons"]["counterparty"] == 400
+    assert len(body["orgs"]) == len(ORGS)
+    assert {o["id"] for o in body["orgs"]} == {org.id for org in ORGS}
+    assert body["persons"]["staff"] == HEADCOUNT
+    assert body["persons"]["counterparty"] == sum(org.counterparties for org in ORGS)
     assert body["clock"]["label"].startswith("d")
-    assert len(body["modules"]) == 3
+    assert len(body["modules"]) == len(MODULES)
+    # A firm's colours travel with it (CORE-0012): nothing in the client
+    # needs a table of firms.
+    for org in body["orgs"]:
+        assert org["palette"] == asdict(BY_ID[org["id"]].palette)
+        assert org["archetype"] == BY_ID[org["id"]].archetype
 
 
 def test_state_says_whether_this_deployment_traces(
@@ -161,9 +165,26 @@ def test_events_paginate_by_seq(client: TestClient) -> None:
     assert second["events"][0]["seq"] == first["events"][-1]["seq"] + 1
 
     foreground = client.get("/events", params={"limit": 50}).json()["events"]
-    assert not {e["kind"] for e in foreground} & {"agent.moved", "cafe.sale"}
+    assert not {e["kind"] for e in foreground} & {"agent.moved", "retail.sale"}
     seqs = [e["seq"] for e in foreground]
     assert seqs == sorted(seqs)
+
+    # The dashboard opens without small-talk and fetches it on request: a
+    # window that leaves encounters out, then the same window's encounters.
+    quiet = client.get(
+        "/events", params={"latest": True, "limit": 300, "exclude": "encounter"}
+    ).json()
+    assert quiet["events"] and "encounter" not in {e["kind"] for e in quiet["events"]}
+    talk = client.get(
+        "/events",
+        params={
+            "after": quiet["oldest"] - 1,
+            "before": quiet["seq"] + 1,
+            "kinds": "encounter",
+        },
+    ).json()["events"]
+    assert talk and {e["kind"] for e in talk} == {"encounter"}
+    assert all(quiet["oldest"] <= e["seq"] <= quiet["seq"] for e in talk)
 
 
 def _first_seq(client: TestClient) -> int:
@@ -288,8 +309,6 @@ def test_responses_match_the_pydantic_contract(client: TestClient) -> None:
     and nobody would know until a page broke — validation here keeps the
     contract honest."""
 
-    from jeve.api import contracts
-
     contracts.WorldState.model_validate(client.get("/state").json())
     contracts.EventPage.model_validate(client.get("/events").json())
     contracts.EventPage.model_validate(
@@ -341,7 +360,7 @@ def test_responses_match_the_pydantic_contract(client: TestClient) -> None:
 def test_economics_reports_measured_spend(client: TestClient) -> None:
     body = client.get("/economics").json()
     assert body["sim_days"] >= 1
-    assert body["counts"]["persons"] == 424
+    assert body["counts"]["persons"] == HEADCOUNT + sum(o.counterparties for o in ORGS)
     # A rules-only run costs nothing, and saying so is the honest answer.
     assert body["spend_usd"] == 0.0
     assert body["model_calls"] == 0
@@ -406,45 +425,105 @@ def test_cors_refuses_a_remote_origin(client: TestClient) -> None:
 
 def test_the_map_is_served_as_data(client: TestClient) -> None:
     body = client.get("/world/map").json()
-    assert (body["width"], body["height"]) == (40, 28)
-    assert len(body["tiles"]) == 28 and len(body["tiles"][0]) == 40
-    assert {b["org_id"] for b in body["buildings"]} == {
-        "tallybird",
-        "halloran",
-        "ledgerline",
-        "thirdrail",
-    }
+    plan = town()
+    assert (body["width"], body["height"]) == (plan.width, plan.height)
+    assert len(body["tiles"]) == plan.height and len(body["tiles"][0]) == plan.width
+    assert {b["org_id"] for b in body["buildings"]} == {org.id for org in ORGS}
     for building in body["buildings"]:
         x, y = building["door"]
         assert body["tiles"][y][x] == "door"
         assert body["zones"][y][x] == building["zone"]
-    assert body["crowd_spots"]["cafe"]
-    # WEB-0004: where one sits, per zone, so the client can draw people sitting.
-    # Offices and the plaza's benches have some; every one is a chair or a bench.
-    assert set(body["seats"]) == {b["zone"] for b in body["buildings"]} | {"plaza"}
-    for zone in ("software_office", "law_office", "accounting_office", "plaza"):
-        assert body["seats"][zone], zone
-    for tiles in body["seats"].values():
+        assert building["floors"] == BY_ID[building["zone"]].floors
+        assert building["palette"] == asdict(BY_ID[building["zone"]].palette)
+    # Every upper floor is a storey of its own over the building's footprint,
+    # with the stair where the building says it is (WORLD-0008).
+    storeys = {(s["zone"], s["floor"]): s for s in body["storeys"]}
+    assert set(storeys) == {
+        (b["zone"], floor) for b in body["buildings"] for floor in range(1, b["floors"])
+    }
+    for building in body["buildings"]:
+        for floor in range(1, building["floors"]):
+            storey = storeys[(building["zone"], floor)]
+            assert (storey["x0"], storey["y0"]) == (building["x0"], building["y0"])
+            sx, sy = building["stair"]
+            assert storey["tiles"][sy - storey["y0"]][sx - storey["x0"]] == "stair"
+    # The crowd stands where other firms' staff go, and on the plaza.
+    assert set(body["crowd_spots"]) == {org.id for org in social_places()} | {"plaza"}
+    assert all(body["crowd_spots"].values())
+    # WEB-0004: where one sits, per floor, so the client can draw people
+    # sitting. Every one is a chair, a bench or a sofa on that floor.
+    assert set(body["seats"]) == {
+        f"{zone}/{floor}" for zone, floor in plan.visitor_spots
+    }
+    assert body["seats"]["plaza/0"]
+    for key, tiles in body["seats"].items():
+        zone, floor = key.split("/")
         for x, y in tiles:
-            assert body["tiles"][y][x] in ("chair", "bench")
+            if floor == "0":
+                kind = body["tiles"][y][x]
+            else:
+                storey = storeys[(zone, int(floor))]
+                kind = storey["tiles"][y - storey["y0"]][x - storey["x0"]]
+            assert kind in ("chair", "bench", "sofa"), (key, x, y, kind)
 
 
 def test_the_agents_frame_places_all_staff(client: TestClient) -> None:
     body = client.get("/world/agents").json()
-    assert len(body["agents"]) == 24
+    assert len(body["agents"]) == HEADCOUNT
     assert body["seq"] > 0 and body["tick_seq"] > 0
     world = client.get("/world/map").json()
+    floors = {b["zone"]: b["floors"] for b in world["buildings"]}
     for agent in body["agents"]:
+        assert agent["team_id"].startswith(agent["org_id"] + ".")
         if agent["zone"] == "home":
-            assert agent["x"] is None and agent["y"] is None
+            assert agent["x"] is None and agent["y"] is None and agent["floor"] == 0
         else:
             assert world["zones"][agent["y"]][agent["x"]] == agent["zone"]
+            assert 0 <= agent["floor"] < floors.get(agent["zone"], 1)
+        assert all(len(step) == 3 for step in agent["path"])
+    assert set(body["crowd"]) == {org.id for org in social_places()} | {"plaza"}
+    # One firm at a time, for a page that only cares about one building.
+    some = client.get("/world/agents", params={"org": "thirdrail"}).json()["agents"]
+    assert some and {a["org_id"] for a in some} == {"thirdrail"}
+
+
+def test_teams_are_floors_with_a_headcount_and_a_presence(client: TestClient) -> None:
+    body = client.get("/teams").json()
+    contracts.TeamsResponse.model_validate(body)
+    teams = {t["id"]: t for t in body["teams"]}
+    assert set(teams) == {f"{org.id}.{team.id}" for org in ORGS for team in org.teams}
+    for org in ORGS:
+        for team in org.teams:
+            row = teams[f"{org.id}.{team.id}"]
+            assert row["headcount"] == team.headcount
+            assert row["floor"] == team.floor and row["layout"] == team.layout
+            assert 0 <= row["present"] <= row["headcount"]
+    # And a firm's panel lists its own.
+    org_panel = client.get("/orgs/tallybird").json()
+    assert [t["id"] for t in org_panel["teams"]] == [
+        f"tallybird.{team.id}" for team in BY_ID["tallybird"].teams
+    ]
+
+
+def test_people_can_be_found_by_name_role_or_team(client: TestClient) -> None:
+    found = client.get("/persons", params={"q": "kwame boat"}).json()["persons"]
+    assert "Kwame Boateng" in {p["name"] for p in found}
+    assert all("Boateng" in p["name"] for p in found)
+    team = client.get("/persons", params={"team": "tallybird.support"}).json()
+    assert team["persons"]
+    assert {p["team_id"] for p in team["persons"]} == {"tallybird.support"}
+    baristas = client.get("/persons", params={"q": "barista", "org": "thirdrail"})
+    assert {p["role"] for p in baristas.json()["persons"]} == {"barista"}
+    everyone = client.get("/persons", params={"limit": 500}).json()["persons"]
+    assert len(everyone) == HEADCOUNT
 
 
 def test_an_agent_shows_the_decision_and_the_draw_behind_it(client: TestClient) -> None:
-    body = client.get("/world/agents/tallybird.support.6").json()
+    body = client.get("/world/agents/tallybird.support.support.0").json()
     assert body["name"] == "Kwame Boateng"
     assert body["org_name"] == "Tallybird Software"
+    assert body["team_id"] == "tallybird.support" and body["team_name"] == "Support"
+    assert body["floor"] >= 0
     # The words a model is shown, alongside the number they stand for.
     assert set(body["trait_words"]) <= set(body["traits"])
     assert body["trait_words"]["diligence"]
@@ -458,8 +537,9 @@ def test_an_agent_shows_the_decision_and_the_draw_behind_it(client: TestClient) 
 def test_an_org_panel_has_its_books_and_its_people(client: TestClient) -> None:
     body = client.get("/orgs/thirdrail").json()
     assert body["name"] == "Third Rail Cafe"
-    assert body["zone"] == "cafe"
-    assert body["staff_total"] == 6
+    assert body["zone"] == "thirdrail"
+    assert body["staff_total"] == BY_ID["thirdrail"].headcount
+    assert body["floors"] == BY_ID["thirdrail"].floors
     assert body["cash_cents"] > 0
     assert client.get("/orgs/nowhere").status_code == 404
 
@@ -480,7 +560,7 @@ def test_movement_stays_out_of_the_timeline_unless_asked_for(
     assert seqs == sorted(seqs)
     # Each carries the tiles walked: what a client animates, live or replayed.
     walked = moves["events"][-1]["payload"]["path"]
-    assert len(walked) >= 2 and all(len(step) == 2 for step in walked)
+    assert len(walked) >= 2 and all(len(step) == 3 for step in walked)
 
     everything = client.get("/events?limit=1000&background=true").json()["events"]
     assert any(e["kind"] == "agent.moved" for e in everything)

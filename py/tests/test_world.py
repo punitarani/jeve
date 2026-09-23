@@ -20,6 +20,7 @@ from psycopg.rows import DictRow
 
 from jeve import db
 from jeve.core.clock import SimTime, at
+from jeve.core.orgs import BY_ID
 from jeve.decide.policy import RulesPolicy
 from jeve.sim import advance
 from jeve.world.engine import Engine, skip_to_next_open
@@ -100,7 +101,7 @@ def test_the_world_runs_and_every_flow_fires(conn: Connection[DictRow]) -> None:
     assert kinds["invoice.issued"] > 0, "month-end never produced an invoice"
     assert kinds["invoice.blocked"] > 0, "the outage never blocked invoicing"
     assert kinds["payment.made"] > 0, "nothing was ever paid"
-    assert kinds["cafe.sale"] > 0
+    assert kinds["retail.sale"] > 0
 
 
 def test_the_ledger_balances_after_a_full_run(conn: Connection[DictRow]) -> None:
@@ -269,7 +270,9 @@ def test_with_no_customers_the_cafe_earns_nothing(
     for _ in range(40):
         engine.tick()
 
-    sales = conn.execute("SELECT count(*) AS n FROM cafe_sales").fetchone()
+    sales = conn.execute(
+        "SELECT count(*) AS n FROM retail_sales WHERE org_id = 'thirdrail'"
+    ).fetchone()
     assert sales is not None and int(sales["n"]) == 0
     assert ledger_total(conn) == 0
 
@@ -319,7 +322,7 @@ def test_the_cafe_does_not_turn_away_most_of_its_customers(
     """A degenerate cafe cannot transmit an outage to anyone."""
 
     kinds = run(conn, days=5)
-    sales, walkouts = kinds["cafe.sale"], kinds["cafe.walkout"]
+    sales, walkouts = kinds["retail.sale"], kinds["retail.walkout"]
     assert sales > 0
     assert walkouts / (sales + walkouts) < 0.25, (
         f"walkout rate {walkouts / (sales + walkouts):.0%} on a normal week"
@@ -358,21 +361,22 @@ def test_dead_time_is_skipped_rather_than_ticked(conn: Connection[DictRow]) -> N
     conn.execute("UPDATE sim_meta SET sim_time = %s", (at(0, 22),))
     conn.commit()
     moved = skip_to_next_open(conn)
-    # To the next moment anything is open — the cafe at seven, not the offices
-    # at nine, which is what this asserted while the bug was in.
+    # To the next moment anything is open — the cafe and the gym at seven, not
+    # the offices at nine, which is what this asserted while the bug was in.
     assert moved == at(1, 7)
-    assert SimTime(moved).cafe_open and not SimTime(moved).in_office_hours
+    assert SimTime(moved).open_for(BY_ID["thirdrail"].hours)
+    assert not SimTime(moved).in_office_hours
 
 
 def test_sunday_is_skipped_but_saturday_is_not(conn: Connection[DictRow]) -> None:
     """The offices are shut all weekend. The cafe is shut on Sunday only."""
 
     seed(conn, root_seed=ROOT_SEED)
-    conn.execute("UPDATE sim_meta SET sim_time = %s", (at(4, 18),))
+    conn.execute("UPDATE sim_meta SET sim_time = %s", (at(4, 20),))
     conn.commit()
     assert skip_to_next_open(conn) == at(5, 7)  # Friday night -> Saturday, cafe
 
-    conn.execute("UPDATE sim_meta SET sim_time = %s", (at(5, 18),))
+    conn.execute("UPDATE sim_meta SET sim_time = %s", (at(5, 20),))
     conn.commit()
     moved = skip_to_next_open(conn)
     assert SimTime(moved).weekday == 0
@@ -452,17 +456,21 @@ def test_every_open_invoice_is_booked_as_a_receivable(
 
 
 def test_dead_time_ends_when_anything_opens_not_only_the_offices() -> None:
-    """The cafe opens at seven and trades on Saturday. Skipping to the next
-    *office* opening dropped its mornings on every day but the first."""
+    """The cafe opens at seven, the gym trades till eight and both open on
+    Saturday. Skipping to the next *office* opening dropped their mornings on
+    every day but the first. The district's day is the union of every firm's
+    hours (CORE-0012), read here rather than written down twice."""
 
-    from jeve.core.clock import next_open
+    from jeve.core.clock import DISTRICT_CLOSE, DISTRICT_OPEN, HOUR, next_open
 
-    assert next_open(at(0, 17)) == at(0, 17)  # the cafe stays open till six
-    assert next_open(at(0, 18)) == at(1, 7)  # Monday evening -> Tuesday, cafe
+    first, last = DISTRICT_OPEN // HOUR, DISTRICT_CLOSE // HOUR
+    assert first < 9 < 17 < last
+    assert next_open(at(0, 17)) == at(0, 17)  # the offices shut; the gym is open
+    assert next_open(at(0, last)) == at(1, first)  # Monday evening -> Tuesday
     assert next_open(at(1, 8, 30)) == at(1, 8, 30)  # already open
-    assert next_open(at(4, 18)) == at(5, 7)  # Friday evening -> Saturday, cafe
-    assert next_open(at(5, 18)) == at(7, 7)  # Saturday close -> Monday, cafe
-    assert next_open(at(6, 12)) == at(7, 7)  # Sunday: everything is shut
+    assert next_open(at(4, last)) == at(5, first)  # Friday evening -> Saturday
+    assert next_open(at(5, last)) == at(7, first)  # Saturday close -> Monday
+    assert next_open(at(6, 12)) == at(7, first)  # Sunday: everything is shut
 
 
 def test_the_cafe_trades_every_morning_and_on_saturday(
@@ -471,13 +479,14 @@ def test_the_cafe_trades_every_morning_and_on_saturday(
     run(conn, days=6)
     mornings = conn.execute(
         "SELECT sim_time / 86400 AS day, count(*) AS n FROM events "
-        "WHERE kind = 'cafe.sale' AND mod(sim_time, 86400) < 9 * 3600 "
+        "WHERE kind = 'retail.sale' AND org_id = 'thirdrail' "
+        "AND mod(sim_time, 86400) < 9 * 3600 "
         "GROUP BY 1 ORDER BY 1"
     ).fetchall()
     assert [int(m["day"]) for m in mornings] == [0, 1, 2, 3, 4, 5]
     saturday = conn.execute(
-        "SELECT count(*) AS n FROM events WHERE kind = 'cafe.sale' "
-        "AND sim_time >= %s AND sim_time < %s",
+        "SELECT count(*) AS n FROM events WHERE kind = 'retail.sale' "
+        "AND org_id = 'thirdrail' AND sim_time >= %s AND sim_time < %s",
         (at(5), at(6)),
     ).fetchone()
     assert saturday is not None and int(saturday["n"]) > 20

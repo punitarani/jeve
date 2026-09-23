@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
+/** What decided the world under test: `jev` for the fixture, else the rules twin. */
+const POLICY = process.env.JEVE_E2E_POLICY ?? "jev";
+
 /**
  * The voxel world (WEB-0002): the hero advances on its own, and clicking a
  * person shows the distribution Jev returned for their last decision.
@@ -13,6 +16,12 @@ import { expect, test, type Page } from "@playwright/test";
  * first test says which it was.
  */
 
+/** The roster as the API serves it: counts and ids are read, never written down here. */
+type State = {
+  persons: Record<string, number>;
+  orgs: { id: string; name: string }[];
+};
+
 type Status = {
   seq: number;
   tick: number;
@@ -24,8 +33,69 @@ type Status = {
   glOk: boolean;
   software: string | null;
   drawing: boolean;
-  agents: { id: string; x: number; y: number; zone: string; visible: boolean }[];
+  /** The storey the buildings are cut at; null when nothing is cut away. */
+  levelCut: number | null;
+  agents: {
+    id: string;
+    x: number;
+    y: number;
+    floor: number;
+    zone: string;
+    /** On the map: not at home. The level cut does not change it. */
+    visible: boolean;
+    /** Drawn and pickable: on the map, and on a floor the cut leaves in view. */
+    drawn: boolean;
+    walking: boolean;
+  }[];
 };
+
+type Map = {
+  width: number;
+  height: number;
+  buildings: { org_id: string; floors: number }[];
+};
+
+/**
+ * The API the page is reading from: the build inlines it, so the test run
+ * that built the page has it in the environment; a page that is already up
+ * says so through the origin of its own `/world/map` fetch.
+ */
+async function apiOrigin(page: Page): Promise<string> {
+  const fromEnv = process.env.NEXT_PUBLIC_JEVE_API;
+  if (fromEnv) return fromEnv;
+  const seen = await page.evaluate(() => {
+    const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+    return entries.find((entry) => entry.name.endsWith("/world/map"))?.name ?? null;
+  });
+  return seen === null ? "http://127.0.0.1:8000" : seen.replace(/\/world\/map$/, "");
+}
+
+async function state(page: Page): Promise<State> {
+  const response = await page.request.get(`${await apiOrigin(page)}/state`);
+  expect(response.ok(), "GET /state").toBe(true);
+  return (await response.json()) as State;
+}
+
+async function townMap(page: Page): Promise<Map> {
+  const response = await page.request.get(`${await apiOrigin(page)}/world/map`);
+  expect(response.ok(), "GET /world/map").toBe(true);
+  return (await response.json()) as Map;
+}
+
+/** Where a building is drawn, from the explorer's own model: a click there opens its books. */
+async function buildingAt(page: Page, orgId: string): Promise<{ x: number; y: number }> {
+  const at = await page.evaluate((id) => {
+    const handle = (window as unknown as {
+      __jeveWorld: Record<
+        string,
+        { screenPositionOfBuilding(id: string): { x: number; y: number } | null }
+      >;
+    }).__jeveWorld.explore!;
+    return handle.screenPositionOfBuilding(id);
+  }, orgId);
+  expect(at, `${orgId} is on screen`).not.toBeNull();
+  return at!;
+}
 
 async function status(page: Page, mode: "hero" | "explore"): Promise<Status> {
   return page.evaluate((m) => {
@@ -38,10 +108,13 @@ async function status(page: Page, mode: "hero" | "explore"): Promise<Status> {
 }
 
 async function ready(page: Page, mode: "hero" | "explore"): Promise<void> {
+  // Everybody on the roster is in the scene, at home or not.
+  const staff = (await state(page)).persons.staff ?? 0;
+  expect(staff, "the roster has staff").toBeGreaterThan(0);
   const mounted = async () =>
     (await status(page, mode).catch(() => null))?.agents.length ?? 0;
   try {
-    await expect.poll(mounted, { timeout: 25_000 }).toBe(24);
+    await expect.poll(mounted, { timeout: 25_000 }).toBe(staff);
   } catch {
     // Seen once on a machine that was also running another project's test
     // suite: the three.js chunk (~1 MB) never finished downloading, so the page
@@ -51,7 +124,7 @@ async function ready(page: Page, mode: "hero" | "explore"): Promise<void> {
       description: `${mode} world did not mount within 25s; reloaded once`,
     });
     await page.reload();
-    await expect.poll(mounted, { timeout: 40_000 }).toBe(24);
+    await expect.poll(mounted, { timeout: 40_000 }).toBe(staff);
   }
 }
 
@@ -161,18 +234,20 @@ test("clicking a person shows the distribution behind their last decision", asyn
   await expect(page.getByTestId("world-hint")).toBeVisible();
 
   // Somebody who is on the map and standing still, found from the model and
-  // clicked at the pixel they are drawn at.
+  // clicked at the pixel they are drawn at. Standing still first: a walker
+  // has moved on by the time a slow machine delivers the click.
   const target = await page.evaluate(() => {
     const handle = (window as unknown as {
       __jeveWorld: Record<
         string,
         {
-          status(): { agents: { id: string; visible: boolean }[] };
+          status(): { agents: { id: string; visible: boolean; walking: boolean }[] };
           screenPositionOf(id: string): { x: number; y: number } | null;
         }
       >;
     }).__jeveWorld.explore!;
-    for (const agent of handle.status().agents) {
+    const agents = handle.status().agents;
+    for (const agent of [...agents.filter((a) => !a.walking), ...agents]) {
       const at = agent.visible ? handle.screenPositionOf(agent.id) : null;
       if (at && at.x > 40 && at.y > 40) return { id: agent.id, ...at };
     }
@@ -187,9 +262,13 @@ test("clicking a person shows the distribution behind their last decision", asyn
   await expect(panel).toBeVisible();
   // Picking is nearest-person: whoever was clicked, a person came up.
   await expect(panel).toHaveAttribute("data-person", /\w+\.\w+\.\d+/);
-  await expect(panel.getByTestId("decided-by")).toHaveText("jev");
-  await expect(panel).toContainText("typesafe/jev");
+  // Whichever policy decided this run: Jev in the recorded fixture, the rules
+  // twin when the stack runs free between recordings (JEVE_E2E_POLICY).
+  await expect(panel.getByTestId("decided-by")).toHaveText(POLICY);
+  if (POLICY === "jev") await expect(panel).toContainText("typesafe/jev");
 
+  // Only a model returns a distribution; the rules twin returns a verdict.
+  if (POLICY !== "jev") return;
   const bars = panel.getByTestId("distribution-bar");
   expect(await bars.count()).toBeGreaterThanOrEqual(4);
   // A distribution, not a verdict: the probabilities of one question sum to one.
@@ -206,39 +285,40 @@ test("clicking a building shows the firm's books", async ({ page }) => {
   await page.goto("/world");
   await ready(page, "explore");
 
-  const at = await page.evaluate(() => {
-    const handle = (window as unknown as {
-      __jeveWorld: Record<
-        string,
-        { screenPositionOfBuilding(id: string): { x: number; y: number } | null }
-      >;
-    }).__jeveWorld.explore!;
-    return handle.screenPositionOfBuilding("ledgerline");
-  });
-  expect(at).not.toBeNull();
-  await page.getByTestId("world-canvas").click({ position: { x: at!.x, y: at!.y } });
+  // The accountants, if the roster still has them; any firm otherwise.
+  const orgs = (await state(page)).orgs;
+  const org = orgs.find((o) => o.id === "ledgerline") ?? orgs[0];
+  expect(org, "the roster has a firm").toBeDefined();
+  const at = await buildingAt(page, org!.id);
+  await page.getByTestId("world-canvas").click({ position: { x: at.x, y: at.y } });
 
   const panel = page.getByTestId("org-panel");
   await expect(panel).toBeVisible();
-  await expect(panel).toHaveAttribute("data-org", "ledgerline");
-  await expect(panel).toContainText("Ledgerline Accounting");
+  await expect(panel).toHaveAttribute("data-org", org!.id);
+  await expect(panel).toContainText(org!.name);
   await expect(panel.getByTestId("org-cash")).toContainText(/\$[\d,]+/);
+  // A team is a floor (CORE-0012): the panel lists them, with who is in.
+  expect(await panel.getByTestId("org-team").count()).toBeGreaterThan(0);
+  await expect(panel.getByTestId("org-team").first()).toContainText(/\d+ of \d+ in/);
 });
 
 test("dragging pans the map instead of selecting", async ({ page }) => {
   await page.goto("/world");
   await ready(page, "explore");
-  // The fountain: a fixed point on the ground, wherever anyone is standing.
+  // The middle of the map: a fixed point on the ground, wherever anyone is
+  // standing, and wherever the map's edges are.
+  const map = await townMap(page);
+  const centre: [number, number] = [Math.floor(map.width / 2), Math.floor(map.height / 2)];
   const fountain = () =>
-    page.evaluate(() => {
+    page.evaluate(([x, y]) => {
       const handle = (window as unknown as {
         __jeveWorld: Record<
           string,
           { screenPositionOfTile(x: number, y: number): { x: number; y: number } }
         >;
       }).__jeveWorld.explore!;
-      return handle.screenPositionOfTile(20, 14);
-    });
+      return handle.screenPositionOfTile(x, y);
+    }, centre);
   const before = await fountain();
 
   const box = (await page.getByTestId("world-canvas").boundingBox())!;
@@ -255,4 +335,95 @@ test("dragging pans the map instead of selecting", async ({ page }) => {
     .toBeGreaterThan(120);
   // A drag is not a click: nothing got selected.
   await expect(page.getByTestId("world-hint")).toBeVisible();
+});
+
+test("the level cut: the ground floor only, then everything again", async ({ page }) => {
+  await page.goto("/world");
+  await ready(page, "explore");
+
+  // The control offers every storey the map has, highest first, down to the
+  // ground, and starts on everything.
+  const map = await townMap(page);
+  const tallest = Math.max(...map.buildings.map((b) => b.floors));
+  const group = page.getByTestId("level-cut");
+  await expect(group.getByTestId("level-cut-all")).toHaveAttribute("aria-pressed", "true");
+  for (let floor = 1; floor < tallest; floor++) {
+    await expect(group.getByTestId(`level-cut-${floor}`)).toBeVisible();
+  }
+  await expect(group.getByTestId(`level-cut-${tallest}`)).toHaveCount(0);
+
+  await group.getByTestId("level-cut-0").click();
+  await expect(group.getByTestId("level-cut-0")).toHaveAttribute("aria-pressed", "true");
+  await expect(group.getByTestId("level-cut-all")).toHaveAttribute("aria-pressed", "false");
+
+  // The cut is model state (WEB-0007): what is drawn and what can be clicked
+  // read it, so it holds with no picture at all. Nobody is sent home by it —
+  // on the map is one thing, in view another — and whoever it takes out of
+  // view is upstairs.
+  const cut = await status(page, "explore");
+  expect(cut.levelCut).toBe(0);
+  const drawn = cut.agents.filter((a) => a.drawn);
+  expect(drawn.every((a) => a.visible && a.floor === 0)).toBe(true);
+  const hidden = cut.agents.filter((a) => a.visible && !a.drawn);
+  expect(hidden.every((a) => a.floor > 0)).toBe(true);
+  expect(drawn.length + hidden.length).toBe(cut.visible);
+  // Somebody the cut hides cannot be clicked: their pixel is not reported.
+  if (hidden[0] !== undefined) {
+    const at = await page.evaluate((id) => {
+      const handle = (window as unknown as {
+        __jeveWorld: Record<string, { screenPositionOf(id: string): unknown }>;
+      }).__jeveWorld.explore!;
+      return handle.screenPositionOf(id);
+    }, hidden[0].id);
+    expect(at).toBeNull();
+  }
+
+  await group.getByTestId("level-cut-all").click();
+  await expect(group.getByTestId("level-cut-all")).toHaveAttribute("aria-pressed", "true");
+  const whole = await status(page, "explore");
+  expect(whole.levelCut).toBeNull();
+  expect(whole.agents.filter((a) => a.visible && !a.drawn)).toHaveLength(0);
+});
+
+test("a team row in the firm's panel cuts the building at that team's floor", async ({
+  page,
+}) => {
+  await page.goto("/world");
+  await ready(page, "explore");
+
+  // A building with storeys, if the district has one; any building otherwise.
+  const map = await townMap(page);
+  const building = map.buildings.find((b) => b.floors > 1) ?? map.buildings[0];
+  expect(building, "the map has a building").toBeDefined();
+  const at = await buildingAt(page, building!.org_id);
+  await page.getByTestId("world-canvas").click({ position: { x: at.x, y: at.y } });
+  const panel = page.getByTestId("org-panel");
+  await expect(panel).toHaveAttribute("data-org", building!.org_id);
+
+  // A team is a floor (WORLD-0008). The one highest up: its floor is the cut
+  // that says the most, since it is the only one that leaves the whole
+  // building standing while still being a choice.
+  const rows = panel.getByTestId("org-team");
+  expect(await rows.count()).toBeGreaterThan(0);
+  const floors = await rows.evaluateAll((els) =>
+    els.map((el) => Number((el as HTMLElement).dataset.floor)),
+  );
+  const top = Math.max(...floors);
+  expect(top).toBe(building!.floors - 1);
+  const row = rows.nth(floors.indexOf(top));
+  await row.click();
+  await expect(row.getByRole("button")).toHaveAttribute("aria-pressed", "true");
+  // The control in the strip follows, and so does the model.
+  await expect(page.getByTestId(`level-cut-${top}`)).toHaveAttribute("aria-pressed", "true");
+  await expect
+    .poll(async () => (await status(page, "explore")).levelCut, { timeout: 5_000 })
+    .toBe(top);
+
+  // Pressed again, it puts the cut back.
+  await row.click();
+  await expect(row.getByRole("button")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByTestId("level-cut-all")).toHaveAttribute("aria-pressed", "true");
+  await expect
+    .poll(async () => (await status(page, "explore")).levelCut, { timeout: 5_000 })
+    .toBeNull();
 });

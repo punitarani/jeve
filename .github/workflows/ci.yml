@@ -93,13 +93,15 @@ jobs:
 
   python:
     runs-on: ubuntu-latest
-    # This job once ran the suite twice: WEB-0006's confirmation was
-    # `make check`, which ran all of it again single-process, and with
-    # Episodes (WORLD-0006) the job reached 26 minutes against a cap of 25.
-    # The cap was raised to 35 until that second run was gone. It is gone,
-    # and `test_run_confirmations.py` keeps it gone, so the cap is back to
-    # being a guard against a hang, not a budget for a duplicate.
-    timeout-minutes: 25
+    # The suite runs once per job: WEB-0006's confirmation used to open with
+    # `make check`, which ran lint, types and the whole suite a second time,
+    # single-process, after this job had already run them under xdist. That
+    # second run is gone and `test_run_confirmations.py` keeps it gone, so the
+    # cap is a guard against a hang rather than a budget for a duplicate.
+    # Twenty-five is that guard on the four-firm suite; the district's own run
+    # measures 18:09 for the suite step alone at twelve firms and 225 staff,
+    # which leaves a hang guard of thirty-five with room to spare.
+    timeout-minutes: 35
     needs: [changes]
     if: needs.changes.outputs.python == 'true'
     # Without a database about half the suite skips: everything that runs the

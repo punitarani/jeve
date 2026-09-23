@@ -40,7 +40,8 @@ def fresh(conn: Connection[DictRow]) -> Connection[DictRow]:
 
 def _org(conn: Connection[DictRow]) -> None:
     conn.execute(
-        "INSERT INTO orgs (id, name, kind) VALUES ('cafe', 'Third Rail', 'cafe')"
+        "INSERT INTO orgs (id, name, kind, archetype) "
+        "VALUES ('cafe', 'Third Rail', 'cafe', 'retail')"
     )
     conn.execute(
         """

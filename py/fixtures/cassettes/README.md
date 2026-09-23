@@ -14,3 +14,6 @@ never point a long live run at it: `make soak` keeps its own cassette under
 
 If the file is absent — between a change to the key and the recording that
 follows — the tests that replay it skip, and `LIVE=1 make e2e` recreates it.
+In the meantime `JEVE_E2E_POLICY=rules make e2e` runs the whole stack and the
+browser flow on the rules twin, for free and with no key: the same fixture,
+decided by rules instead of replayed from here.

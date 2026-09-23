@@ -179,7 +179,7 @@ def test_someone_who_walks_in_twice_in_a_tick_decides_twice(
     doubles = conn.execute(
         "SELECT person_id, tick_seq, array_agg(decision_seq ORDER BY decision_seq) "
         "  AS seqs, array_agg(prng_path ORDER BY decision_seq) AS paths "
-        "FROM decisions WHERE question_set = 'cafe.purchase' "
+        "FROM decisions WHERE question_set = 'retail.purchase' "
         "GROUP BY person_id, tick_seq HAVING count(*) > 1"
     ).fetchall()
     assert doubles, "no repeat visitor in the window; lengthen DAYS"
@@ -194,7 +194,7 @@ def test_strict_replay_fails_on_a_miss_and_names_the_question_set(
 ) -> None:
     policy = JevPolicy(ROOT_SEED, Recorder(mode="replay"))
     unseen = DecisionContext(
-        person_id="tallybird.support.0",
+        person_id="tallybird.support.support.0",
         role="support",
         decision_seq=0,
         sim_time=at(0, 10),
@@ -209,12 +209,12 @@ def test_strict_replay_fails_on_a_miss_and_names_the_question_set(
 def test_a_batch_equals_deciding_one_at_a_time(conn: Connection[DictRow]) -> None:
     contexts = [
         DecisionContext(
-            person_id=f"thirdrail.cp.{index}",
+            person_id=f"thirdrail.customer.{index}",
             role="customer",
             decision_seq=index,
             sim_time=at(0, 10),
-            kind="cafe.purchase",
-            facts={"pos_down": False, "queue_length": queue},
+            kind="retail.purchase",
+            facts={"org": "thirdrail", "till_down": False, "queue_length": queue},
             traits={"patience": patience},
         )
         for index, (queue, patience) in enumerate(

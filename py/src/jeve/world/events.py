@@ -87,15 +87,17 @@ class PaymentDeferred(_Event):
     decided_by: str
 
 
-class CafeSale(_Event):
-    kind: Literal["cafe.sale"] = "cafe.sale"
+class RetailSale(_Event):
+    """At any firm with a till; the retailer is the event's `org_id`."""
+
+    kind: Literal["retail.sale"] = "retail.sale"
     person_id: str | None
     amount_cents: int
-    pos_down: bool
+    till_down: bool
 
 
-class CafeWalkout(_Event):
-    kind: Literal["cafe.walkout"] = "cafe.walkout"
+class RetailWalkout(_Event):
+    kind: Literal["retail.walkout"] = "retail.walkout"
     person_id: str | None
     reason: str
 
@@ -123,8 +125,8 @@ type EventPayload = Annotated[
     | InvoiceBlocked
     | PaymentMade
     | PaymentDeferred
-    | CafeSale
-    | CafeWalkout
+    | RetailSale
+    | RetailWalkout
     | MonthEnd
     | EngineChanged,
     Field(discriminator="kind"),

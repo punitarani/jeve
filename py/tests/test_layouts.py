@@ -1,148 +1,183 @@
-"""The four layouts, on the town as it is and on the town that is coming (WEB-0004).
+"""Every storey of the district, furnished and walked (WEB-0004, WORLD-0008).
 
-A layout is written in its building's own frame, so that it survives the map
-growing. That is a claim about code nobody has run yet unless something runs
-it: these tests furnish each building at today's bounds *and* at the bounds and
-headcounts session 3 is about to give it, on a grid built here, and walk from
-the door to every place a person can be sent.
-
-`find_path` only knows the real town, so reachability here is a small BFS.
+A layout is written in its building's own frame, so that it survives the
+roster changing: the same function furnishes a 12-tile floor and a 24-tile one.
+These tests build the real district and, for every floor of every building,
+walk from the door — up the stair, for an upper floor — to every place a
+person can be sent.
 """
 
 from __future__ import annotations
 
-from collections import deque
-
 import pytest
 
-from jeve.world.map import BUILDINGS, LAYOUTS, SITTABLE, WALKABLE, Building, Tile, Zone
-
-# Inclusive outer walls, door, which way it faces, and how many work there.
-COMING: tuple[tuple[Building, int], ...] = (
-    (Building(Zone.SOFTWARE_OFFICE, 2, 2, 27, 16, (14, 16), True), 44),
-    (Building(Zone.LAW_OFFICE, 38, 4, 59, 16, (48, 16), True), 24),
-    (Building(Zone.ACCOUNTING_OFFICE, 4, 27, 23, 39, (14, 27), False), 20),
-    (Building(Zone.CAFE, 38, 27, 59, 39, (48, 27), False), 16),
+from jeve.core.orgs import BY_ID, ORGS
+from jeve.world.map import (
+    LAYOUTS,
+    SITTABLE,
+    STANDING_STYLES,
+    WALKABLE,
+    Building,
+    Node,
+    find_path,
+    town,
 )
-COMING_SIZE = (64, 44)
-COMING_BAND = range(18, 26)
 
-TODAY_STAFF = {
-    Zone.SOFTWARE_OFFICE: 8,
-    Zone.LAW_OFFICE: 5,
-    Zone.ACCOUNTING_OFFICE: 5,
-    Zone.CAFE: 6,
-}
-TODAY: tuple[tuple[Building, int], ...] = tuple(
-    (b, TODAY_STAFF[b.zone]) for b in BUILDINGS
-)
-TODAY_SIZE = (40, 28)
-TODAY_BAND = range(11, 17)
-
-CASES = [
-    pytest.param(b, staff, TODAY_SIZE, TODAY_BAND, False, id=f"today-{b.zone.value}")
-    for b, staff in TODAY
-] + [
-    pytest.param(b, staff, COMING_SIZE, COMING_BAND, True, id=f"coming-{b.zone.value}")
-    for b, staff in COMING
+STOREYS = [
+    pytest.param(b, floor, id=f"{b.zone}-{floor}")
+    for b in town().buildings
+    for floor in range(b.floors)
 ]
 
 
-def shell(b: Building, size: tuple[int, int], band: range) -> list[list[str]]:
-    """Grass, a paved band, and one empty building with its door and its path:
-    what `town()` hands a layout."""
-
-    width, height = size
-    grid = [["plaza" if y in band else "grass"] * width for y in range(height)]
-    for y in range(b.y0, b.y1 + 1):
-        for x in range(b.x0, b.x1 + 1):
-            edge = x in (b.x0, b.x1) or y in (b.y0, b.y1)
-            grid[y][x] = "wall" if edge else "floor"
-    grid[b.door[1]][b.door[0]] = "door"
-    step = 1 if b.faces_south else -1
-    y = b.door[1] + step
-    while y not in band:
-        grid[y][b.door[0]] = "path"
-        y += step
-    grid[y][b.door[0]] = "path"
-    return grid
+def interior(b: Building, floor: int) -> dict[tuple[int, int], str]:
+    world = town()
+    return {
+        (x, y): world.kind((x, y, floor))
+        for y in range(b.y0, b.y1 + 1)
+        for x in range(b.x0, b.x1 + 1)
+    }
 
 
-def reachable(grid: list[list[str]], start: Tile) -> set[Tile]:
-    seen = {start}
-    queue = deque([start])
-    while queue:
-        x, y = queue.popleft()
-        for step in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
-            sx, sy = step
-            if step in seen or not (0 <= sy < len(grid) and 0 <= sx < len(grid[0])):
-                continue
-            if grid[sy][sx] in WALKABLE:
-                seen.add(step)
-                queue.append(step)
-    return seen
-
-
-@pytest.mark.parametrize(("b", "staff", "size", "band", "coming"), CASES)
-def test_a_layout_seats_its_staff_and_every_place_can_be_walked_to(
-    b: Building, staff: int, size: tuple[int, int], band: range, coming: bool
+@pytest.mark.parametrize(("b", "floor"), STOREYS)
+def test_a_storey_seats_its_team_and_every_place_can_be_walked_to(
+    b: Building, floor: int
 ) -> None:
-    grid = shell(b, size, band)
-    seats, spots = LAYOUTS[b.zone](grid, b, staff)
+    world = town()
+    org = BY_ID[b.zone]
+    seats = world.seats[(b.zone, floor)]
+    spots = world.visitor_spots[(b.zone, floor)]
+    staff = org.staff_on(floor)
 
-    assert len(seats) >= (staff if coming else 6), (len(seats), staff)
-    assert len(seats) >= staff
+    assert len(seats) >= staff, (b.zone, floor, len(seats), staff)
     assert spots, "nowhere for a visitor to go"
-    if b.zone is Zone.CAFE:
-        assert len(spots) >= 4
 
     # One person to a place, and a visitor is never sent to somebody's desk.
     assert len(set(seats)) == len(seats)
     assert len(set(spots)) == len(spots)
     assert not set(seats) & set(spots)
 
-    within = reachable(grid, b.door)
+    start: Node = (*b.door, 0)
     for x, y in (*seats, *spots):
-        assert grid[y][x] in WALKABLE, (x, y, grid[y][x])
-        assert (x, y) in within, f"no way from the door to {(x, y)}"
+        node: Node = (x, y, floor)
+        assert world.kind(node) in WALKABLE, (node, world.kind(node))
+        route = find_path(start, node)
+        assert route, f"no way from the door to {node}"
+        assert route[0] == start and route[-1] == node
+        # The only way up is the stair: a route to an upper floor climbs it.
+        if floor > 0:
+            assert (*b.stair, floor) in route
 
-    # The door and the way to it stay clear, and the walls stay walls.
-    assert grid[b.door[1]][b.door[0]] == "door"
-    for y in range(b.y0, b.y1 + 1):
-        for x in range(b.x0, b.x1 + 1):
-            if (x in (b.x0, b.x1) or y in (b.y0, b.y1)) and (x, y) != b.door:
-                assert grid[y][x] == "wall"
-
-
-@pytest.mark.parametrize(("b", "staff", "size", "band", "coming"), CASES)
-def test_office_staff_sit_and_cafe_staff_stand(
-    b: Building, staff: int, size: tuple[int, int], band: range, coming: bool
-) -> None:
-    grid = shell(b, size, band)
-    seats, spots = LAYOUTS[b.zone](grid, b, staff)
-    sitting = [grid[y][x] in SITTABLE for x, y in seats]
-    if b.zone is Zone.CAFE:
-        assert not any(sitting)
-        # Somewhere to sit outside, in front of the door wall.
-        outside = [(x, y) for x, y in spots if not (b.y0 <= y <= b.y1)]
-        assert outside and all(grid[y][x] in SITTABLE for x, y in outside)
+    # The stair is where the building says it is, on every floor it has.
+    if b.floors > 1:
+        assert world.kind((*b.stair, floor)) == "stair"
     else:
-        assert all(sitting)
+        assert "stair" not in interior(b, floor).values()
 
 
-def test_the_four_buildings_are_furnished_differently() -> None:
+@pytest.mark.parametrize(("b", "floor"), STOREYS)
+def test_walls_stay_walls_and_the_door_stays_a_door(b: Building, floor: int) -> None:
+    world = town()
+    for (x, y), kind in interior(b, floor).items():
+        on_edge = x in (b.x0, b.x1) or y in (b.y0, b.y1)
+        if not on_edge:
+            continue
+        if floor == 0 and (x, y) == b.door:
+            assert kind == "door"
+        else:
+            assert kind == "wall", ((x, y, floor), kind)
+    assert world.zone_of(b.door) == b.zone
+
+
+@pytest.mark.parametrize(("b", "floor"), STOREYS)
+def test_office_staff_sit_and_counter_staff_stand(b: Building, floor: int) -> None:
+    world = town()
+    style = BY_ID[b.zone].layout_on(floor)
+    sitting = [
+        world.kind((x, y, floor)) in SITTABLE for x, y in world.seats[(b.zone, floor)]
+    ]
+    if style in STANDING_STYLES:
+        assert not any(sitting), (b.zone, floor, style)
+    elif style == "branch":
+        # Tellers stand at their counter; the lending officers behind them sit.
+        assert any(sitting) and not all(sitting), (b.zone, floor, style)
+    else:
+        assert all(sitting), (b.zone, floor, style)
+
+
+def test_the_cafe_has_a_terrace() -> None:
+    """Somewhere to sit outside, in front of the door wall."""
+
+    world = town()
+    cafes = [org for org in ORGS if org.layout_on(0) == "counter"]
+    assert cafes
+    for org in cafes:
+        b = world.building(org.id)
+        outside = [
+            (x, y)
+            for x, y in world.visitor_spots[(org.id, 0)]
+            if not b.contains((x, y))
+        ]
+        assert outside, org.id
+        assert all(world.kind((x, y, 0)) in SITTABLE for x, y in outside)
+        assert all(world.zone_of(t) == org.id for t in outside)
+
+
+def test_every_style_is_furnished_differently() -> None:
     """Audit D4: with labels hidden, furniture is most of what tells them apart."""
 
-    signature: dict[Zone, frozenset[str]] = {}
-    for b, staff in COMING:
-        grid = shell(b, COMING_SIZE, COMING_BAND)
-        LAYOUTS[b.zone](grid, b, staff)
-        inside = {grid[y][x] for y in range(b.y0, b.y1 + 1) for x in range(b.x0, b.x1)}
-        signature[b.zone] = frozenset(inside - {"wall", "floor", "door", "chair"})
-    assert {"server_rack", "whiteboard"} <= signature[Zone.SOFTWARE_OFFICE]
-    assert {"partition", "bookshelf", "conference", "reception"} <= signature[
-        Zone.LAW_OFFICE
-    ]
-    assert {"filing", "partition", "conference"} <= signature[Zone.ACCOUNTING_OFFICE]
-    assert {"counter", "kitchen", "table"} <= signature[Zone.CAFE]
-    assert len(set(signature.values())) == 4
+    world = town()
+    signature: dict[str, frozenset[str]] = {}
+    for b in world.buildings:
+        for floor in range(b.floors):
+            style = BY_ID[b.zone].layout_on(floor)
+            inside = set(interior(b, floor).values())
+            signature.setdefault(
+                style,
+                frozenset(
+                    inside
+                    - {
+                        "wall",
+                        "floor",
+                        "door",
+                        "chair",
+                        "stair",
+                        "sofa",
+                        "kitchenette",
+                        "reception",
+                        "plant",
+                    }
+                ),
+            )
+    assert set(signature) == set(LAYOUTS), set(LAYOUTS) - set(signature)
+    assert {"server_rack", "whiteboard"} <= signature["pods"]
+    assert {"partition", "bookshelf", "conference"} <= signature["offices"]
+    assert {"filing", "partition", "conference"} <= signature["ranks"]
+    assert {"counter", "kitchen", "table"} <= signature["counter"]
+    assert {"dental_chair"} <= signature["clinic"]
+    assert {"shelf", "counter"} <= signature["shopfloor"]
+    assert {"rack"} <= signature["warehouse"]
+    assert {"equipment"} <= signature["gym"]
+    assert {"teller"} <= signature["branch"]
+    assert len(set(signature.values())) == len(signature)
+
+
+def test_the_district_places_every_firm_on_its_lot() -> None:
+    world = town()
+    assert {b.zone for b in world.buildings} == {org.id for org in ORGS}
+    for b in world.buildings:
+        org = BY_ID[b.zone]
+        assert b.floors == org.floors
+        assert world.floors_of(b.zone) == org.floors
+        # The door is on the street side, and the path from it reaches paving.
+        assert b.door[1] == (b.y1 if b.faces_south else b.y0)
+        assert world.walkable((*b.door, 0))
+    # Buildings never overlap, and every one has room to breathe.
+    for a in world.buildings:
+        for b in world.buildings:
+            if a is b:
+                continue
+            apart = (
+                a.x1 < b.x0 - 1 or b.x1 < a.x0 - 1 or a.y1 < b.y0 - 1 or b.y1 < a.y0 - 1
+            )
+            assert apart, (a.zone, b.zone)

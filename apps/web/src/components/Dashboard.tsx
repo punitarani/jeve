@@ -11,9 +11,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ListFilter } from "lucide-react";
 import { toast } from "sonner";
-import type { EventPage, WorldState } from "@jeve/contracts";
-import { fetchCausal, fetchOlderEvents, fetchState, money } from "@/lib/api";
-import { EVENT_TONE, ORG_COLORS } from "@/lib/tone";
+import type { EventPage, SimEvent, WorldState } from "@jeve/contracts";
+import {
+	fetchCausal,
+	fetchKindsBetween,
+	fetchOlderEvents,
+	fetchState,
+	money,
+} from "@/lib/api";
+import { EVENT_TONE } from "@/lib/tone";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,11 +50,21 @@ import {
 import { Timeline } from "./Timeline";
 import { PersonPanel } from "./PersonPanel";
 
-// `encounter` is ~67% of everything the timeline loads (ops/soak.md: 2,072 of
-// the 3,097 events that survive the API's own BACKGROUND_EVENTS cut) — staff
-// small-talk that buries the outage this panel exists to show. Same reasoning
-// as that server-side cut, but one click away from coming back.
-const HIDDEN_BY_DEFAULT = ["encounter"];
+// `encounter` is most of everything the timeline could load — six hundred a
+// day across the district — staff small-talk that buries the outage this
+// panel exists to show. Same reasoning as the API's own background cut, but
+// one click away from coming back: the pages leave these kinds out, and the
+// first time a chip switches one on it is fetched into the loaded window.
+export const HIDDEN_BY_DEFAULT = ["encounter"];
+
+/** Ascending by seq, each event once: two pages of the log, merged. */
+function merge(prev: SimEvent[], incoming: SimEvent[]): SimEvent[] {
+	if (incoming.length === 0) return prev;
+	const seen = new Map<number, SimEvent>();
+	for (const event of prev) seen.set(event.seq, event);
+	for (const event of incoming) seen.set(event.seq, event);
+	return [...seen.values()].sort((a, b) => a.seq - b.seq);
+}
 
 // One screenful is about thirty rows, so a page is deep enough that reaching
 // the end of one is a deliberate scroll rather than a flick, and small enough
@@ -72,13 +88,24 @@ export function Dashboard({
 	const [failed, setFailed] = useState<string | null>(null);
 	const [selected, setSelected] = useState<number | null>(null);
 	const [chain, setChain] = useState<Map<number, number> | null>(null);
-	const [org, setOrg] = useState<string | null>(null);
+	// The firms the timeline is narrowed to; none picked means every firm.
+	// A set, not one id: with a dozen firms the question is usually "the
+	// vendor and the two clients its outage reached", not one of them.
+	const [pickedOrgs, setPickedOrgs] = useState<ReadonlySet<string>>(
+		() => new Set(),
+	);
 	// The hidden set, not the selected set: the kinds only become known once
 	// the events have arrived, so "a kind nobody ruled out is visible" has to
 	// be the default, and the initial state has to be a literal.
 	const [hidden, setHidden] = useState<ReadonlySet<string>>(
 		() => new Set(HIDDEN_BY_DEFAULT),
 	);
+	// Kinds the pages have left out so far. A kind leaves this set the first
+	// time it is switched on, once its events are in the window.
+	const [unfetched, setUnfetched] = useState<ReadonlySet<string>>(
+		() => new Set(HIDDEN_BY_DEFAULT),
+	);
+	const fetching = useRef<Set<string>>(new Set());
 
 	// Refresh the header rather than the whole page: the timeline is a record
 	// of what happened, so it does not need to move under the reader.
@@ -114,7 +141,7 @@ export function Dashboard({
 	const loadOlder = useCallback(async () => {
 		setLoading(true);
 		try {
-			const page = await fetchOlderEvents(cursor, PAGE);
+			const page = await fetchOlderEvents(cursor, PAGE, [...unfetched]);
 			// Older events go at the front of the ascending array, which is the
 			// end of the rendered list — below the fold, so nothing the reader
 			// is looking at moves.
@@ -129,7 +156,36 @@ export function Dashboard({
 		} finally {
 			setLoading(false);
 		}
-	}, [cursor]);
+	}, [cursor, unfetched]);
+
+	// A kind switched on that the pages left out is fetched into the window
+	// the reader holds — from the oldest loaded event to the newest — and
+	// from then on the pages carry it too.
+	useEffect(() => {
+		const wanted = [...unfetched].filter(
+			(kind) => !hidden.has(kind) && !fetching.current.has(kind),
+		);
+		if (wanted.length === 0 || events.length === 0) return;
+		for (const kind of wanted) fetching.current.add(kind);
+		const newest = events[events.length - 1]?.seq ?? cursor;
+		fetchKindsBetween(cursor - 1, newest + 1, wanted)
+			.then((page) => {
+				setEvents((prev) => merge(prev, page.events));
+				setUnfetched((prev) => {
+					const next = new Set(prev);
+					for (const kind of wanted) next.delete(kind);
+					return next;
+				});
+			})
+			.catch((reason: unknown) => {
+				toast.error("Could not load those events.", {
+					description: reason instanceof Error ? reason.message : String(reason),
+				});
+			})
+			.finally(() => {
+				for (const kind of wanted) fetching.current.delete(kind);
+			});
+	}, [hidden, unfetched, events, cursor]);
 
 	const select = useCallback(
 		async (seq: number) => {
@@ -150,6 +206,9 @@ export function Dashboard({
 				for (const event of down.events)
 					depths.set(event.seq, event.depth ?? 0);
 				setChain(depths);
+				// A cascade is only legible whole: whatever it reaches that the
+				// pages left out — an encounter, an older cause — joins the window.
+				setEvents((prev) => merge(prev, [...up.events, ...down.events]));
 			} catch {
 				setChain(null);
 				toast.error("Could not load the causal chain.", {
@@ -167,6 +226,8 @@ export function Dashboard({
 	// kind worth switching off is the one you reach for.
 	const kinds = useMemo(() => {
 		const counts = new Map<string, number>();
+		// A kind the pages leave out still gets its chip: it is how it comes back.
+		for (const kind of HIDDEN_BY_DEFAULT) counts.set(kind, 0);
 		for (const event of events)
 			counts.set(event.kind, (counts.get(event.kind) ?? 0) + 1);
 		return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
@@ -180,7 +241,30 @@ export function Dashboard({
 		});
 	}, []);
 
+	// A second click on the same firm takes it back out; taking the last one
+	// out is the same as never having picked.
+	const togglePickedOrg = useCallback((id: string) => {
+		setPickedOrgs((prev) => {
+			const next = new Set(prev);
+			if (!next.delete(id)) next.add(id);
+			return next;
+		});
+	}, []);
+
 	const down = state.modules.filter((m) => m.status === "down");
+	// Richest first: with a dozen firms the table is a league table, and the
+	// one sinking towards an insolvency warning is at the bottom where it
+	// reads as such. Colours come with the firm on `/state` (CORE-0012).
+	const orgs = useMemo(
+		() => [...state.orgs].sort((a, b) => b.cash_cents - a.cash_cents),
+		[state.orgs],
+	);
+	// Each firm's colour for the timeline's org column: the same one its
+	// building and its people are drawn in, from `/state` (CORE-0012).
+	const palettes = useMemo(
+		() => Object.fromEntries(state.orgs.map((o) => [o.id, o.palette.body])),
+		[state.orgs],
+	);
 	// Reversed here, at the one boundary where reading order matters. The clock
 	// runs far faster than real time, so a reader arrives to history and wants
 	// the most recent thing first; scrolling down then walks into the past,
@@ -189,7 +273,11 @@ export function Dashboard({
 		() =>
 			events
 				.filter((event) => {
-					if (org !== null && event.org_id !== org) return false;
+					if (
+						pickedOrgs.size > 0 &&
+						(event.org_id === null || !pickedOrgs.has(event.org_id))
+					)
+						return false;
 					if (!hidden.has(event.kind)) return true;
 					// A cascade is only legible whole. An event in the selected chain
 					// stays on screen even when its kind is switched off, or following
@@ -197,7 +285,7 @@ export function Dashboard({
 					return chain?.has(event.seq) ?? false;
 				})
 				.reverse(),
-		[events, org, hidden, chain],
+		[events, pickedOrgs, hidden, chain],
 	);
 
 	// The trigger is an effect rather than the observer callback, because the
@@ -253,7 +341,28 @@ export function Dashboard({
 					<CardHeader>
 						<CardTitle className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
 							Orgs
+							{pickedOrgs.size > 0 && (
+								<span className="normal-case tracking-normal">
+									{" "}
+									· timeline narrowed to {pickedOrgs.size}
+								</span>
+							)}
 						</CardTitle>
+						{pickedOrgs.size > 0 && (
+							<CardAction>
+								{/* Not "clear": the cascade's clear button is found by name.
+								    Not `org-…` either: the specs gather the rows by that prefix. */}
+								<Button
+									variant="link"
+									size="xs"
+									className="h-auto p-0 text-[var(--mark)]"
+									data-testid="orgs-every"
+									onClick={() => setPickedOrgs(new Set())}
+								>
+									every org
+								</Button>
+							</CardAction>
+						)}
 					</CardHeader>
 					<CardContent>
 						<Table>
@@ -274,39 +383,57 @@ export function Dashboard({
 								</TableRow>
 							</TableHeader>
 							<TableBody>
-								{state.orgs.map((o) => (
-									<TableRow
-										key={o.id}
-										className="border-b-0 hover:bg-transparent"
-										data-testid={`org-${o.id}`}
-									>
-										{/* whitespace-normal: the only text column — wrapping the name keeps
-										    all four columns inside a phone-width card. */}
-										<TableCell className="whitespace-normal px-1.5 py-1.5">
-											<span
-												className="swatch-sm"
-												style={{ background: ORG_COLORS[o.id] ?? "#888" }}
-											/>
-											{o.name}
-										</TableCell>
-										<TableCell className="num px-1.5 py-1.5">
-											{money(o.cash_cents)}
-										</TableCell>
-										<TableCell className="num px-1.5 py-1.5">
-											{money(o.receivable_cents)}
-										</TableCell>
-										<TableCell className="num px-1.5 py-1.5">
-											<Button
-												variant="link"
-												size="xs"
-												className="h-auto p-0 text-[var(--mark)]"
-												onClick={() => setOrg(org === o.id ? null : o.id)}
-											>
-												{org === o.id ? "clear" : "only"}
-											</Button>
-										</TableCell>
-									</TableRow>
-								))}
+								{orgs.map((o) => {
+									const picked = pickedOrgs.has(o.id);
+									return (
+										<TableRow
+											key={o.id}
+											className="border-b-0 hover:bg-transparent data-[picked=yes]:bg-muted/60"
+											data-testid={`org-${o.id}`}
+											data-picked={picked ? "yes" : "no"}
+											data-archetype={o.archetype}
+										>
+											{/* whitespace-normal: the only text column — wrapping the name keeps
+											    all four columns inside a phone-width card. */}
+											<TableCell className="whitespace-normal px-1.5 py-1.5">
+												<span
+													className="swatch-sm"
+													style={{ background: o.palette.body }}
+												/>
+												{o.name}{" "}
+												{/* Which flows the firm takes part in (CORE-0012): the
+												    vendor, its clients, the shops. Read from the state,
+												    never a list written here. */}
+												<Badge
+													variant="outline"
+													className="ml-1 h-4 px-1.5 text-[10px] font-normal text-muted-foreground"
+												>
+													{o.archetype.replaceAll("_", " ")}
+												</Badge>
+											</TableCell>
+											<TableCell className="num px-1.5 py-1.5">
+												{money(o.cash_cents)}
+											</TableCell>
+											<TableCell className="num px-1.5 py-1.5">
+												{money(o.receivable_cents)}
+											</TableCell>
+											<TableCell className="num px-1.5 py-1.5">
+												{/* One name whichever way it is about to go, so it reads
+												    as a toggle to a screen reader and to a test alike;
+												    `aria-pressed` carries the state. */}
+												<Button
+													variant="link"
+													size="xs"
+													className="h-auto p-0 text-[var(--mark)] aria-pressed:font-semibold aria-pressed:underline"
+													aria-pressed={picked}
+													onClick={() => togglePickedOrg(o.id)}
+												>
+													only
+												</Button>
+											</TableCell>
+										</TableRow>
+									);
+								})}
 							</TableBody>
 						</Table>
 						<p className="muted fineprint">
@@ -403,6 +530,7 @@ export function Dashboard({
 							selected={selected}
 							chain={chain}
 							onSelect={select}
+							palettes={palettes}
 							laneRef={laneRef}
 							footer={
 								// Always mounted, whatever it says: the observer attaches to

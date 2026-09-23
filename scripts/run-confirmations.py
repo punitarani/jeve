@@ -62,14 +62,16 @@ def load(index: Path):
 
 
 def rewrite(command: str, pytest_mode: str) -> str:
-    """`--collect-only` for plain pytest commands; everything else verbatim.
+    """`--collect-only` for plain pytest commands, everything else verbatim.
 
     No extra `-q`: pytest's own `addopts` already carries one, and a second
     collapses the output to a bare count. One `-q` lists the node ids, which
     is the evidence worth having in the log.
     """
 
-    if pytest_mode == "collect" and PYTEST.match(command):
+    if pytest_mode == "run":
+        return command
+    if PYTEST.match(command):
         return command + " --collect-only"
     return command
 
