@@ -44,11 +44,14 @@ pushes the whole config to the app's `fly secrets`; with the sync's restart
 option on, the machines restart to pick it up, and otherwise they do at the
 next deploy. Nothing in CI or in this repo sets them.
 
-* `worker/prd` holds the secrets and nothing else: `OPENROUTER_API_KEY`,
-  `JEVE_DATABASE_URL` (direct), `MIGRATIONS_DB_URL` (the DDL role
-  `release_command` migrates with), and optionally `JEVE_DATABASE_POOLED_URL`,
-  `JEVE_DAILY_BUDGET_USD` and `BRAINTRUST_API_KEY` / `BRAINTRUST_PROJECT_ID`.
-  `docs/environment-variables.md` describes each.
+* `worker/prd` holds only what production needs beyond `fly.toml`:
+  `OPENROUTER_API_KEY`, `JEVE_DATABASE_URL` (direct), `MIGRATIONS_DB_URL` (the
+  DDL role `release_command` migrates with), and optionally
+  `JEVE_DATABASE_POOLED_URL`, `JEVE_DAILY_BUDGET_USD` and
+  `BRAINTRUST_API_KEY` / `BRAINTRUST_PROJECT_ID`.
+  `docs/environment-variables.md` describes each. Don't seed it from
+  `.env.worker.example` or `worker/dev`: their local values (a `127.0.0.1`
+  database, `JEVE_CALLS=replay`) would become production's.
 * Don't `fly secrets set` a worker secret: the next sync overwrites it.
 * A Fly secret beats a `fly.toml` `[env]` value of the same name, so a name in
   both `worker/prd` and `[env]` takes Doppler's value. Keep the knobs
@@ -67,14 +70,14 @@ next deploy. Nothing in CI or in this repo sets them.
 fly apps create jeve-backend      # the sync and the deploy both target it
 
 # Postgres (or use an external provider). Put its connection string in
-# Doppler worker/prd as JEVE_DATABASE_URL. Don't `fly postgres attach`: it
-# writes DATABASE_URL straight onto the app, outside Doppler, and the api
-# reads DATABASE_URL before JEVE_DATABASE_URL when no pooled URL is set.
+# Doppler worker/prd as JEVE_DATABASE_URL rather than `fly postgres attach`,
+# which writes DATABASE_URL onto the app outside Doppler.
 fly postgres create --name jeve-db --region iad
 
 # Secrets: fill Doppler worker/prd and set up its Fly.io sync (see above).
 
-fly deploy            # release_command runs migrations, then api + sim
+# --ha=false: one api and one sim; the default adds a spare of each.
+fly deploy --ha=false # release_command runs migrations, then api + sim
 cd apps/web && NEXT_PUBLIC_JEVE_API=https://jeve-api.punitarani.com \
     pnpm exec next build && wrangler deploy
 ```
@@ -162,7 +165,8 @@ fly ssh console -a jeve-backend            # a shell inside a machine
 # Retune without a code change: set JEVE_HALT_CEILING_USD (or any knob) in
 # Doppler worker/prd. It beats fly.toml's [env], and it takes effect when the
 # machines restart: at once with the sync's restart option on, otherwise at
-# the next deploy (a push to main, or Actions → ci → Run workflow).
+# the next deploy (CI deploys on push to main) or on:
+fly secrets deploy -a jeve-backend         # roll out staged secrets now
 ```
 
 **Rollback**: `fly releases` lists image versions;
@@ -178,7 +182,8 @@ Logical copy: `fly proxy 5433:5432 -a jeve-db` then
 Restore is a fresh cluster + `psql < backup.sql`, then point every database
 URL at it in Doppler `worker/prd` — `JEVE_DATABASE_URL`, `MIGRATIONS_DB_URL`
 and `JEVE_DATABASE_POOLED_URL` if set — so the daemon, the api and the next
-migration all see the same cluster.
+migration all see the same cluster. A `DATABASE_URL` on the app is read only
+when `JEVE_DATABASE_URL` is absent.
 
 **Spend**: `make spend` reads the `spend_entries` table directly (the
 `ops/spend.json` checkpoint is a local convenience). The same table backs

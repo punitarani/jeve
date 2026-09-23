@@ -141,14 +141,16 @@ deploy-web: ## Deploy web app to Cloudflare Workers (builds first: NEXT_PUBLIC_*
 
 .PHONY: deploy-api
 deploy-api: ## Deploy API to Fly.io
-	fly deploy --config fly.toml --process-groups api
+	fly deploy --config fly.toml --process-groups api --ha=false
 
 .PHONY: deploy-sim
 deploy-sim: ## Deploy simulation worker to Fly.io
-	fly deploy --config fly.toml --process-groups sim
+	fly deploy --config fly.toml --process-groups sim --ha=false
 
 .PHONY: deploy
-deploy: deploy-web deploy-api deploy-sim ## Deploy all services
+# Backend first, then the page that validates against it (OPS-0003). `make`
+# builds prerequisites in the order listed, so the order is the rule.
+deploy: deploy-api deploy-sim deploy-web ## Deploy all services
 
 .PHONY: e2e
 e2e: ## Full stack from a clean checkout, plus the economics report

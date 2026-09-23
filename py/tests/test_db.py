@@ -38,6 +38,28 @@ def fresh(conn: Connection[DictRow]) -> Connection[DictRow]:
     return conn
 
 
+def test_the_api_reads_the_database_the_daemon_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no pooler, the api's DSN is the daemon's, whatever else is set.
+
+    `fly postgres attach` writes `DATABASE_URL` onto the app; when it sat ahead
+    of `JEVE_DATABASE_URL` in `pooled_dsn()`, the two processes could read
+    different databases. No database needed: this is resolution only.
+    """
+
+    monkeypatch.delenv("JEVE_DATABASE_POOLED_URL", raising=False)
+    monkeypatch.setenv("JEVE_DATABASE_URL", "postgresql://direct/jeve")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://attached/jeve")
+    assert db.pooled_dsn() == db.dsn() == "postgresql://direct/jeve"
+
+    monkeypatch.delenv("JEVE_DATABASE_URL")
+    assert db.pooled_dsn() == db.dsn() == "postgresql://attached/jeve"
+
+    monkeypatch.setenv("JEVE_DATABASE_POOLED_URL", "postgresql://pooler/jeve")
+    assert db.pooled_dsn() == "postgresql://pooler/jeve"
+
+
 def _org(conn: Connection[DictRow]) -> None:
     conn.execute(
         "INSERT INTO orgs (id, name, kind) VALUES ('cafe', 'Third Rail', 'cafe')"
