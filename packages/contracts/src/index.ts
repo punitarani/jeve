@@ -419,6 +419,208 @@ export const Economics = z.object({
 });
 export type Economics = z.infer<typeof Economics>;
 
+export const ReportVitals = z.object({
+  sim_days: z.number().int(),
+  events: z.number().int(),
+  decisions: z.number().int(),
+  /** Decisions a model call answered. */
+  modelled: z.number().int(),
+  distinct_calls: z.number().int(),
+  /** 1 - distinct_calls / modelled: the share of modelled decisions answered by a call made before. */
+  cache_hit_rate: z.number(),
+  /** Priced as /economics prices it: each call this run used, once, at what it cost when first made. */
+  spend_usd: z.number(),
+  ledger_entries: z.number().int(),
+  /** Sum of every ledger entry. Zero, or the books are wrong. */
+  ledger_imbalance_cents: z.number().int(),
+  incidents: z.number().int(),
+  incidents_escalated: z.number().int(),
+  escalations: z.number().int(),
+  escalations_in_cafe: z.number().int(),
+  persons: z.record(z.string(), z.number().int()),
+});
+export type ReportVitals = z.infer<typeof ReportVitals>;
+
+export const ReportCashSeries = z.object({
+  account_id: z.string(),
+  /** Null for the household sector. */
+  org_id: z.string().nullable(),
+  name: z.string(),
+  /** Cents at the end of each sim-day, from `first_day`. */
+  values: z.array(z.number().int()),
+});
+export type ReportCashSeries = z.infer<typeof ReportCashSeries>;
+
+export const ReportCash = z.object({
+  first_day: z.number().int(),
+  series: z.array(ReportCashSeries),
+});
+export type ReportCash = z.infer<typeof ReportCash>;
+
+export const ReportCacheDay = z.object({
+  day: z.number().int(),
+  /** Modelled decisions that sim-day. */
+  decisions: z.number().int(),
+  /** Of those, calls never made before. */
+  new_calls: z.number().int(),
+});
+export type ReportCacheDay = z.infer<typeof ReportCacheDay>;
+
+export const ReportCallSet = z.object({
+  question_set: z.string(),
+  decisions: z.number().int(),
+  /** Settled by a gate, with no model call. */
+  gated: z.number().int(),
+  calls: z.number().int(),
+  usd: z.number(),
+});
+export type ReportCallSet = z.infer<typeof ReportCallSet>;
+
+export const ReportPerson = z.object({
+  id: z.string(),
+  name: z.string(),
+  org_id: z.string(),
+  role: z.string(),
+  /** agent.tick decisions. */
+  decisions: z.number().int(),
+  /** Mean chosen mood, 0-3. */
+  mood: z.number().nullable(),
+  /** Share of ticks they chose to talk. */
+  talk_share: z.number(),
+  /** Share of their time on the map spent at the cafe, walked from agent.moved. */
+  cafe_share: z.number(),
+  /** Outages they escalated in person. */
+  raised: z.number().int(),
+  /** Escalations raised with them. */
+  received: z.number().int(),
+  sociability: z.number(),
+  diligence: z.number(),
+});
+export type ReportPerson = z.infer<typeof ReportPerson>;
+
+export const ReportHourShare = z.object({
+  hour: z.number().int(),
+  share: z.number(),
+});
+export type ReportHourShare = z.infer<typeof ReportHourShare>;
+
+export const ReportCafeHour = z.object({
+  hour: z.number().int(),
+  sales: z.number().int(),
+  walkouts: z.number().int(),
+});
+export type ReportCafeHour = z.infer<typeof ReportCafeHour>;
+
+export const ReportMood = z.object({
+  /** `ordinary`, the id of the module the prompt said was down, or `other`. */
+  mind: z.string(),
+  decisions: z.number().int(),
+  mood: z.number(),
+});
+export type ReportMood = z.infer<typeof ReportMood>;
+
+export const ReportPayroll = z.object({
+  org_id: z.string(),
+  name: z.string(),
+  paid: z.number().int(),
+  held: z.number().int(),
+  last_paid_day: z.number().int().nullable(),
+  insolvency_warnings: z.number().int(),
+});
+export type ReportPayroll = z.infer<typeof ReportPayroll>;
+
+export const ReportCollections = z.object({
+  paid: z.number().int(),
+  mean_days_late: z.number().nullable(),
+  max_days_late: z.number().int().nullable(),
+  open: z.number().int(),
+  overdue: z.number().int(),
+  written_off: z.number().int(),
+});
+export type ReportCollections = z.infer<typeof ReportCollections>;
+
+export const ReportHouseholds = z.object({
+  wages_cents: z.number().int(),
+  spending_cents: z.number().int(),
+});
+export type ReportHouseholds = z.infer<typeof ReportHouseholds>;
+
+export const ReportOutage = z.object({
+  module_id: z.string(),
+  name: z.string(),
+  incidents: z.number().int(),
+  escalated: z.number().int(),
+  minutes_to_escalate: z.number().nullable(),
+  /** Mean outage length when someone escalated it. */
+  minutes_escalated: z.number().nullable(),
+  minutes_not_escalated: z.number().nullable(),
+  tickets: z.number().int(),
+});
+export type ReportOutage = z.infer<typeof ReportOutage>;
+
+export const ReportTopic = z.object({
+  topic: z.string(),
+  n: z.number().int(),
+});
+export type ReportTopic = z.infer<typeof ReportTopic>;
+
+export const ReportKnowledge = z.object({
+  first_hand: z.number().int(),
+  relayed: z.number().int(),
+  encounters: z.number().int(),
+});
+export type ReportKnowledge = z.infer<typeof ReportKnowledge>;
+
+/** One distinct model call: the state it was asked about and its answer. */
+export const ReportAnswer = z.object({
+  uses: z.number().int(),
+  state: z.record(z.string(), z.unknown()),
+  /** Per question: P(yes) for a yes/no question, otherwise the distribution. */
+  ans: z.record(z.string(), z.unknown()),
+});
+export type ReportAnswer = z.infer<typeof ReportAnswer>;
+
+/** Who the town replay draws: their seat and their walk to the cafe. */
+export const CastMember = z.object({
+  id: z.string(),
+  name: z.string(),
+  org_id: z.string(),
+  role: z.string(),
+  seat: z.tuple([z.number().int(), z.number().int()]),
+  spot: z.tuple([z.number().int(), z.number().int()]),
+  path: z.array(z.tuple([z.number().int(), z.number().int()])),
+});
+export type CastMember = z.infer<typeof CastMember>;
+
+/** GET /report — the field report, recomputed at most once per tick. */
+export const FieldReport = z.object({
+  seq: z.number().int(),
+  /** The database's clock when this was served. */
+  as_of: z.string(),
+  clock: Clock,
+  health: Health,
+  /** The build that answered the latest modelled decision. */
+  model: z.string().nullable(),
+  vitals: ReportVitals,
+  cash: ReportCash,
+  cache_by_day: z.array(ReportCacheDay),
+  calls: z.array(ReportCallSet),
+  people: z.array(ReportPerson),
+  office_at_cafe: z.array(ReportHourShare),
+  cafe_by_hour: z.array(ReportCafeHour),
+  mood_by_mind: z.array(ReportMood),
+  payroll: z.array(ReportPayroll),
+  collections: ReportCollections,
+  households: ReportHouseholds,
+  outages: z.array(ReportOutage),
+  topics: z.array(ReportTopic),
+  knowledge: ReportKnowledge,
+  answers: z.record(z.string(), z.array(ReportAnswer)),
+  cast: z.array(CastMember),
+  queue: z.array(z.tuple([z.number().int(), z.number().int()])),
+});
+export type FieldReport = z.infer<typeof FieldReport>;
+
 export const ORG_COLORS: Record<string, string> = {
   tallybird: "#7c9cff",
   halloran: "#c9a227",

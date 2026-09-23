@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
@@ -24,6 +25,7 @@ from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
 
 from jeve import db, tracing
+from jeve.api import report
 from jeve.config import load_settings
 from jeve.core.clock import SimTime
 
@@ -150,7 +152,6 @@ def state() -> dict[str, object]:
         ).fetchone()
         if meta is None:
             raise HTTPException(503, "the world has not been seeded")
-        now = SimTime(int(meta["sim_time"]))
 
         cash = {
             str(row["org_id"]): int(row["cents"])
@@ -211,17 +212,7 @@ def state() -> dict[str, object]:
 
         return {
             "seq": _max_seq(conn),
-            "clock": {
-                "sim_time": now.seconds,
-                "label": now.label(),
-                "day": now.day,
-                "weekday": now.weekday,
-                "in_office_hours": now.in_office_hours,
-                "tick_seq": int(meta["tick_seq"]),
-                "status": meta["status"],
-                "speed": float(meta["speed"]),
-                "run_id": meta["run_id"],
-            },
+            "clock": _clock(meta),
             "health": _health(meta),
             "orgs": orgs,
             "modules": modules,
@@ -229,6 +220,21 @@ def state() -> dict[str, object]:
             "unpaid_invoices": totals,
             "persons": {str(row["kind"]): int(row["n"]) for row in people},
         }
+
+
+def _clock(meta: dict[str, Any]) -> dict[str, object]:
+    now = SimTime(int(meta["sim_time"]))
+    return {
+        "sim_time": now.seconds,
+        "label": now.label(),
+        "day": now.day,
+        "weekday": now.weekday,
+        "in_office_hours": now.in_office_hours,
+        "tick_seq": int(meta["tick_seq"]),
+        "status": meta["status"],
+        "speed": float(meta["speed"]),
+        "run_id": meta["run_id"],
+    }
 
 
 STALE_AFTER_S = 30.0
@@ -558,6 +564,51 @@ def economics() -> dict[str, object]:
             "billed when each was first made. `without_dedup` prices every "
             "decision as its own call; it is an upper bound, not a measurement."
         ),
+    }
+
+
+_report_lock = threading.Lock()
+_report_memo: tuple[tuple[object, ...], dict[str, object]] | None = None
+
+
+@app.get("/report")
+def field_report() -> dict[str, object]:
+    """The field report: the world's aggregates, as `/reports` draws them (API-0003).
+
+    A handful of full scans, so the aggregates are memoised on what would
+    change them — the database, the run, the tick and the last event — and a
+    page left open, or a crowd arriving at once, costs one computation per
+    tick rather than one per request. The lock makes the crowd wait for that
+    one instead of each starting its own. Clock and health are read fresh
+    every time: they are cheap, and a stale heartbeat is the one thing a
+    reader must not be shown.
+    """
+
+    global _report_memo
+    with _db() as conn:
+        meta = conn.execute(
+            "SELECT *, EXTRACT(EPOCH FROM now() - heartbeat_at)::float8 "
+            "AS heartbeat_age_s, now()::text AS as_of, current_database() AS db "
+            "FROM sim_meta"
+        ).fetchone()
+        if meta is None:
+            raise HTTPException(503, "the world has not been seeded")
+        seq = _max_seq(conn)
+    key = (meta["db"], meta["run_id"], int(meta["tick_seq"]), seq)
+    # Waiters hold the lock, not a pooled connection: eight of those is the
+    # whole pool, and every other endpoint would queue behind the report.
+    with _report_lock:
+        if _report_memo is None or _report_memo[0] != key:
+            with _db() as conn:
+                body = report.aggregate(conn, SimTime(int(meta["sim_time"])))
+            _report_memo = (key, body)
+        body = _report_memo[1]
+    return {
+        "seq": seq,
+        "as_of": str(meta["as_of"]),
+        "clock": _clock(meta),
+        "health": _health(meta),
+        **body,
     }
 
 

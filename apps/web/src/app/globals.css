@@ -18,6 +18,7 @@
   --bad: #e0757c;
   --mark: #a78bfa;
   --neutral: #55606e;
+  --dim: #5d6876;
 
   --background: var(--bg);
   --foreground: var(--text);
@@ -315,3 +316,21 @@ a { color: inherit; }
 .prose p { margin: 4px 0; }
 .prose-note { font-size: 11px; }
 .bad { color: var(--bad); }
+
+/* -- the site footer: the same three places from every page -------------- */
+
+.site-foot {
+  margin-top: 48px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 18px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.site-foot nav { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-left: auto; }
+.site-foot a { color: var(--muted-foreground); text-decoration: none; }
+.site-foot a:hover, .site-foot a[aria-current="page"] { color: var(--text); }
+.site-foot a[aria-current="page"]::before { content: "▸ "; color: var(--mark); }

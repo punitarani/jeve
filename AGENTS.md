@@ -171,6 +171,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### API-0003: The field report is one endpoint, memoised per tick
+
+**Status**: accepted (2026-09-23)  
+**Scope**: `py/src/jeve/api/report.py`, `py/src/jeve/api/app.py`, `py/tests/test_api.py`  
+**Tags**: api, reports, caching, agent-decided
+
+`GET /report` returns every aggregate the report draws, in one `FieldReport`, and computes it at most once per tick per process.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### CORE-0001: Record architecture decisions as immutable per-file records
 
 **Status**: accepted (2026-09-20)  
@@ -466,6 +478,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: ui, dependencies, agent-decided
 
 The component layer is **shadcn (Base UI preset, nova style), vendored into `src/components/ui/`**, with the app's palette kept as the single token source:
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WEB-0007: Reports keep the field report’s own look, and a published report is frozen data
+
+**Status**: accepted (2026-09-23)  
+**Scope**: `apps/web/src/components/report/**`, `apps/web/src/reports/**`, `apps/web/src/app/reports/**`, `apps/web/e2e/reports.spec.ts`  
+**Tags**: web, reports, ui, agent-decided
+
+Report pages render through `components/report/`: the artifact's markup, its four chart forms and its town, ported to React over data props, styled by `report.css` scoped under `.rpt`, and set in its own typefaces (loaded by a stylesheet link, not `next/font`, for WEB-0006's reason).
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

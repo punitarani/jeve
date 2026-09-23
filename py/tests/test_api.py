@@ -7,6 +7,7 @@ mostly SQL and mocking it would test nothing.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from itertools import pairwise
 
 import psycopg
 import pytest
@@ -312,6 +313,7 @@ def test_responses_match_the_pydantic_contract(client: TestClient) -> None:
     )
 
     contracts.Economics.model_validate(client.get("/economics").json())
+    contracts.FieldReport.model_validate(client.get("/report").json())
 
     # The spatial surface (WORLD-0003): the map is static, the frame and the
     # detail panels are live reads.
@@ -348,6 +350,78 @@ def test_economics_reports_measured_spend(client: TestClient) -> None:
     assert body["decisions_by_model"] == []
     assert body["counts"]["modelled"] == 0
     assert "usd_per_100_persons" in body["per_sim_day"]
+
+
+def test_the_report_agrees_with_the_books(client: TestClient) -> None:
+    """The report is aggregates over the same rows /state reads, so where the
+    two overlap they must agree to the cent."""
+
+    body = client.get("/report").json()
+    state = client.get("/state").json()
+    assert body["vitals"]["ledger_imbalance_cents"] == 0
+    assert body["vitals"]["ledger_entries"] > 0
+    closing = {
+        s["org_id"]: s["values"][-1] for s in body["cash"]["series"] if s["org_id"]
+    }
+    assert closing == {org["id"]: org["cash_cents"] for org in state["orgs"]}
+    days = {len(s["values"]) for s in body["cash"]["series"]}
+    assert days == {state["clock"]["day"] - body["cash"]["first_day"] + 1}
+    assert any(s["org_id"] is None for s in body["cash"]["series"]), "households"
+
+
+def test_the_report_places_every_member_of_staff(client: TestClient) -> None:
+    body = client.get("/report").json()
+    assert len(body["people"]) == len(body["cast"]) == 24
+    for member in body["cast"]:
+        path = member["path"]
+        assert path[0] == member["seat"] and path[-1] == member["spot"]
+        for (x0, y0), (x1, y1) in pairwise(path):
+            assert abs(x0 - x1) + abs(y0 - y1) == 1, f"{member['id']} jumps"
+    for person in body["people"]:
+        assert 0 <= person["cafe_share"] <= 1
+        assert 0 <= person["talk_share"] <= 1
+    cafe = {p["id"]: p["cafe_share"] for p in body["people"]}
+    # The cafe's staff work there; the fixture's office staff mostly do not.
+    assert min(v for k, v in cafe.items() if k.startswith("thirdrail.")) > 0.9
+    assert max(v for k, v in cafe.items() if not k.startswith("thirdrail.")) < 0.9
+    assert body["office_at_cafe"]
+    assert all(0 <= h["share"] <= 1 for h in body["office_at_cafe"])
+
+
+def test_a_rules_world_reports_no_model_and_says_so(client: TestClient) -> None:
+    body = client.get("/report").json()
+    assert body["model"] is None
+    assert body["vitals"]["modelled"] == 0
+    assert body["vitals"]["cache_hit_rate"] == 0.0
+    assert body["vitals"]["spend_usd"] == 0.0
+    assert body["mood_by_mind"] == [] and body["answers"] == {}
+    assert body["cache_by_day"] == []
+    assert sum(c["gated"] for c in body["calls"]) == body["vitals"]["decisions"]
+
+
+def test_the_report_is_computed_once_per_tick(client: TestClient) -> None:
+    from jeve.api import app as api
+
+    first = client.get("/report").json()
+    memo = api._report_memo
+    second = client.get("/report").json()
+    assert api._report_memo is memo, "an unchanged world was aggregated twice"
+    assert first["vitals"] == second["vitals"]
+
+
+def test_what_is_on_their_mind_reads_the_prompt_vocabulary() -> None:
+    from jeve.api.report import ORDINARY_DAY, answer, mind_of
+
+    assert mind_of(ORDINARY_DAY) == "ordinary"
+    assert (
+        mind_of("The pos software has been down and it is disrupting the day.") == "pos"
+    )
+    assert mind_of("Something new.") == "other"
+    assert mind_of(None) == "other"
+    assert answer({"pay_today": {"no": 0.25, "yes": 0.75}}) == {"pay_today": 0.75}
+    assert answer({"order": {"none": 0.5, "large": 0.5}}) == {
+        "order": {"none": 0.5, "large": 0.5}
+    }
 
 
 def test_the_stream_replays_from_a_cursor(client: TestClient) -> None:

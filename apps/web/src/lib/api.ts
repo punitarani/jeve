@@ -9,8 +9,10 @@ import {
   CausalChain,
   Economics,
   EventPage,
+  FieldReport,
   PersonDecisions,
   PersonsResponse,
+  TownMap,
   WorldState,
   type SimEvent,
 } from "@jeve/contracts";
@@ -52,6 +54,9 @@ export const fetchPersons = (org?: string) =>
 export const fetchDecisions = (personId: string) =>
   get(`/persons/${encodeURIComponent(personId)}/decisions`, PersonDecisions);
 export const fetchEconomics = () => get("/economics", Economics);
+/** The field report's aggregates; the API recomputes them at most once a tick. */
+export const fetchReport = () => get("/report", FieldReport);
+export const fetchTownMap = () => get("/world/map", TownMap);
 
 export type { SimEvent };
 
