@@ -409,6 +409,26 @@ def test_the_report_is_computed_once_per_tick(client: TestClient) -> None:
     assert first["vitals"] == second["vitals"]
 
 
+def test_a_reseeded_world_is_never_served_the_old_report(client: TestClient) -> None:
+    """A reseed keeps the run_id and restarts the tick count, so on tick and
+    seq alone the old world's memo would look newer than the new one."""
+
+    from jeve.api import app as api
+
+    client.get("/report")
+    memo = api._report_memo
+    with db.connect(autocommit=True) as conn:
+        conn.execute("UPDATE sim_meta SET started_at = started_at + interval '1 day'")
+    try:
+        client.get("/report")
+        assert api._report_memo is not memo, "the old world's report was served"
+    finally:
+        with db.connect(autocommit=True) as conn:
+            conn.execute(
+                "UPDATE sim_meta SET started_at = started_at - interval '1 day'"
+            )
+
+
 def test_what_is_on_their_mind_reads_the_prompt_vocabulary() -> None:
     from jeve.api.report import ORDINARY_DAY, answer, mind_of
 

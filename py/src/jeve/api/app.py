@@ -568,7 +568,7 @@ def economics() -> dict[str, object]:
 
 
 _report_lock: asyncio.Lock | None = None
-_report_memo: tuple[tuple[str, str, int, int], dict[str, object]] | None = None
+_report_memo: tuple[tuple[str, str, str, int, int], dict[str, object]] | None = None
 
 
 def _report_meta() -> tuple[dict[str, Any], int]:
@@ -594,7 +594,7 @@ async def field_report() -> dict[str, object]:
     """The field report: the world's aggregates, as `/reports` draws them (API-0003).
 
     A handful of full scans, so the aggregates are memoised on what would
-    change them — the database, the run, the tick and the last event — and a
+    change them — which world, which tick, which last event — and a
     page left open, or a crowd arriving at once, costs one computation per
     tick rather than one per request. The lock makes the crowd wait for that
     one instead of each starting its own. Clock and health are read fresh
@@ -604,7 +604,10 @@ async def field_report() -> dict[str, object]:
 
     global _report_lock, _report_memo
     meta, seq = await asyncio.to_thread(_report_meta)
-    key = (str(meta["db"]), str(meta["run_id"]), int(meta["tick_seq"]), seq)
+    # Which world (a reseed truncates sim_meta, so started_at is new even
+    # when the run_id is not), then how far along it is.
+    world = (str(meta["db"]), str(meta["run_id"]), str(meta["started_at"]))
+    key = (*world, int(meta["tick_seq"]), seq)
     # An asyncio lock, so the crowd waits on the event loop. A threading lock
     # in a sync endpoint parks each waiter on a worker thread, and forty of
     # those is the whole threadpool: /state and /health would stall behind
@@ -617,7 +620,7 @@ async def field_report() -> dict[str, object]:
         # read the clock just before a tick is not owed the older world, and
         # recomputing it would evict the newer one everyone else is asking for.
         memo = _report_memo
-        if memo is None or memo[0][:2] != key[:2] or memo[0][2:] < key[2:]:
+        if memo is None or memo[0][:3] != world or memo[0][3:] < key[3:]:
             now = SimTime(int(meta["sim_time"]))
             memo = (key, await asyncio.to_thread(_report_body, now))
             _report_memo = memo

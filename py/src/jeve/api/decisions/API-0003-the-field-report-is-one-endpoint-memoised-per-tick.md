@@ -26,8 +26,8 @@ tab.
 
 ## Considered Options
 
-- **One `GET /report`, memoised on `(database, run_id, tick_seq, max seq)`** —
-  taken.
+- **One `GET /report`, memoised on which world it is (database, run, run
+  start) and how far along (tick, last seq)** — taken.
 - **One endpoint per chart** — rejected: a dozen round trips for one page, and
   a dozen places to keep in step with the contract, for data that is only ever
   drawn together.
@@ -43,10 +43,12 @@ tab.
 `GET /report` returns every aggregate the report draws, in one `FieldReport`,
 and computes it at most once per tick per process.
 
-The memo key is the identity of the world's state: which database, which run,
-which tick, which last event. Anything that could change an aggregate moves
+The memo key is the identity of the world's state: which database, which run
+and when it started (a reseed keeps the `run_id` but not `started_at`), then
+which tick and which last event. Anything that could change an aggregate moves
 one of them, so the memo is never stale, and a crowd of readers costs one
-computation per tick. A lock makes concurrent readers wait for that one rather
+computation per tick. A memo newer than a request's key serves it: a reader
+who read the clock just before a tick is not owed the older world. A lock makes concurrent readers wait for that one rather
 than each starting its own, and they wait holding the lock, not a pooled
 connection — eight waiting readers would otherwise be the whole pool. Clock
 and health are read fresh on every request: a heartbeat's age is the one
