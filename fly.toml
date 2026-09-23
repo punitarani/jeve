@@ -6,6 +6,7 @@
 # Deploy with: fly deploy            (both groups, one image, one release)
 # Secrets:     fly secrets set OPENROUTER_API_KEY=... JEVE_DATABASE_URL=... \
 #                JEVE_DATABASE_POOLED_URL=...
+#              BRAINTRUST_* arrive from Doppler with each CI deploy (OPS-0004).
 # Database region: us-east-1 (closest Fly region: iad).
 
 app = "jeve-backend"

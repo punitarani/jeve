@@ -295,8 +295,9 @@ jobs:
           NEXT_PUBLIC_JEVE_API: ${{ vars.NEXT_PUBLIC_JEVE_API }}
         run: pnpm --filter @jeve/web build
       # The only secret in this repo is DOPPLER_TOKEN: a read-only service
-      # token scoped to infra/ci, which holds just the deploy credentials —
-      # rotating a token in Doppler is the whole rotation.
+      # token scoped to infra/ci, which holds just the deploy credentials and
+      # the one token that reads worker/prd (OPS-0004) — rotating a token in
+      # Doppler is the whole rotation.
       - uses: dopplerhq/cli-action@v4
       - name: Fetch deploy credentials from Doppler
         env:
@@ -316,9 +317,16 @@ jobs:
           command: deploy
 
   deploy-backend:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # A dispatch on main deploys too, so a secret rotated in Doppler ships from
+    # "Run workflow" with no commit to carry it (OPS-0004). deploy-web stays
+    # push-only: a dispatch changes nothing it builds.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Twenty for the deploy, and up to seven more waiting on /state and on
+    # Braintrust afterwards.
+    timeout-minutes: 30
     # `api` and `sim` are nx targets inside the python job, not job ids —
     # depending on them by name made this job never runnable. The python job
     # now also carries the record confirmations (OPS-0002), so a red
@@ -337,6 +345,17 @@ jobs:
           v="$(doppler secrets get FLY_API_TOKEN -p infra -c ci --plain)"
           echo "::add-mask::$v"
           echo "FLY_API_TOKEN=$v" >> "$GITHUB_ENV"
+      # OPS-0004: flyctl deploy sets no secrets, and DOPPLER_TOKEN cannot read
+      # worker/prd, so the Braintrust keys never reached a machine. Staged
+      # here, they ship with the deploy below in its one restart. A missing
+      # grant is an error annotation, not a failure: the code still ships, and
+      # the gate after the deploy turns the run red.
+      - name: Stage worker secrets from Doppler
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: |
+          echo "DEPLOY_STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          scripts/stage-worker-secrets.sh
       # One deploy ships every process group in fly.toml (api and sim) from
       # one image; the release_command in fly.toml runs migrations first.
       - name: Deploy api+sim to Fly.io
@@ -344,3 +363,9 @@ jobs:
         # 2 sim for a workload that is one public reader and one writer
         # pinned singleton by its advisory lock.
         run: flyctl deploy --config fly.toml --ha=false
+      # Fails the run if the running app has no key; only warns if no span
+      # has reached Braintrust within five minutes (OPS-0004).
+      - name: Verify tracing
+        env:
+          JEVE_API: ${{ vars.NEXT_PUBLIC_JEVE_API }}
+        run: scripts/verify-tracing.sh

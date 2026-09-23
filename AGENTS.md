@@ -363,6 +363,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### OPS-0004: The deploy carries the worker secrets it names from Doppler
+
+**Status**: accepted (2026-09-23)  
+**Scope**: `.github/workflows/ci.yml`, `scripts/stage-worker-secrets.sh`, `scripts/verify-tracing.sh`, `scripts/test_deploy_secrets.py`, `docs/deployment.md`  
+**Tags**: deployment, ci, doppler, secrets, observability, agent-decided
+
+Before `flyctl deploy`, `deploy-backend` reads exactly the names in `scripts/stage-worker-secrets.sh` from `worker/prd`, using `DOPPLER_WORKER_TOKEN`, and stages them on the app. The deploy then rolls them out in its one restart. Today those names are `BRAINTRUST_API_KEY` and `BRAINTRUST_PROJECT_ID`.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### SIM-0001: One run loop, a horizon, a single-writer lock, and a governor that pauses
 
 **Status**: accepted (2026-09-20)  

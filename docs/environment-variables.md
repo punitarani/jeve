@@ -59,7 +59,7 @@ more than an afternoon wants the same, plus an account cap at OpenRouter.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `BRAINTRUST_API_KEY` | unset | The only switch. Absent, `jeve.tracing` never imports the SDK and opens no socket — CI and a clean clone trace nothing. Unset it to turn tracing off. |
+| `BRAINTRUST_API_KEY` | unset | The only switch. Absent, `jeve.tracing` never imports the SDK and opens no socket — CI and a clean clone trace nothing. Unset it to turn tracing off. In production it comes from Doppler `worker/prd` by way of the deploy (OPS-0004), never `fly secrets set`. |
 | `BRAINTRUST_PROJECT_ID` | unset | Which project spans land in; unset falls back to a project named `jeve`. An id rather than a name, so renaming the project does not strand its spans. |
 
 Spans carry OpenRouter's reported cost as `metrics.estimated_cost`, so a trace
@@ -83,12 +83,19 @@ never fatal: it prints one line and latches off for the process.
 `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `FLY_API_TOKEN`. Nothing in
 the codebase reads them; they authenticate the deploy jobs.
 
+`DOPPLER_WORKER_TOKEN` is a read-only Doppler service token for `worker/prd`,
+stored in `infra/ci`. `deploy-backend` uses it to read `BRAINTRUST_API_KEY`
+and `BRAINTRUST_PROJECT_ID` and stage them on Fly (OPS-0004). CI's own
+`DOPPLER_TOKEN` is scoped to `infra/ci` and cannot read `worker/prd`.
+
 ## Doppler layout
 
 Three projects, matching the `.env.*.example` files:
 
 * **app** — `NEXT_PUBLIC_JEVE_API` (build-time only)
-* **worker** — everything above for api + sim; synced to `fly secrets`
+* **worker** — everything above for api + sim. The deploy copies
+  `BRAINTRUST_*` from `worker/prd` to `fly secrets` (OPS-0004); the other
+  names are set on Fly directly.
 * **infra** — the CI/CD credentials
 
 ```bash

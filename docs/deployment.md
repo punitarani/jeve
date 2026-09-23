@@ -45,12 +45,8 @@ fly postgres attach jeve-db --app jeve-backend   # sets DATABASE_URL
 
 fly secrets set OPENROUTER_API_KEY=...           # the only billable path
 fly secrets set JEVE_DATABASE_URL=postgresql://...@jeve-db.internal:5432/jeve
-# Optional. Without a key, jeve.tracing is a no-op and nothing is traced —
-# silently, by design (LLM-0008). Nothing in CI sets these: `flyctl deploy`
-# does not read Doppler, so they arrive by `fly secrets set` or a Doppler
-# Config Sync. `/state`'s `health.tracing` says whether the app has the key.
-fly secrets set BRAINTRUST_API_KEY=...
-fly secrets set BRAINTRUST_PROJECT_ID=...        # unset: a project named jeve
+# BRAINTRUST_* are not set here: CI carries them from Doppler on every deploy
+# (see "Secrets CI carries" below).
 # Optional, if you front Postgres with a transaction-mode pooler:
 fly secrets set JEVE_DATABASE_POOLED_URL=postgresql://...:6432/jeve
 
@@ -61,6 +57,38 @@ cd apps/web && NEXT_PUBLIC_JEVE_API=https://jeve-api.punitarani.com \
 
 CI does the same on push to `main` (`deploy-backend`, `deploy-web` in
 `.github/workflows/ci.yml`), gated on tests, contracts drift and image builds.
+Running the workflow by hand on `main` (Actions → ci → Run workflow) deploys
+the backend without a commit.
+
+## Secrets CI carries (OPS-0004)
+
+`BRAINTRUST_API_KEY` and `BRAINTRUST_PROJECT_ID` are edited in Doppler
+`worker/prd` and nowhere else. Before each backend deploy,
+`scripts/stage-worker-secrets.sh` reads exactly those two names and stages
+them on the app, and `flyctl deploy` rolls them out in the same restart. A
+name deleted in Doppler is unset on Fly. Nothing else in `worker/prd` leaves
+Doppler.
+
+CI's `DOPPLER_TOKEN` can read only `infra/ci`, so it needs a grant to read
+`worker/prd`. Set it up once:
+
+1. Doppler → `worker` → `prd` → Access: create a service token with read
+   access.
+2. Doppler → `infra` → `ci`: store it as `DOPPLER_WORKER_TOKEN`.
+3. Run the workflow on `main`, or push.
+
+To rotate a key, change it in Doppler, then run the workflow.
+
+After the deploy, `scripts/verify-tracing.sh` checks two things:
+
+* It fails the run unless `/state` reports `health.tracing: true`. The API
+  and the daemon are one app with one set of secrets, so this covers both.
+* It warns, without failing, if no span reaches Braintrust within five
+  minutes. The notice or warning on the run says which one happened.
+
+Without the grant, the code still deploys and the run goes red with an error
+naming these steps. A red `deploy-backend` also holds back `deploy-web`
+(OPS-0003).
 
 ## Production bootstrap (what the first real deploy needed)
 
