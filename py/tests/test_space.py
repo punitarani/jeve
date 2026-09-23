@@ -264,15 +264,17 @@ def test_switching_encounters_off_changes_when_invoices_go_out(
 def test_a_conversation_in_the_cafe_reaches_an_invoice(
     conn: Connection[DictRow],
 ) -> None:
-    """The cascade query from the definition of done: start at an encounter,
-    follow `causes` forward, arrive at money."""
+    """The cascade query from the definition of done: start at a conversation,
+    follow `causes` forward, arrive at money. A meeting with a stake is an
+    episode (WORLD-0007) and one without is an encounter, so the conversation is
+    whichever the meeting was."""
 
     run(conn, days=5)
     reached = conn.execute(
         """
         WITH RECURSIVE downstream AS (
             SELECT seq, kind, 0 AS depth FROM events
-            WHERE kind = 'encounter' AND seq IN (
+            WHERE kind IN ('encounter', 'episode.closed') AND seq IN (
                 SELECT unnest(causes) FROM events
                 WHERE kind = 'ticket.escalated'
                   AND payload->>'module_id' = 'invoicing')
@@ -284,7 +286,7 @@ def test_a_conversation_in_the_cafe_reaches_an_invoice(
         """
     ).fetchall()
     depth = {str(r["kind"]): int(r["depth"]) for r in reached}
-    assert depth["encounter"] == 0
+    assert 0 in (depth.get("encounter"), depth.get("episode.closed"))
     assert depth["ticket.escalated"] == 1
     assert depth["incident.ended"] == 2
     assert depth["invoice.issued"] == 3

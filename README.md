@@ -65,7 +65,7 @@ the hard stop. Defaults are gentle ($2/day); set the account cap anyway.
 | Path | What |
 | --- | --- |
 | `py/src/jeve/` | The simulation: `core → llm → decide → world → sim`, with `memory`, `gen` and `api` outside |
-| `py/src/jeve/world/episodes.py` | A meeting with a stake gets rounds, not one shot (WORLD-0006) — off by default |
+| `py/src/jeve/world/episodes.py` | A meeting with a stake gets rounds, not one shot (WORLD-0006) — on in every world (WORLD-0007) |
 | `apps/web/` | Next.js static export — voxel town hero, `/world` explorer, causal timeline |
 | `packages/world/` | GL-free voxel scene model; three.js is a view over it |
 | `packages/contracts/` | zod schemas generated from the pydantic API contract |

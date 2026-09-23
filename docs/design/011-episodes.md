@@ -138,15 +138,22 @@ forbid.
 
 ## 7. What the first measurement says
 
-From `ops/episodes.md`, one seed, 21 sim-days per arm, on the rules twin:
+From `ops/episodes.md`, five seeds, 21 sim-days per arm, on the rules twin:
 
-- **E1, the economy.** Episodes pulled the first services invoice forward by
-  about sixteen hours, cut total outage minutes from 1,575 to 1,335, and produced
-  52 second-hand knowledge rows where the proxy produced none. Cost: +2.1%
-  decisions.
-- **E2, the docking.** The proxy escalates 0.10 of the outage conversations it
-  sees; episodes escalate 0.72. **The two arms do not agree about what a meeting
-  is worth.**
+- **E1, the economy.** Episodes cut total outage minutes from 2,703 to 2,100 on
+  average, brought the first services invoice forward about three and a half
+  hours, and produced 62 second-hand knowledge rows where the proxy produced
+  none. Cost: +2.4% decisions.
+- **E2, the docking.** Across the five seeds the proxy escalates 0.09–0.18 of
+  the outage conversations it sees; episodes escalate 0.56–0.86, a mean gap of
+  +0.51. **The two arms do not agree about what a meeting is worth.**
+
+The first run of this harness, on one seed, reported sixteen hours, 1,575 → 1,335
+minutes and 0.72. It was measuring a bug as well as the mechanism: the outage
+stake counted a second Tallybird employee as somebody stuck on the outage, so
+the vendor could press itself. `test_space` caught it the first time the default
+world ran episodes; the stake now takes its askers from customers only
+(WORLD-0007), and the figures above are after the fix.
 
 E2 is the important result and it is not a comfortable one. If the cheap proxy
 and the expensive arm disagree about base rates, then turning the resolution dial
@@ -163,13 +170,14 @@ Jev does with it.
 
 Decomposing the gap needs a third arm this harness does not run: episodes
 computed at every eligible meeting and applied at none. That is the next piece of
-work, and it is why episodes ship switched off.
+work. Episodes first shipped switched off for this reason; since WORLD-0007 they
+run in every world, and the gap is a base-rate change the default world carries.
 
 ## 8. What this costs, and what is still missing
 
-- **Off by default.** `episode.round` asks questions the golden cassette does not
-  hold, so `make e2e` with episodes on would miss in strict replay. Recording
-  them is `make fixture CALLS=record EPISODES=1`, and it spends money.
+- **On everywhere (WORLD-0007).** Strict replay needs `episode.round` answers in
+  the golden cassette; recording them is `make fixture CALLS=record`, and it
+  spends money.
 - **The caps are judgements.** Three rounds, four participants, twelve a day, two
   sim-hours of cooldown. Chosen mean so that a binding cap shows up in
   `exit_reason` rather than hiding.

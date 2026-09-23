@@ -133,7 +133,7 @@ class Engine:
         debt_level: float = 1.0,
         encounters: bool = True,
         spatial: bool = True,
-        episodes: bool = False,
+        episodes: bool = True,
     ) -> None:
         self._conn = conn
         self._policy = policy
@@ -145,15 +145,66 @@ class Engine:
         self.spatial = spatial
         self.episodes = episodes
         """On, a meeting with a stake gets rounds instead of one shot
-        (WORLD-0006). Off by default, and that is a claim about evidence rather
-        than about confidence: the one-shot encounter is the control arm, and
-        whether the extra resolution changes anything downstream is what
-        `ops/episodes.md` measures. It is also what keeps `make e2e` honest —
-        episodes ask questions no cassette holds, so turning them on for the
-        recorded fixture means re-recording it."""
+        (WORLD-0006). On in every world the daemon runs; off only as the control
+        arm `make episodes` compares against, as `encounters` and `spatial` are
+        for their own experiments. The two resolutions disagree about how often
+        a meeting escalates an outage (`ops/episodes.md`), so switching this off
+        changes the world's base rates, not just its fidelity."""
         # Whatever ran before us may have died mid-tick (WORLD-0002).
         db.resync_sequences(self._conn)
+        self._remember_outages_from_before_memory()
         self._conn.commit()
+
+    def _remember_outages_from_before_memory(self) -> None:
+        """Write down what code without MEM-0002 never did, for a world that ran
+        on it before this code took over.
+
+        An incident without a fact comes from that code and nowhere else:
+        `_start_incident` writes both in one tick. The first upgraded tick in
+        which somebody noticed one wrote their knowledge against a fact that did
+        not exist, and the daemon died on the foreign key. Not a migration,
+        because production migrates while the old daemon is still writing
+        (`release_command`), and an outage it starts in that minute would be
+        missed; the writer lock means nothing is still writing now. Only such
+        incidents are touched, so a restart of a world this code wrote changes
+        nothing (`test_resume`).
+        """
+
+        before = [
+            int(row["id"])
+            for row in self._conn.execute(
+                "SELECT i.id FROM incidents i WHERE NOT EXISTS "
+                "(SELECT 1 FROM facts f WHERE f.incident_id = i.id) ORDER BY i.id"
+            ).fetchall()
+        ]
+        if not before:
+            return
+        # As `_start_incident` records it and `_end_incident` retires it.
+        self._conn.execute(
+            "INSERT INTO facts (id, topic, about_module_id, incident_id, born_sim, "
+            "  born_seq, stale_sim) "
+            "SELECT 'outage:' || id, 'outage', module_id, id, started_sim, "
+            "  cause_event_seq, ended_sim FROM incidents WHERE id = ANY(%s)",
+            (before,),
+        )
+        # The vendor's staff knew at once; everyone whose notice had come knew
+        # first-hand, as `_customers` writes it down.
+        self._conn.execute(
+            "INSERT INTO knowledge (person_id, fact_id, learned_sim, learned_seq) "
+            "SELECT p.id, 'outage:' || i.id, i.started_sim, i.cause_event_seq "
+            "FROM incidents i CROSS JOIN persons p "
+            "WHERE i.id = ANY(%s) AND p.org_id = 'tallybird' AND p.kind = 'staff'",
+            (before,),
+        )
+        self._conn.execute(
+            "INSERT INTO knowledge (person_id, fact_id, learned_sim) "
+            "SELECT n.person_id, 'outage:' || i.id, n.notice_sim "
+            "FROM incidents i JOIN outage_notices n ON n.incident_id = i.id "
+            "CROSS JOIN sim_meta m WHERE i.id = ANY(%s) "
+            "AND n.notice_sim <= coalesce(i.ended_sim, m.sim_time) "
+            "ON CONFLICT (person_id, fact_id) DO NOTHING",
+            (before,),
+        )
 
     @property
     def conn(self) -> Connection[DictRow]:

@@ -30,7 +30,7 @@ from psycopg.rows import DictRow
 from jeve import db, memory
 from jeve.core.clock import DAY, TICK, SimTime, at
 from jeve.decide.policy import Decision, DecisionContext, Policy, RulesPolicy, Source
-from jeve.sim import advance
+from jeve.sim import advance, daemon
 from jeve.world import episodes, space
 from jeve.world.engine import Engine, Made, TickReport
 from jeve.world.map import Zone
@@ -491,6 +491,34 @@ def test_an_episode_can_escalate_an_outage_and_still_only_once(
     conn.rollback()
 
 
+def test_the_vendor_cannot_escalate_to_itself(conn: Connection[DictRow]) -> None:
+    """Tallybird's staff know about every outage and are stuck on none. Before
+    episodes ran in every world, a second one in the room counted as somebody
+    affected and could press a colleague — which `test_space` caught the first
+    time the shipped world ran them."""
+
+    engineer = "tallybird.engineer.2"
+    vendor = "tallybird.support.6"
+    policy = Scripted(
+        ROOT_SEED, {engineer: [{"act": "press"}], vendor: [{"act": "promise"}]}
+    )
+    engine, report = fresh(conn, policy)
+    outage(engine, report)
+    present, made, by_id = stage(engine, conn, [engineer, vendor], Zone.CAFE)
+    episodes.run(
+        engine, report, SimTime(report.sim_time), present, made, by_id, ["invoicing"]
+    )
+
+    assert (
+        _count(conn, "SELECT count(*) AS n FROM episodes WHERE stake = 'outage'") == 0
+    )
+    assert (
+        _count(conn, "SELECT count(*) AS n FROM events WHERE kind = 'ticket.escalated'")
+        == 0
+    )
+    conn.rollback()
+
+
 def test_nobody_is_pulled_into_two_conversations_at_once(
     conn: Connection[DictRow],
 ) -> None:
@@ -749,7 +777,106 @@ def test_switching_episodes_on_changes_the_world(conn: Connection[DictRow]) -> N
     assert by_episode > 0, "no episode ever reached the outage it was about"
 
 
+# -- the world that ships (WORLD-0007) ---------------------------------------------
+
+# The command a deploy runs: a policy and a clock, and nothing about episodes.
+DAEMON = ["--policy", "rules", "--day-minutes", "0"]
+
+
+def test_the_shipped_world_runs_episodes_with_no_switch(
+    conn: Connection[DictRow],
+) -> None:
+    """Driven through `daemon.main`, so a switch reintroduced anywhere between the
+    entry point and the engine shows up here as a world without episodes."""
+
+    _hand_the_world_to_the_daemon(conn)
+    with pytest.raises(SystemExit):
+        daemon.main(["--episodes", "--until-day", "1", *DAEMON])
+    assert daemon.main(["--seed-world", "--until-day", "3", *DAEMON]) == 0
+
+    with db.connect(autocommit=True) as watch:
+        closed = _count(
+            watch, "SELECT count(*) AS n FROM events WHERE kind = 'episode.closed'"
+        )
+        assert closed > 0, "the daemon ran three days and no meeting got rounds"
+        assert ledger_total(watch) == 0
+
+
+def test_a_world_begun_before_episodes_carries_on_with_them(
+    conn: Connection[DictRow],
+) -> None:
+    """The deploy that ships this. A world has run for days on code that had no
+    episodes, and its database has never seen migration 0009; the daemon is
+    restarted on the new code. It migrates, carries on with episodes — through an
+    outage that began before facts existed — and the books still balance.
+
+    The old world is reproduced, not approximated: an engine with episodes off
+    writes the same event log as the code before them (checked against that
+    commit when WORLD-0007 was written), and dropping 0009's tables returns the
+    schema to what that code had.
+    """
+
+    conn.commit()
+    seed(conn, root_seed=ROOT_SEED)
+    engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED, episodes=False)
+    # Down before the switch and still down after it, so the new code has to end
+    # an incident whose outage it never recorded as a fact.
+    engine.schedule(
+        at(2, 14), "incident.start", "invoicing", {"expected_minutes": 2000}
+    )
+    advance(conn, engine, until=at(3))
+    conn.execute(
+        "DROP TABLE commitments, episode_participants, episodes, knowledge, facts "
+        "CASCADE"
+    )
+    conn.execute("DELETE FROM schema_migrations WHERE name = '0009_episodes.sql'")
+    _hand_the_world_to_the_daemon(conn)
+
+    assert daemon.main(["--until-day", "6", *DAEMON]) == 0
+
+    with db.connect(autocommit=True) as watch:
+        assert "0009_episodes.sql" in db.applied(watch)
+        incident = watch.execute(
+            "SELECT id, ended_sim FROM incidents WHERE module_id = 'invoicing' "
+            "AND started_sim < %s ORDER BY started_sim DESC LIMIT 1",
+            (at(3),),
+        ).fetchone()
+        assert incident is not None and incident["ended_sim"] is not None
+        # Its news was written down when the new code took over, and retired
+        # when the new code ended it.
+        fact = watch.execute(
+            "SELECT stale_sim FROM facts WHERE incident_id = %s", (incident["id"],)
+        ).fetchone()
+        assert fact is not None and fact["stale_sim"] == incident["ended_sim"]
+        after = _count(
+            watch,
+            "SELECT count(*) AS n FROM episodes WHERE opened_sim >= %s",
+            (at(3),),
+        )
+        assert after > 0, "the restarted world never gave a meeting rounds"
+        unfinished = _count(
+            watch, "SELECT count(*) AS n FROM episodes WHERE closed_sim IS NULL"
+        )
+        assert unfinished == 0
+        assert ledger_total(watch) == 0
+        known = _count(watch, "SELECT count(*) AS n FROM knowledge")
+
+    # Every incident now has its fact, so starting again writes nothing: a
+    # restart of a world this code wrote is not an upgrade.
+    Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED)
+    assert _count(conn, "SELECT count(*) AS n FROM knowledge") == known
+
+
 # -- helpers ---------------------------------------------------------------------
+
+
+def _hand_the_world_to_the_daemon(conn: Connection[DictRow]) -> None:
+    """`seed` took the writer lock on this connection and a session keeps it until
+    it closes, so an in-process daemon would refuse to start (SIM-0001)."""
+
+    conn.commit()
+    conn.execute("SELECT pg_advisory_unlock_all()")
+    conn.commit()
 
 
 def _count(

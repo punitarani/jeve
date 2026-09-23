@@ -448,7 +448,6 @@ def run_world(
     calls: str,
     outage: bool,
     max_wait: float,
-    episodes: bool = False,
 ) -> int:
     """Seed `name` and run it to `days` through the daemon loop. Returns its exit."""
 
@@ -471,7 +470,6 @@ def run_world(
             *("--calls", calls),
             *("--cassette", str(SOAK_CASSETTE)),
             *("--max-wait", str(max_wait)),
-            *(["--episodes"] if episodes else []),
         ]
     )
 
@@ -485,12 +483,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--database", default="jeve_soak")
     parser.add_argument("--report", type=Path, default=None)
     parser.add_argument("--max-wait", type=float, default=900.0)
-    parser.add_argument(
-        "--episodes",
-        action="store_true",
-        help="give a meeting with a stake rounds (WORLD-0006). The long-horizon "
-        "invariants have to hold in that arm too, and on rules it is still free",
-    )
     args = parser.parse_args(argv)
 
     before = os.environ.get("JEVE_DATABASE_URL")
@@ -502,7 +494,6 @@ def main(argv: list[str] | None = None) -> int:
             calls=args.calls,
             outage=True,
             max_wait=args.max_wait,
-            episodes=args.episodes,
         )
         if code != 0:
             print(f"the world stopped early (exit {code}); no report", file=sys.stderr)
@@ -516,7 +507,6 @@ def main(argv: list[str] | None = None) -> int:
                 calls=args.calls,
                 outage=False,
                 max_wait=args.max_wait,
-                episodes=args.episodes,
             )
             if code != 0:
                 return code
@@ -541,19 +531,11 @@ def main(argv: list[str] | None = None) -> int:
             os.environ["JEVE_DATABASE_URL"] = before
 
     ok = all(check.ok for check in results)
-    # An episodes run is a different world and must not overwrite the report
-    # for the one the repo tracks. Derived, not left to a flag: the first time
-    # `--episodes` was passed by hand it clobbered `ops/soak.md`.
-    report = args.report or (
-        REPORTS[args.policy].with_suffix(".episodes.md")
-        if args.episodes
-        else REPORTS[args.policy]
-    )
+    report = args.report or REPORTS[args.policy]
     calls = int(spend["calls"]) if spend else 0
     usd = float(spend["usd"]) if spend else 0.0
     lines = [
-        f"# Soak: {args.days} sim-days, decided by `{args.policy}`"
-        + (", with episodes" if args.episodes else ""),
+        f"# Soak: {args.days} sim-days, decided by `{args.policy}`",
         "",
         "Written by `make soak`. Invariants, not outcomes: a firm may fail here; it "
         "may not fail unexplained (WORLD-0005).",

@@ -11,8 +11,7 @@ which commit.
 | `economics.md` | `LIVE=1 make e2e`, and nothing else | Measured cost per sim-day, per person, per org, per event; decisions by model. A replay writes `economics.replay.md` beside it and says so if the two have drifted. |
 | `soak.md` | `make soak` | 35 sim-days on rules: the invariants a world must keep (WORLD-0005), the counterfactual, and what happened. Free. |
 | `soak.live.md` | `make soak POLICY=jev CALLS=record DAYS=10 COUNTERFACTUAL=1` | The same, decided by Jev, with what it cost. Run at gates. |
-| `episodes.md` | `make episodes` | Does giving a meeting rounds change anything (WORLD-0006)? The same sim-days played twice, with and without: the docking comparison first, then the billing timeline. Both arms on rules, so it is free. |
-| `soak.episodes.md` | `make soak EPISODES=1` | The long-horizon invariants in the episodes arm. They have to hold there too, and on rules it is still free. |
+| `episodes.md` | `make episodes` | Does giving a meeting rounds change anything (WORLD-0006)? The same sim-days played twice, with and without — episodes are on in every other world (WORLD-0007), so the off arm exists only here: the docking comparison first, then the billing timeline. Both arms on rules, so it is free. |
 | `persona-probe.md` | `make persona-probe` | Does sampling Jev's distributions preserve persona? With a control. |
 | `providers.md` | `make providers` | One real call per model: reachable, not merely resolvable. |
 

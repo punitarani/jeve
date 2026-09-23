@@ -18,7 +18,6 @@
 !/ops/persona-probe.md
 !/ops/soak.md
 !/ops/soak.live.md
-!/ops/soak.episodes.md
 !/ops/episodes.md
 # A nested ops/ means something resolved it against the wrong cwd. Ignored so
 # it can never be committed; `ops/` at the root is the only real one. (A bare

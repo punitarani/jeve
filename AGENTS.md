@@ -531,13 +531,13 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
-### WORLD-0006: Give a meeting with a stake rounds instead of one shot
+### WORLD-0007: Run episodes in every world, with no switch
 
-**Status**: accepted (2026-09-22)  
-**Scope**: `py/src/jeve/world/episodes.py`, `py/src/jeve/world/space.py`, `py/migrations/0009_episodes.sql`, `py/tests/test_episodes.py`, `py/src/jeve/sim/episode_study.py`  
-**Tags**: episodes, encounters, space, causality, resolution, agent-decided
+**Status**: accepted (2026-09-23)  
+**Scope**: `py/src/jeve/world/episodes.py`, `py/src/jeve/world/engine.py`, `py/src/jeve/sim/daemon.py`, `py/src/jeve/sim/soak.py`, `py/tests/test_episodes.py`  
+**Tags**: episodes, defaults, encounters, resolution
 
-A meeting becomes an **episode** — two to four people, up to three rounds, one typed request per participant per round — only when they have something between them: a broken module one can act on, a live bill between their firms, or news one holds and another lacks. Everyone else keeps the one-shot encounter, which stays the control arm and the cheap proxy. Episodes are **off by default**.
+Episodes run in every world the daemon runs, with no flag, environment variable or make variable. The mechanism is WORLD-0006's, with the outage stake corrected (below).
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

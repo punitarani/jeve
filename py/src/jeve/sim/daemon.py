@@ -312,9 +312,7 @@ def _supervise(
                 if outages:
                     print(f"the database is back after {outages} attempt(s)")
                     outages = 0
-                engine = Engine(
-                    conn, policy, root_seed=args.seed, episodes=args.episodes
-                )
+                engine = Engine(conn, policy, root_seed=args.seed)
                 return _loop(conn, engine, policy, pace, args, stop, totals)
         except DATABASE_WEATHER as error:
             outages += 1
@@ -619,15 +617,6 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
         "'off' disables the file entirely (JEVE_CASSETTE). The default is the "
         "golden cassette `make e2e` replays; a soak keeps its own, so that a "
         "long live run never rewrites the file a replay depends on",
-    )
-    parser.add_argument(
-        "--episodes",
-        action="store_true",
-        default=os.environ.get("JEVE_EPISODES", "").lower() in ("1", "true", "on"),
-        help="give a meeting with a real stake several rounds instead of one "
-        "(WORLD-0006, JEVE_EPISODES). Off by default: the one-shot encounter is "
-        "the control arm, and episodes ask questions the golden cassette does "
-        "not hold, so a replay with this on will miss",
     )
     parser.add_argument("--stats", type=Path, help="write call statistics here")
     parser.add_argument("--verbose", action="store_true")

@@ -290,10 +290,13 @@ def _outage_stake(engine: Engine, group: list[Agent], down: list[str]) -> Stake 
     vendor = next((a for a in group if a.org == "tallybird"), None)
     if vendor is None:
         return None
-    affected = {a.id: known_outage(engine, a.org, down) for a in group}
-    askers = frozenset(
-        person for person, module in affected.items() if module and person != vendor.id
-    )
+    # The vendor's staff know about every outage but are not stuck on any: one
+    # of them pressing a colleague is not a customer cornering the vendor, and
+    # the one-shot never let it happen (`test_space`).
+    affected = {
+        a.id: known_outage(engine, a.org, down) for a in group if a.org != "tallybird"
+    }
+    askers = frozenset(person for person, module in affected.items() if module)
     if not askers:
         return None
     module = next(affected[p] for p in sorted(askers))

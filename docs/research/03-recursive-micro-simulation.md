@@ -56,15 +56,19 @@ resolution with base rate.
 
 > **Built, 2026-09-22.** All three, as WORLD-0006 (episodes) and MEM-0002 (the store they
 > write to), with `make episodes` as the harness. The first result is in `ops/episodes.md`
-> and the design analysis in `docs/design/011-episodes.md`. Headline: over 21 sim-days on
-> the rules twin, episodes pulled the first services invoice forward about sixteen hours
-> and cut total outage minutes, at +2.1% decisions — and step (3) **failed**, which is the
-> more useful finding. The proxy escalates 0.10 of the outage conversations it sees against
-> the episode arm's 0.72, so resolution and base rate are entangled in this world. That gap
-> is an upper bound, because the two denominators are different constructs and selection
-> sits inside it; separating them needs a shadow arm that computes episodes everywhere and
-> applies them nowhere. Episodes therefore ship switched off. Nothing below has been
-> rewritten in hindsight — §7's experiments were pre-registered before any of it ran.
+> and the design analysis in `docs/design/011-episodes.md`. Headline: over 21 sim-days and
+> five seeds on the rules twin, episodes cut total outage minutes by about a fifth and
+> brought the first services invoice forward about three and a half hours, at +2.4%
+> decisions — and step (3) **failed**, which is the more useful finding. The proxy
+> escalates 0.09–0.18 of the outage conversations it sees against the episode arm's
+> 0.56–0.86, so resolution and base rate are entangled in this world. That gap is an upper
+> bound, because the two denominators are different constructs and selection sits inside
+> it; separating them needs a shadow arm that computes episodes everywhere and applies them
+> nowhere. The first, one-seed figures (sixteen hours, 0.72) were inflated by a bug that
+> let the vendor's own staff press it; they are corrected here, not below. Episodes first
+> shipped switched off; since 2026-09-23 they run in every world, at the project owner's
+> direction (WORLD-0007). Nothing below has been rewritten in hindsight — §7's experiments
+> were pre-registered before any of it ran.
 
 ---
 

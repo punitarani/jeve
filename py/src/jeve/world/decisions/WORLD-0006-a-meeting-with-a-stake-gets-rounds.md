@@ -1,13 +1,13 @@
 ---
 id: "WORLD-0006"
 title: "Give a meeting with a stake rounds instead of one shot"
-status: "accepted"
+status: "superseded"
 date: 2026-09-22
 deciders: ["claude"]
 scope: ["py/src/jeve/world/episodes.py", "py/src/jeve/world/space.py", "py/migrations/0009_episodes.sql", "py/tests/test_episodes.py", "py/src/jeve/sim/episode_study.py"]
 tags: ["episodes", "encounters", "space", "causality", "resolution", "agent-decided"]
 supersedes: []
-superseded-by: null
+superseded-by: "WORLD-0007"
 relates-to: ["WORLD-0003", "WORLD-0005", "MEM-0002", "DECIDE-0001", "CORE-0004", "CORE-0009"]
 confirmation: "cd py && uv run pytest tests/test_episodes.py"
 ---
