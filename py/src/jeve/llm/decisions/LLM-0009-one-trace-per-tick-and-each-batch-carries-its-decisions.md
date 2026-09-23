@@ -51,8 +51,9 @@ is `decide.batch`, so the name set stays bounded by the question sets. A cache
 hit is still a row, never a span. Each distinct live request is an `llm` span,
 and each HTTP try a `function` span under it. Cost appears only as
 `metrics.estimated_cost` (OpenRouter's own number) on `llm` spans, so nothing
-is counted twice. The batch's handle still crosses `JevPolicy._Bridge`
-explicitly, because contexts do not.
+is counted twice. Nesting is ambient everywhere, across `JevPolicy._Bridge`
+too: `run_coroutine_threadsafe` runs in a copy of the caller's context. The
+parent handle LLM-0008 carried across that hop was never needed, and is gone.
 
 What LLM-0008 got right stands. The key is the only switch. Every SDK call is
 guarded, and the first failure warns once and latches tracing off: no span may

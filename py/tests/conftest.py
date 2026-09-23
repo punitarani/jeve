@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any
@@ -122,7 +123,6 @@ class RecordedSpan:
 
     name: str
     type: str | None
-    parent: str | None
     fields: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     children: list[RecordedSpan] = field(default_factory=list)
@@ -135,9 +135,6 @@ class RecordedSpan:
             else:
                 self.fields[key] = value
 
-    def export(self) -> str:
-        return f"span:{id(self):x}"
-
     def descendants(self) -> Iterator[RecordedSpan]:
         for child in self.children:
             yield child
@@ -147,28 +144,29 @@ class RecordedSpan:
 class RecordingSink:
     """The test seam from `jeve.tracing.configure(sink=...)`.
 
-    Keeps the nesting the way the real sink does: a span opened inside another
-    span's `with` block is its child, unless an explicit `parent` handle says
-    otherwise — which is what crossing `JevPolicy._Bridge` looks like.
+    Keeps the nesting the way the real sink does: the current span lives in a
+    context variable, as braintrust's does, so a span is the child of whatever
+    is open in *its* context — a task's own on the gateway loop, and across
+    `JevPolicy._Bridge` the caller's, because `run_coroutine_threadsafe`
+    carries it (LLM-0009). A shared stack would nest concurrent calls under
+    each other, and would pass across threads that the real one does not.
     """
 
     def __init__(self) -> None:
         self.roots: list[RecordedSpan] = []
         self.spans: list[RecordedSpan] = []
         self.flushes = 0
-        self._open: list[RecordedSpan] = []
+        self.current: ContextVar[RecordedSpan | None] = ContextVar(
+            "recorded_span", default=None
+        )
 
     def start_span(
-        self, name: str, *, type: str | None, parent: str | None, **event: Any
+        self, name: str, *, type: str | None, **event: Any
     ) -> _RecordingContext:
-        span = RecordedSpan(name=name, type=type, parent=parent)
+        span = RecordedSpan(name=name, type=type)
         span.log(**event)
         self.spans.append(span)
-        under = (
-            self._by_handle(parent)
-            if parent
-            else (self._open[-1] if self._open else None)
-        )
+        under = self.current.get()
         if under is None:
             self.roots.append(span)
         else:
@@ -186,17 +184,15 @@ class RecordingSink:
         assert len(found) == 1, f"expected one {name!r} span, got {len(found)}"
         return found[0]
 
-    def _by_handle(self, handle: str) -> RecordedSpan | None:
-        return next((s for s in self.spans if s.export() == handle), None)
-
 
 class _RecordingContext:
     def __init__(self, sink: RecordingSink, span: RecordedSpan) -> None:
         self._sink = sink
         self._span = span
+        self._token: Token[RecordedSpan | None] | None = None
 
     def __enter__(self) -> RecordedSpan:
-        self._sink._open.append(self._span)
+        self._token = self._sink.current.set(self._span)
         return self._span
 
     def __exit__(
@@ -205,7 +201,8 @@ class _RecordingContext:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self._sink._open.pop()
+        if self._token is not None:
+            self._sink.current.reset(self._token)
         if exc is not None:
             self._span.error = f"{type(exc).__name__}: {exc}"
 

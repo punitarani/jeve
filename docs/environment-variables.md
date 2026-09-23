@@ -71,8 +71,9 @@ about 30KB per tick (58KB at most), or about 1.3MB per sim-day, three quarters
 of it the `agent.tick` batch.
 
 The key traces every run that has it, not only the deployed daemon: with it in
-a local `.env`, `make soak` sends a trace per tick and `make e2e` a replay's
-worth. Give local runs a `BRAINTRUST_PROJECT_ID` of their own. Inside a
+a local `.env`, `make soak` and `LIVE=1 make e2e` send a trace per tick (a
+replay `make e2e` reads no `.env`, so it traces only with the key exported).
+Give local runs a `BRAINTRUST_PROJECT_ID` of their own. Inside a
 project, a `sim.tick`'s metadata (policy, root seed, database name and the
 world's switches) and each batch's `metadata.mode` tell runs and arms apart.
 

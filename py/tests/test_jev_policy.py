@@ -521,13 +521,12 @@ def test_a_call_is_parented_by_its_batch_across_the_gateway_thread(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The one place an ambient parent cannot reach (LLM-0009).
+    """The batch reaches the gateway's thread with nothing carried (LLM-0009).
 
-    `_Bridge` runs the gateway on its own loop on its own thread, and
-    `run_coroutine_threadsafe` copies the context over there — so the batch
-    span open on this thread is not the current span in the gateway. The
-    handle has to be carried. The second half of this test is the proof that
-    it is doing something: with no handle, the same call is a root.
+    `_Bridge` runs the gateway on its own loop on its own thread, but
+    `run_coroutine_threadsafe` runs in a copy of the *caller's* context, so
+    the batch span open on this thread is the current span over there. The
+    second call is the control: made with no batch open, it is a root.
     """
 
     wire = WireRecorder()
@@ -543,9 +542,8 @@ def test_a_call_is_parented_by_its_batch_across_the_gateway_thread(
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     bridge = Bridge(load_settings())
     try:
-        with tracing.span("decide.batch", type="task") as batch:
-            handle = batch.export()
-        carried = bridge.fetch([wire_request()], parent=handle)
+        with tracing.span("decide.batch", type="task"):
+            carried = bridge.fetch([wire_request()])
         orphaned = bridge.fetch([wire_request()])
     finally:
         bridge.close()
@@ -554,6 +552,7 @@ def test_a_call_is_parented_by_its_batch_across_the_gateway_thread(
     under_batch = spans.only("decide.batch").children
     assert [child.name for child in under_batch] == ["jev.decide"]
     assert under_batch[0].fields["metadata"]["endpoint"] == "decisions"
+    assert [child.name for child in under_batch[0].children] == ["openrouter.attempt"]
 
     roots = [root.name for root in spans.roots]
     assert roots == ["decide.batch", "jev.decide"]

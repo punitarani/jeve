@@ -71,25 +71,24 @@ class _Bridge:
             raise
 
     async def _fetch(
-        self, requests: Sequence[DecisionRequest], parent: str | None
+        self, requests: Sequence[DecisionRequest]
     ) -> list[RawDecision | BaseException]:
         return await asyncio.gather(
-            *(self._gateway.decide_raw(request, parent=parent) for request in requests),
+            *(self._gateway.decide_raw(request) for request in requests),
             return_exceptions=True,
         )
 
     def fetch(
-        self, requests: Sequence[DecisionRequest], *, parent: str | None = None
+        self, requests: Sequence[DecisionRequest]
     ) -> list[RawDecision | BaseException]:
-        """`parent` is passed, not inherited.
+        """Fetch on the gateway's loop, from the engine's thread.
 
-        `run_coroutine_threadsafe` schedules onto this loop, which copies the
-        context on *this* thread — so the batch span open on the caller's
-        thread is not the current span here, and a call would otherwise land
-        at the root of its own trace (LLM-0009).
+        The calls' spans nest under the caller's batch with nothing passed:
+        `run_coroutine_threadsafe` runs in a copy of the caller's context, so
+        the span current here is current there (LLM-0009).
         """
 
-        return self.run(self._fetch(requests, parent), timeout=CALL_TIMEOUT_S)
+        return self.run(self._fetch(requests), timeout=CALL_TIMEOUT_S)
 
     @property
     def run_spent_usd(self) -> float:
@@ -204,8 +203,7 @@ class JevPolicy:
                 }
             )
             if missing:
-                # Exported on this thread, because the gateway is not on it.
-                stored |= self._fill(missing, requests, parent=span.export() or None)
+                stored |= self._fill(missing, requests)
 
             decisions = [
                 self._decide_one(ctx, item, stored[maybe] if maybe else None)
@@ -243,8 +241,6 @@ class JevPolicy:
         self,
         missing: list[str],
         requests: dict[str, tuple[Prepared, DecisionRequest]],
-        *,
-        parent: str | None = None,
     ) -> dict[str, StoredCall]:
         if self._recorder.mode == "replay":
             kinds = sorted({requests[digest][0].kind for digest in missing})
@@ -255,9 +251,7 @@ class JevPolicy:
                 "with `LIVE=1 make e2e`."
             )
 
-        results = self._live().fetch(
-            [requests[digest][1] for digest in missing], parent=parent
-        )
+        results = self._live().fetch([requests[digest][1] for digest in missing])
         failure: BaseException | None = None
         drifted: set[str] = set()
         for digest, result in zip(missing, results, strict=True):
