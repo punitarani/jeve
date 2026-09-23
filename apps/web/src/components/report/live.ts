@@ -9,7 +9,8 @@
  * the page is only layout.
  */
 import type { FieldReport, TownMap } from "@jeve/contracts";
-import { fmt, pct, usd } from "./format";
+import { money } from "@/lib/api";
+import { fmt, pct } from "./format";
 import type { Finding, Severity } from "./parts";
 import type { TownData } from "./town";
 
@@ -20,12 +21,6 @@ export function spendWords(spend: number): string {
 	return `$${spend.toFixed(2)}`;
 }
 
-export const ORG_COLOR: Record<string, string> = {
-	tallybird: "--tb",
-	halloran: "--hp",
-	ledgerline: "--ll",
-	thirdrail: "--tr",
-};
 export const ORG_SHORT: Record<string, string> = {
 	tallybird: "Tallybird",
 	halloran: "Halloran & Pike",
@@ -77,7 +72,7 @@ export function liveFindings(r: FieldReport): Finding[] {
 			"economy",
 			"critical",
 			"The books do not balance",
-			`${fmt(v.ledger_entries)} ledger entries sum to ${usd(v.ledger_imbalance_cents)}, not zero. Money was created or lost somewhere.`,
+			`${fmt(v.ledger_entries)} ledger entries sum to ${money(v.ledger_imbalance_cents)}, not zero. Money was created or lost somewhere.`,
 			`SUM(ledger_entries.amount_cents) = ${v.ledger_imbalance_cents}`,
 		);
 	}
@@ -90,7 +85,7 @@ export function liveFindings(r: FieldReport): Finding[] {
 			"economy",
 			ratio < 0.5 ? "critical" : "high",
 			`${ORG_SHORT[p.org_id] ?? p.name} is missing payroll`,
-			`Paid ${p.paid} of ${p.due} payroll runs${p.last_paid_day === null ? ", none yet" : `, the last on day ${p.last_paid_day}`}, with ${usd(cashOf(r, p.org_id))} on hand and ${p.insolvency_warnings} insolvency warnings.`,
+			`Paid ${p.paid} of ${p.due} payroll runs${p.last_paid_day === null ? ", none yet" : `, the last on day ${p.last_paid_day}`}, with ${money(cashOf(r, p.org_id))} on hand and ${p.insolvency_warnings} insolvency warnings.`,
 			`payroll.paid ${p.org_id} n=${p.paid}; payroll.held n=${p.held}`,
 		);
 	}
@@ -105,7 +100,7 @@ export function liveFindings(r: FieldReport): Finding[] {
 			"economy",
 			back < 0.2 ? "high" : "good",
 			back < 0.2 ? "Households are a sink, not a sector" : "Wages come back",
-			`Of ${usd(h.wages_cents)} paid in wages, ${usd(h.spending_cents)} (${pct(back, 1)}) came back as spending.`,
+			`Of ${money(h.wages_cents)} paid in wages, ${money(h.spending_cents)} (${pct(back, 1)}) came back as spending.`,
 			"households.income vs households.spending",
 		);
 	}
@@ -214,23 +209,25 @@ export function liveTown(r: FieldReport, map: TownMap): TownData {
 	);
 	const topicTotal = r.topics.reduce((a, t) => a + t.n, 0);
 	const standings = payrollStandings(r);
-	const buildings: TownData["buildings"] = Object.fromEntries(
-		Object.keys(ORG_COLOR).map((org) => {
-			const p = standings.find((s) => s.org_id === org);
-			return [
-				org,
-				{
-					cash: cashOf(r, org) / 100,
-					...(p?.behind
-						? {
-								flag: "payroll held",
-								note: p.last_paid_day === null ? "no payroll yet" : `payroll held since d${p.last_paid_day}`,
-							}
-						: {}),
-				},
-			];
-		}),
-	);
+	const buildings: TownData["buildings"] = map.buildings.map((b) => {
+		const p = standings.find((s) => s.org_id === b.org_id);
+		return {
+			org_id: b.org_id,
+			zone: b.zone,
+			name: b.name,
+			x0: b.x0,
+			y0: b.y0,
+			x1: b.x1,
+			y1: b.y1,
+			cash: cashOf(r, b.org_id) / 100,
+			...(p?.behind
+				? {
+						flag: "payroll held",
+						note: p.last_paid_day === null ? "no payroll yet" : `payroll held since d${p.last_paid_day}`,
+					}
+				: {}),
+		};
+	});
 	// Illustrate the module that goes down most, if any has.
 	const worst = r.outages.filter((o) => o.incidents > 0).sort((a, b) => b.incidents - a.incidents)[0];
 	return {

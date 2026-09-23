@@ -259,39 +259,40 @@ def _whereabouts(
     at_cafe: dict[str, float] = defaultdict(float)
     hour_on_map: dict[int, float] = defaultdict(float)
     hour_at_cafe: dict[int, float] = defaultdict(float)
-    orgs = {str(s["id"]): str(s["org_id"]) for s in staff}
-
-    def spend(person: str, zone: str, start: int, end: int) -> None:
-        # Split the interval at hour boundaries so each piece lands in the
-        # hour of the day it was spent in.
-        office = orgs.get(person) != "thirdrail"
-        while start < end:
-            edge = min(end, (start // HOUR + 1) * HOUR)
-            span = float(edge - start)
-            on_map[person] += span
-            hour = (start % DAY) // HOUR
-            if office:
-                hour_on_map[hour] += span
-            if zone == Zone.CAFE.value:
-                at_cafe[person] += span
-                if office:
-                    hour_at_cafe[hour] += span
-            start = edge
-
-    last: dict[str, tuple[str, int]] = {}
+    office = {str(s["id"]) for s in staff if s["org_id"] != "thirdrail"}
+    # Each move opens an interval its person's next move closes (the last is
+    # still open, until now); intervals at home are off the map. Each is cut
+    # at the hour boundaries it crosses, so the database returns a few rows
+    # per person and hour of the day rather than every move ever made.
     for r in conn.execute(
-        "SELECT payload->>'person_id' AS person, sim_time, payload->>'to_zone' AS zone "
-        "FROM events WHERE kind = 'agent.moved' ORDER BY seq"
+        "WITH moves AS ("
+        "  SELECT payload->>'person_id' AS person, payload->>'to_zone' AS zone, "
+        "         sim_time AS start, lead(sim_time, 1, %(now)s) OVER "
+        "           (PARTITION BY payload->>'person_id' ORDER BY seq) AS stop "
+        "  FROM events WHERE kind = 'agent.moved'"
+        "), spans AS ("
+        "  SELECT person, zone, h, LEAST(stop, (h + 1) * %(hour)s) "
+        "         - GREATEST(start, h * %(hour)s) AS secs "
+        "  FROM moves, generate_series(start / %(hour)s, (stop - 1) / %(hour)s) AS h "
+        "  WHERE zone <> %(home)s AND stop > start"
+        ") "
+        "SELECT person, h %% 24 AS hour, zone = %(cafe)s AS at_cafe, sum(secs) AS secs "
+        "FROM spans GROUP BY 1, 2, 3",
+        {
+            "now": now.seconds,
+            "hour": HOUR,
+            "home": Zone.HOME.value,
+            "cafe": Zone.CAFE.value,
+        },
     ).fetchall():
-        person, at, zone = str(r["person"]), int(r["sim_time"]), str(r["zone"])
-        if person in last:
-            was, since = last[person]
-            if was != Zone.HOME.value:
-                spend(person, was, since, at)
-        last[person] = (zone, at)
-    for person, (was, since) in last.items():
-        if was != Zone.HOME.value:
-            spend(person, was, since, now.seconds)
+        person, hour, secs = str(r["person"]), int(r["hour"]), float(r["secs"])
+        on_map[person] += secs
+        if r["at_cafe"]:
+            at_cafe[person] += secs
+        if person in office:
+            hour_on_map[hour] += secs
+            if r["at_cafe"]:
+                hour_at_cafe[hour] += secs
 
     ticks = {
         str(r["person_id"]): r

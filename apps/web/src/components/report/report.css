@@ -204,3 +204,17 @@ html:has(.rpt) { scroll-padding-top:64px; }
 .rpt header.summary { padding-top:40px; }
 .rpt .site-foot { font-family:var(--mono); }
 .rpt .eff-legend { margin-bottom:14px; }
+/* chart paints that never vary with the data */
+.rpt .chart .c-bubble { fill:var(--bubble); }
+.rpt .chart .c-bubble-ink { fill:var(--bubble-ink); }
+.rpt .chart .c-text { fill:var(--text); }
+.rpt .chart .c-muted { fill:var(--muted-foreground); }
+.rpt .chart .c-track { fill:var(--raise); }
+.rpt .chart .c-mark { fill:var(--mark); }
+.rpt .chart .c-rule { stroke:var(--dim); }
+.rpt .chart .c-cross { stroke:var(--muted-foreground); }
+.rpt .chart .c-ring { stroke:var(--panel); }
+.rpt .chart .c-not { fill:var(--dim); }
+.rpt .chart .c-esc { fill:var(--mark); }
+.rpt .mbar.mark { background:var(--mark); }
+.rpt .mbar.cafe { background:var(--tr); }

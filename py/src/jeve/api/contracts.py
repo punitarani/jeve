@@ -653,7 +653,9 @@ class FieldReport(BaseModel):
     """GET /report — the field report, recomputed at most once per tick."""
 
     seq: int
-    as_of: str = Field(description="The database's clock when this was served.")
+    as_of: str = Field(
+        description="The database's clock when this was served, ISO-8601 UTC."
+    )
     clock: Clock
     health: Health
     model: str | None = Field(

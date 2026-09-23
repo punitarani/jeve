@@ -18,10 +18,10 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { JellyLoader } from "@/components/block/jelly-loader";
 import { SiteFooter } from "@/components/SiteFooter";
-import { fetchReport, fetchTownMap } from "@/lib/api";
+import { fetchReport, fetchTownMap, money } from "@/lib/api";
 import { REPORTS } from "@/reports";
 import { BarChart, ColChart, Dumbbell, LineChart, type Series } from "./charts";
-import { fmt, pct, usd } from "./format";
+import { dayfmt, dollars, fmt, ORG_COLOR, pad2, pct } from "./format";
 import {
 	type AnswerRow,
 	AnswerTables,
@@ -46,7 +46,6 @@ import {
 	LIVE_CATS,
 	liveFindings,
 	liveTown,
-	ORG_COLOR,
 	ORG_SHORT,
 	payrollStandings,
 	spendWords,
@@ -70,9 +69,6 @@ const NAV: [string, string][] = [
 // Panel grey up to the accent, as the landing page's loader.
 const LOADER = ["#262d36", "#37404d", "#55606e", "#77808f", "#8b96a5", "#7e6bb8", "#a78bfa", "#c4b5fd"];
 
-const pad2 = (h: number) => String(h).padStart(2, "0");
-const dayfmt = (d: number, tip?: boolean) => (tip ? `day ${d}` : `d${d}`);
-const dollars = (v: number) => (Math.abs(v) >= 1000 ? `$${Math.round(v / 1000)}k` : `$${Math.round(v)}`);
 const firstName = (name: string) => name.split(" ")[0] ?? name;
 
 type Loaded = { report: FieldReport; map: TownMap; town: TownData };
@@ -392,7 +388,7 @@ function Report({ report: r, town, stale }: { report: FieldReport; town: TownDat
 					<h2>Four firms' cash, and where the wages go</h2>
 					<p className="sub">
 						Cash on hand at the end of each sim-day, from {fmt(v.ledger_entries)} ledger entries that sum to{" "}
-						{v.ledger_imbalance_cents === 0 ? "exactly zero" : usd(v.ledger_imbalance_cents)}. Click a firm in the
+						{v.ledger_imbalance_cents === 0 ? "exactly zero" : money(v.ledger_imbalance_cents)}. Click a firm in the
 						legend to hide it.
 					</p>
 					<Fig
@@ -469,7 +465,7 @@ function Report({ report: r, town, stale }: { report: FieldReport; town: TownDat
 							title="Household cash"
 							caption={
 								h.wages_cents
-									? `Of ${usd(h.wages_cents)} paid in wages, ${usd(h.spending_cents)} (${pct(h.spending_cents / h.wages_cents, 1)}) came back as spending.`
+									? `Of ${money(h.wages_cents)} paid in wages, ${money(h.spending_cents)} (${pct(h.spending_cents / h.wages_cents, 1)}) came back as spending.`
 									: "No wages paid yet."
 							}
 						>

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
@@ -41,7 +40,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     writer lock is a session lock and must ride a dedicated connection.
     """
 
-    global _pool
+    global _pool, _report_lock
+    _report_lock = asyncio.Lock()
     pool = db.connect_pool()
     await asyncio.to_thread(pool.open)
     _pool = pool
@@ -567,12 +567,30 @@ def economics() -> dict[str, object]:
     }
 
 
-_report_lock = threading.Lock()
+_report_lock: asyncio.Lock | None = None
 _report_memo: tuple[tuple[object, ...], dict[str, object]] | None = None
 
 
+def _report_meta() -> tuple[dict[str, Any], int]:
+    with _db() as conn:
+        meta = conn.execute(
+            "SELECT *, EXTRACT(EPOCH FROM now() - heartbeat_at)::float8 "
+            "AS heartbeat_age_s, current_database() AS db, "
+            "to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+            "AS as_of FROM sim_meta"
+        ).fetchone()
+        if meta is None:
+            raise HTTPException(503, "the world has not been seeded")
+        return dict(meta), _max_seq(conn)
+
+
+def _report_body(now: SimTime) -> dict[str, object]:
+    with _db() as conn:
+        return report.aggregate(conn, now)
+
+
 @app.get("/report")
-def field_report() -> dict[str, object]:
+async def field_report() -> dict[str, object]:
     """The field report: the world's aggregates, as `/reports` draws them (API-0003).
 
     A handful of full scans, so the aggregates are memoised on what would
@@ -584,23 +602,19 @@ def field_report() -> dict[str, object]:
     reader must not be shown.
     """
 
-    global _report_memo
-    with _db() as conn:
-        meta = conn.execute(
-            "SELECT *, EXTRACT(EPOCH FROM now() - heartbeat_at)::float8 "
-            "AS heartbeat_age_s, now()::text AS as_of, current_database() AS db "
-            "FROM sim_meta"
-        ).fetchone()
-        if meta is None:
-            raise HTTPException(503, "the world has not been seeded")
-        seq = _max_seq(conn)
+    global _report_lock, _report_memo
+    meta, seq = await asyncio.to_thread(_report_meta)
     key = (meta["db"], meta["run_id"], int(meta["tick_seq"]), seq)
-    # Waiters hold the lock, not a pooled connection: eight of those is the
-    # whole pool, and every other endpoint would queue behind the report.
-    with _report_lock:
+    # An asyncio lock, so the crowd waits on the event loop. A threading lock
+    # in a sync endpoint parks each waiter on a worker thread, and forty of
+    # those is the whole threadpool: /state and /health would stall behind
+    # one slow report. Made per event loop, which is what an asyncio lock is
+    # bound to — each TestClient, and each server, runs its own.
+    if _report_lock is None:
+        _report_lock = asyncio.Lock()
+    async with _report_lock:
         if _report_memo is None or _report_memo[0] != key:
-            with _db() as conn:
-                body = report.aggregate(conn, SimTime(int(meta["sim_time"])))
+            body = await asyncio.to_thread(_report_body, SimTime(int(meta["sim_time"])))
             _report_memo = (key, body)
         body = _report_memo[1]
     return {

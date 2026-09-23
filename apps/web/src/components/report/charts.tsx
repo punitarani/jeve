@@ -66,8 +66,8 @@ function Bubble({ W, x, y, text }: { W: number; x: number; y: number; text: stri
 	return (
 		<g>
 			<rect x={bx + 2} y={by + 2} width={w} height={h} rx={10.5} fill="#000" opacity={0.3} />
-			<rect x={bx} y={by} width={w} height={h} rx={10.5} style={paint("--bubble")} />
-			<path d={`M${x - 4} ${by + h - 0.5}L${x + 4} ${by + h - 0.5}L${x} ${by + h + 6}Z`} style={paint("--bubble")} />
+			<rect x={bx} y={by} width={w} height={h} rx={10.5} className="c-bubble" />
+			<path d={`M${x - 4} ${by + h - 0.5}L${x + 4} ${by + h - 0.5}L${x} ${by + h + 6}Z`} className="c-bubble" />
 			<text
 				x={bx + w / 2}
 				y={by + 14.5}
@@ -75,7 +75,7 @@ function Bubble({ W, x, y, text }: { W: number; x: number; y: number; text: stri
 				fontSize="11"
 				fontWeight="700"
 				fontFamily={MONO}
-				style={paint("--bubble-ink")}
+				className="c-bubble-ink"
 			>
 				{text}
 			</text>
@@ -201,7 +201,7 @@ export function LineChart(o: LineProps) {
 						))}
 					</g>
 					{(o.vlines ?? []).map((i) => (
-						<line key={i} x1={X(i)} x2={X(i)} y1={m.t - 4} y2={m.t + ih} strokeDasharray="3 4" style={ink("--dim")} />
+						<line key={i} x1={X(i)} x2={X(i)} y1={m.t - 4} y2={m.t + ih} strokeDasharray="3 4" className="c-rule" />
 					))}
 					{vis.map((s, k) => {
 						const d = paths[k] ?? "";
@@ -220,13 +220,13 @@ export function LineChart(o: LineProps) {
 									cy={Y(at(s, s.values.length - 1))}
 									r={4}
 									strokeWidth={2}
-									style={{ fill: `var(${s.color})`, stroke: "var(--panel)" }}
+									className="c-ring" style={paint(s.color)}
 								/>
 							</g>
 						);
 					})}
 					{ends.map((e) => (
-						<text key={e.s.name} x={W - m.r + 10} y={e.y + 4} fontSize="11.5" fontFamily={MONO} style={paint("--text")}>
+						<text key={e.s.name} x={W - m.r + 10} y={e.y + 4} fontSize="11.5" fontFamily={MONO} className="c-text">
 							{e.s.name}
 						</text>
 					))}
@@ -235,7 +235,7 @@ export function LineChart(o: LineProps) {
 					))}
 					{hover !== null && (
 						<g pointerEvents="none">
-							<line x1={X(hover)} x2={X(hover)} y1={m.t} y2={m.t + ih} opacity={0.6} style={ink("--muted-foreground")} />
+							<line x1={X(hover)} x2={X(hover)} y1={m.t} y2={m.t + ih} opacity={0.6} className="c-cross" />
 							{vis.map((s) => (
 								<circle
 									key={s.name}
@@ -243,7 +243,7 @@ export function LineChart(o: LineProps) {
 									cy={Y(at(s, hover))}
 									r={4.5}
 									strokeWidth={2}
-									style={{ fill: `var(${s.color})`, stroke: "var(--panel)" }}
+									className="c-ring" style={paint(s.color)}
 								/>
 							))}
 						</g>
@@ -354,7 +354,7 @@ export function ColChart(o: ColProps) {
 										fontSize="12"
 										fontWeight="700"
 										fontFamily={MONO}
-										style={paint("--text")}
+										className="c-text"
 									>
 										{o.valLabels[i]}
 									</text>
@@ -376,7 +376,7 @@ export function ColChart(o: ColProps) {
 							</g>
 						);
 					})}
-					<line x1={m.l} x2={W - m.r} y1={m.t + ih} y2={m.t + ih} style={ink("--dim")} />
+					<line x1={m.l} x2={W - m.r} y1={m.t + ih} y2={m.t + ih} className="c-rule" />
 					{(o.notes ?? []).map((n) => (
 						<Bubble key={n.text} W={W} x={m.l + (n.i + 0.5) * bw} y={Y(o.values[n.i] ?? 0)} text={n.text} />
 					))}
@@ -432,11 +432,11 @@ export function BarChart(o: BarProps) {
 									textAnchor="end"
 									fontSize="11.5"
 									fontFamily={MONO}
-									style={paint("--muted-foreground")}
+									className="c-muted"
 								>
 									{c}
 								</text>
-								<rect x={m.l} y={y + 6} width={Math.max(0, iw)} height={bh} rx={3} style={paint("--raise")} />
+								<rect x={m.l} y={y + 6} width={Math.max(0, iw)} height={bh} rx={3} className="c-track" />
 								<path
 									d={`M${m.l} ${y + 6}H${m.l + w - r}a${r} ${r} 0 0 1 ${r} ${r}V${y + 6 + bh - r}a${r} ${r} 0 0 1 ${-r} ${r}H${m.l}Z`}
 									style={paint(o.colors?.[i] ?? o.color ?? "--mark")}
@@ -447,7 +447,7 @@ export function BarChart(o: BarProps) {
 									fontSize="11.5"
 									fontWeight="700"
 									fontFamily={MONO}
-									style={paint("--text")}
+									className="c-text"
 								>
 									{vals[i]}
 								</text>
@@ -521,23 +521,23 @@ export function Dumbbell({
 						const mid = X(((r.esc ?? r.not ?? 0) + (r.not ?? r.esc ?? 0)) / 2);
 						return (
 							<g key={r.name}>
-								<text x={m.l - 14} y={y + 4} textAnchor="end" fontSize="12" fontFamily={MONO} style={paint("--text")}>
+								<text x={m.l - 14} y={y + 4} textAnchor="end" fontSize="12" fontFamily={MONO} className="c-text">
 									{r.name}
 								</text>
 								{r.esc !== null && r.not !== null && (
-									<line x1={X(r.esc)} x2={X(r.not)} y1={y} y2={y} strokeWidth={2} style={ink("--dim")} />
+									<line x1={X(r.esc)} x2={X(r.not)} y1={y} y2={y} strokeWidth={2} className="c-rule" />
 								)}
 								{r.not !== null && (
 									<>
-										<circle cx={X(r.not)} cy={y} r={6.5} strokeWidth={2} style={{ fill: "var(--dim)", stroke: "var(--panel)" }} />
-										<text x={X(r.not)} y={y - 13} textAnchor="middle" fontSize="11.5" fontFamily={MONO} style={paint("--muted-foreground")}>
+										<circle cx={X(r.not)} cy={y} r={6.5} strokeWidth={2} className="c-ring c-not" />
+										<text x={X(r.not)} y={y - 13} textAnchor="middle" fontSize="11.5" fontFamily={MONO} className="c-muted">
 											{r.not}
 										</text>
 									</>
 								)}
 								{r.esc !== null && (
 									<>
-										<circle cx={X(r.esc)} cy={y} r={6.5} strokeWidth={2} style={{ fill: "var(--mark)", stroke: "var(--panel)" }} />
+										<circle cx={X(r.esc)} cy={y} r={6.5} strokeWidth={2} className="c-ring c-esc" />
 										<text
 											x={X(r.esc)}
 											y={y - 13}
@@ -545,7 +545,7 @@ export function Dumbbell({
 											fontSize="11.5"
 											fontWeight="700"
 											fontFamily={MONO}
-											style={paint("--mark")}
+											className="c-mark"
 										>
 											{r.esc}
 										</text>

@@ -29,8 +29,8 @@ import {
 	SeriesToggle,
 	Vital,
 	WhoLegend,
-	fmt,
 } from "@/components/report/parts";
+import { dayfmt, dollars, fmt, pad2 } from "@/components/report/format";
 import { TipProvider, TipRow } from "@/components/report/tip";
 import { TownReplay } from "@/components/report/TownReplay";
 import type { TownData } from "@/components/report/town";
@@ -54,7 +54,6 @@ type Data = {
 	};
 };
 const D = raw as unknown as Data;
-const pad2 = (h: number) => String(h).padStart(2, "0");
 
 const NAV: [string, string][] = [
 	["summary", "summary"],
@@ -168,8 +167,6 @@ const FIRMS: [string, string, string][] = [
 	["thirdrail.cash", "Third Rail", "--tr"],
 ];
 
-const dayfmt = (d: number, tip?: boolean) => (tip ? `day ${d}` : `d${d}`);
-const dollars = (v: number) => (v >= 1000 ? `$${Math.round(v / 1000)}k` : `$${Math.round(v)}`);
 
 function townData(): TownData {
 	const T = D.town;
@@ -196,12 +193,13 @@ function townData(): TownData {
 			["money", 0.031],
 			["other", 0.006],
 		],
-		buildings: {
-			tallybird: { cash: 10690, flag: "payroll held", note: "payroll held since d156" },
-			halloran: { cash: 76655 },
-			ledgerline: { cash: 144562 },
-			thirdrail: { cash: 135220 },
-		},
+		// The map at e417422, which the snapshot's tiles were drawn from.
+		buildings: [
+			{ org_id: "tallybird", zone: "software_office", name: "Tallybird Software", x0: 2, y0: 2, x1: 15, y1: 10, cash: 10690, flag: "payroll held", note: "payroll held since d156" },
+			{ org_id: "halloran", zone: "law_office", name: "Halloran & Pike LLP", x0: 24, y0: 2, x1: 37, y1: 10, cash: 76655 },
+			{ org_id: "ledgerline", zone: "accounting_office", name: "Ledgerline Accounting", x0: 2, y0: 17, x1: 15, y1: 25, cash: 144562 },
+			{ org_id: "thirdrail", zone: "cafe", name: "Third Rail Cafe", x0: 24, y0: 17, x1: 37, y1: 25, cash: 135220 },
+		],
 		// 14:30–15:15: an illustrative POS outage, raised over coffee.
 		outage: { from: 22, to: 25, name: "POS", label: "POS down", shout: "pos is down!" },
 		day: "d232 replay",

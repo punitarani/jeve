@@ -595,7 +595,7 @@ export type CastMember = z.infer<typeof CastMember>;
 /** GET /report — the field report, recomputed at most once per tick. */
 export const FieldReport = z.object({
   seq: z.number().int(),
-  /** The database's clock when this was served. */
+  /** The database's clock when this was served, ISO-8601 UTC. */
   as_of: z.string(),
   clock: Clock,
   health: Health,

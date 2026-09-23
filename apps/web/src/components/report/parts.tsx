@@ -9,9 +9,7 @@
 import Link from "next/link";
 import { type ReactNode, useEffect, useState } from "react";
 import { Dot } from "./charts";
-import { fmt } from "./format";
-
-export { fmt };
+import { fmt, ORG_COLOR } from "./format";
 
 /** Reads a per-viewer preference; storage can be absent or refuse. */
 function remembered(key: string): string | null {
@@ -261,11 +259,8 @@ export function CallsTable({ rows }: { rows: CallRow[] }) {
 								<td className="n">{fmt(r.decisions)}</td>
 								<td>
 									<span
-										className="mbar"
-										style={{
-											width: Math.max(2, (Math.log10(p + 1) / Math.log10(maxR + 1)) * 150),
-											background: "var(--mark)",
-										}}
+										className="mbar mark"
+										style={{ width: Math.max(2, (Math.log10(p + 1) / Math.log10(maxR + 1)) * 150) }}
 									/>
 									{p < 10 ? p.toFixed(1) : fmt(p)}
 								</td>
@@ -301,12 +296,6 @@ const PEOPLE_COLS: [PersonKey, string][] = [
 	["soc", "sociability"],
 	["dil", "diligence"],
 ];
-const ORG_COLOR: Record<string, string> = {
-	tallybird: "--tb",
-	halloran: "--hp",
-	ledgerline: "--ll",
-	thirdrail: "--tr",
-};
 
 /** Every member of staff; click (or Enter on) a column to sort by it. */
 export function PeopleTable({ rows }: { rows: PersonRow[] }) {
@@ -361,11 +350,11 @@ export function PeopleTable({ rows }: { rows: PersonRow[] }) {
 							</td>
 							<td className="n">{p.mood.toFixed(2)}</td>
 							<td className="n">
-								<span className="mbar" style={{ width: p.cafe * 0.6, background: "var(--tr)" }} />
+								<span className="mbar cafe" style={{ width: p.cafe * 0.6 }} />
 								{p.cafe.toFixed(1)}%
 							</td>
 							<td className="n">
-								<span className="mbar" style={{ width: p.talk * 1.4, background: "var(--mark)" }} />
+								<span className="mbar mark" style={{ width: p.talk * 1.4 }} />
 								{p.talk.toFixed(1)}%
 							</td>
 							<td className="n">{p.raised}</td>

@@ -26,7 +26,15 @@ export type CastMember = {
 	path: readonly Tile[];
 };
 
+/** A building as world/map.py lays it out (inclusive outer walls), and its books. */
 export type TownBuilding = {
+	org_id: string;
+	zone: string;
+	name: string;
+	x0: number;
+	y0: number;
+	x1: number;
+	y1: number;
 	/** Cash on hand, in dollars. */
 	cash: number;
 	/** A red pill under the label, e.g. "payroll held". */
@@ -48,7 +56,7 @@ export type TownData = {
 	arrivals: Readonly<Record<number, number>>;
 	/** Encounter topics and their share, most common first. */
 	topics: readonly (readonly [string, number])[];
-	buildings: Readonly<Record<string, TownBuilding>>;
+	buildings: readonly TownBuilding[];
 	/**
 	 * An illustrative outage of a module the cafe runs on, in replay ticks,
 	 * raised over coffee: `name` for the HUD ("POS"), `label` for the cafe's
@@ -81,8 +89,6 @@ export type TownTip =
 	| { kind: "building"; name: string; cash: number; cashLabel: string; note?: string };
 
 export const TICKS = 32;
-const MW = 40;
-const MH = 28;
 const MONO = '"JetBrains Mono", ui-monospace, monospace';
 
 const PAL: Record<string, { wall: string; floor: string; body: string; accent: string }> = {
@@ -93,24 +99,9 @@ const PAL: Record<string, { wall: string; floor: string; body: string; accent: s
 };
 const pal = (org: string) => PAL[org] ?? PAL.tallybird!;
 
-type Bld = {
-	zone: string;
-	org: string;
-	name: string;
-	x0: number;
-	y0: number;
-	x1: number;
-	y1: number;
-	h: number;
-	hit?: [number, number, number, number];
-};
-// world/map.py's BUILDINGS, with a wall height each so the four read apart.
-const BLD: readonly Bld[] = [
-	{ zone: "software_office", org: "tallybird", name: "Tallybird Software", x0: 2, y0: 2, x1: 15, y1: 10, h: 1.6 },
-	{ zone: "law_office", org: "halloran", name: "Halloran & Pike LLP", x0: 24, y0: 2, x1: 37, y1: 10, h: 2.0 },
-	{ zone: "accounting_office", org: "ledgerline", name: "Ledgerline Accounting", x0: 2, y0: 17, x1: 15, y1: 25, h: 1.45 },
-	{ zone: "cafe", org: "thirdrail", name: "Third Rail Cafe", x0: 24, y0: 17, x1: 37, y1: 25, h: 1.2 },
-];
+// Wall heights, so the four read apart; a zone this does not know gets the middle.
+const WALL: Record<string, number> = { software_office: 1.6, law_office: 2.0, accounting_office: 1.45, cafe: 1.2 };
+type Bld = TownBuilding & { h: number; hit?: [number, number, number, number] };
 
 const hx = (h: string) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
 const toHex = (a: number[]) =>
@@ -180,11 +171,12 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 	const ctx = cv.getContext("2d");
 	if (ctx === null) return () => {};
 	const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+	const MH = data.tiles.length;
+	const MW = data.tiles[0]?.length ?? 0;
 	const kindAt = (x: number, y: number) => (x < 0 || y < 0 || x >= MW || y >= MH ? null : (data.tiles[y]?.[x] ?? null));
-	const bldAt = (x: number, y: number) => BLD.find((b) => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1);
+	const blds: Bld[] = data.buildings.map((b) => ({ ...b, h: WALL[b.zone] ?? 1.5 }));
+	const bldAt = (x: number, y: number) => blds.find((b) => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1);
 	const inside = (b: Bld, x: number, y: number) => x > b.x0 && x < b.x1 && y > b.y0 && y < b.y1;
-	const blds: Bld[] = BLD.map((b) => ({ ...b }));
-	const cashOf = (org: string) => data.buildings[org]?.cash ?? 0;
 
 	let W = 0;
 	let H = 0;
@@ -212,7 +204,7 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 	const cbox = (cx: number, cy: number, z: number, w: number, d: number, h: number, c: string) =>
 		box(cx - w / 2, cy - d / 2, z, w, d, h, c);
 	function floorOf(b: Bld, x: number, y: number) {
-		const p = pal(b.org);
+		const p = pal(b.org_id);
 		switch (b.zone) {
 			case "software_office":
 				return jitter(blend("#8d97ab", p.floor, 0.25), 0.05, x >> 1, y >> 1, 31);
@@ -240,7 +232,7 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 					if (!b) break;
 					const front = y === b.y1 || x === b.x1; // cut away the walls that face the camera
 					const h = front ? 0.42 : b.h * 0.72;
-					const p = pal(b.org);
+					const p = pal(b.org_id);
 					const c = jitter(blend(mute(p.wall, 0.15), "#e6dfd0", 0.42), 0.06, x, y, 7);
 					const cap = blend(p.wall, p.accent, 0.45);
 					add(dep, () => {
@@ -335,12 +327,21 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 			}
 		}
 	}
-	add(40.5, () => {
-		cbox(20, 14, 0, 2, 2, 0.32, "#cfc6b2");
-		cbox(20, 14, 0.32, 1.7, 1.7, 0.02, "#7cc4e8");
-		cbox(20, 14, 0.32, 0.24, 0.24, 0.75, "#cfc6b2");
-		cbox(20, 14, 1.07, 0.5, 0.5, 0.08, "#9fd8f2");
-	});
+	// One fountain over all its tiles, centred on them, and painted after the
+	// plaza furniture around it, as the first report drew it.
+	const basin: Tile[] = [];
+	data.tiles.forEach((row, y) => row.forEach((k, x) => k === "fountain" && basin.push([x, y])));
+	if (basin.length) {
+		const fx = basin.reduce((a, t) => a + t[0], 0) / basin.length + 0.5;
+		const fy = basin.reduce((a, t) => a + t[1], 0) / basin.length + 0.5;
+		const size = Math.sqrt(basin.length);
+		add(fx + fy + 6.5, () => {
+			cbox(fx, fy, 0, size, size, 0.32, "#cfc6b2");
+			cbox(fx, fy, 0.32, size - 0.3, size - 0.3, 0.02, "#7cc4e8");
+			cbox(fx, fy, 0.32, 0.24, 0.24, 0.75, "#cfc6b2");
+			cbox(fx, fy, 1.07, 0.5, 0.5, 0.08, "#9fd8f2");
+		});
+	}
 
 	function paintGround() {
 		ground = document.createElement("canvas");
@@ -466,7 +467,7 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 		const fs = Math.max(9, Math.min(12.5, tw * 0.36));
 		ctx!.font = `700 ${fs}px ${MONO}`;
 		const name = W < 620 ? (b.name.split(" ")[0] ?? b.name) : b.name;
-		const cash = `$${(cashOf(b.org) / 1000).toFixed(1)}k`;
+		const cash = `$${(b.cash / 1000).toFixed(1)}k`;
 		const t1 = ctx!.measureText(name).width;
 		const t2 = ctx!.measureText(cash).width;
 		const pad = fs * 0.7;
@@ -475,7 +476,7 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 		const h = fs * 2.1;
 		const lx = Math.max(4, Math.min(W - w - 4, x - w / 2));
 		const ly = Math.max(4, y - h);
-		const p = pal(b.org);
+		const p = pal(b.org_id);
 		ctx!.fillStyle = "rgba(14,17,22,.88)";
 		ctx!.beginPath();
 		ctx!.roundRect(lx, ly, w, h, 7);
@@ -488,7 +489,7 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 		ctx!.textBaseline = "middle";
 		ctx!.fillStyle = "#dfe5ec";
 		ctx!.fillText(name, lx + pad + dot + 6, ly + h / 2 + 0.5);
-		ctx!.fillStyle = data.buildings[b.org]?.flag ? "#e0757c" : "#8b96a5";
+		ctx!.fillStyle = b.flag ? "#e0757c" : "#8b96a5";
 		ctx!.fillText(cash, lx + pad + dot + 6 + t1 + fs * 0.8, ly + h / 2 + 0.5);
 		b.hit = [lx, ly, w, h];
 		if (extra && W >= 480) {
@@ -544,8 +545,7 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 		items.sort((a, b) => a.d - b.d);
 		for (const it of items) it.fn();
 		for (const b of blds) {
-			const flag = data.buildings[b.org]?.flag ?? null;
-			label(b, flag ?? (b.org === "thirdrail" && down && outage ? outage.label : null));
+			label(b, b.flag ?? (b.zone === "cafe" && down && outage ? outage.label : null));
 		}
 		if (f > 0.1 && f < 0.92 && tNow < TICKS) {
 			let shown = 0;
@@ -626,16 +626,19 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 		const nw = parent?.clientWidth ?? 0;
 		if (!nw) return;
 		W = nw;
-		tw = W / (W < 560 ? 30 : 33.5);
+		// Tile width from the diorama's span (MW + MH) / 2 tiles across, a
+		// little tighter on a phone so the labels keep their size.
+		const span = (MW + MH) / 2 - 0.5;
+		tw = W / (W < 560 ? span - 3.5 : span);
 		th = tw / 2;
 		hz = th * 1.15;
 		const top = Math.max(W < 560 ? 44 : 58, 2.6 * hz + 26); // room for the HUD chips and the tallest walls
-		H = Math.round(top + 17 * tw + 0.9 * hz + 14); // the whole diorama, soil edge included
+		H = Math.round(top + ((MW + MH) / 4) * tw + 0.9 * hz + 14); // the whole diorama, soil edge included
 		dpr = Math.min(2, devicePixelRatio || 1);
 		cv.width = Math.round(W * dpr);
 		cv.height = Math.round(H * dpr);
 		cv.style.height = `${H}px`;
-		ox = W / 2 - 3 * tw;
+		ox = W / 2 - ((MW - MH) / 4) * tw;
 		oy = top;
 		paintGround();
 		frame();
@@ -690,7 +693,7 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 		cv.style.cursor = "default";
 		if (best) {
 			const s = best.s;
-			const b = BLD.find((x) => x.org === s.org_id);
+			const b = blds.find((x) => x.org_id === s.org_id);
 			on.tip(r.left + scrollX + best.sx, r.top + scrollY + best.sy, {
 				kind: "person",
 				name: s.name,
@@ -706,9 +709,9 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 			on.tip(r.left + scrollX + b.hit[0] + b.hit[2] / 2, r.top + scrollY + b.hit[1], {
 				kind: "building",
 				name: b.name,
-				cash: cashOf(b.org),
+				cash: b.cash,
 				cashLabel: data.cashLabel,
-				note: data.buildings[b.org]?.note,
+				note: b.note,
 			});
 			return;
 		}
@@ -718,7 +721,7 @@ export function mountTown(els: TownEls, data: TownData, on: TownHandlers): () =>
 	const onClick = (e: MouseEvent) => {
 		const r = cv.getBoundingClientRect();
 		const b = hitBuilding(e.clientX - r.left, e.clientY - r.top);
-		if (b) on.open(b.org);
+		if (b) on.open(b.org_id);
 	};
 	cv.addEventListener("pointermove", onMove);
 	cv.addEventListener("pointerleave", onLeave);
