@@ -141,8 +141,10 @@ jobs:
       # own (OPS-0002). `loadfile` keeps a module's tests together, which the
       # module-scoped world fixtures need. The api/sim nx targets are subsets
       # of this run and of py:lint/py:typecheck, so they are not run again.
+      # `--no-loadscope-reorder` keeps conftest's longest-first file order;
+      # xdist would otherwise send out the one-test soak file last.
       - name: Run the suite
-        run: uv run --directory py pytest -n auto --dist loadfile --durations=15
+        run: uv run --directory py pytest -n auto --dist loadfile --no-loadscope-reorder --durations=15
 
       - name: The world's tests ran, not skipped
         # A service that failed to start would turn the job green again by

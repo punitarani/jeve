@@ -155,6 +155,22 @@ class TheRealIndex(unittest.TestCase):
                     ),
                 )
 
+    def test_no_confirmation_runs_the_whole_suite_again(self) -> None:
+        """CI has already run the suite once, in parallel (OPS-0002).
+
+        WEB-0006's `make check` ran all of it a second time, serially: fifteen
+        of the python job's twenty-four minutes. It never names pytest, so the
+        test above let it through.
+        """
+
+        for ids, command in rc.load(rc.INDEX):
+            for wrapper in ("make check", "make test", "py:test", "-t test"):
+                self.assertNotIn(
+                    wrapper,
+                    command,
+                    "{}: `{}` re-runs the whole suite: {}".format(ids, wrapper, command),
+                )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
