@@ -93,15 +93,13 @@ jobs:
 
   python:
     runs-on: ubuntu-latest
-    # This job runs the suite twice: once here under xdist, and once again
-    # single-process inside WEB-0006's confirmation, which shells out to
-    # `make check`. Episodes (WORLD-0006) added a couple of minutes to each,
-    # and the run that carried them finished in 23m12s against the old cap of
-    # 25 — under two minutes of margin, so the next slow test anyone adds goes
-    # red for reasons that have nothing to do with their change. Raised rather
-    # than trimmed: the second run is the thing worth removing, and that means
-    # revisiting OPS-0002's bargain with WEB-0006, not deleting coverage.
-    timeout-minutes: 35
+    # This job once ran the suite twice: WEB-0006's confirmation was
+    # `make check`, which ran all of it again single-process, and with
+    # Episodes (WORLD-0006) the job reached 26 minutes against a cap of 25.
+    # The cap was raised to 35 until that second run was gone. It is gone,
+    # and `test_run_confirmations.py` keeps it gone, so the cap is back to
+    # being a guard against a hang, not a budget for a duplicate.
+    timeout-minutes: 25
     needs: [changes]
     if: needs.changes.outputs.python == 'true'
     # Without a database about half the suite skips: everything that runs the
@@ -149,8 +147,10 @@ jobs:
       # own (OPS-0002). `loadfile` keeps a module's tests together, which the
       # module-scoped world fixtures need. The api/sim nx targets are subsets
       # of this run and of py:lint/py:typecheck, so they are not run again.
+      # `--no-loadscope-reorder` keeps conftest's longest-first file order;
+      # xdist would otherwise send out the one-test soak file last.
       - name: Run the suite
-        run: uv run --directory py pytest -n auto --dist loadfile --durations=15
+        run: uv run --directory py pytest -n auto --dist loadfile --no-loadscope-reorder --durations=15
 
       - name: The world's tests ran, not skipped
         # A service that failed to start would turn the job green again by

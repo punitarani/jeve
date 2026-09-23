@@ -62,6 +62,25 @@ def pytest_configure(config: pytest.Config) -> None:
         return
 
 
+# The longest files go to the workers first (OPS-0002). By default `loadfile`
+# hands out the files with the most tests first, so `test_soak.py`, which has
+# one test that runs for three minutes on a CI runner, went out last and ran
+# alone while three workers sat idle: 91% of the suite was done at 3:00 and the
+# rest finished at 6:51. CI passes `--no-loadscope-reorder` so that the order
+# below is the one xdist dispatches. Every other file keeps collection order.
+# Longest first, as measured by `--durations` in CI, and one file per worker:
+# a worker with two or fewer tests pending takes another file, so a fifth
+# entry lands on the soak worker at once. Adding `test_episodes.py` (72s
+# locally) here is slower, 211s -> 227s, replaying measured durations through
+# xdist's dispatch rule.
+LONGEST_FIRST = ("test_soak.py", "test_world.py", "test_flows.py", "test_space.py")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    rank = {name: i for i, name in enumerate(LONGEST_FIRST)}
+    items.sort(key=lambda item: rank.get(item.path.name, len(LONGEST_FIRST)))
+
+
 @pytest.fixture(scope="module")
 def db_conn() -> Iterator[Connection[DictRow]]:
     try:
