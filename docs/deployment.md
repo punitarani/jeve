@@ -36,6 +36,25 @@ Postgres product can satisfy that; its Vitess/MySQL line cannot — and a
 non-Postgres store is a new decision record and a storage-port, not a config
 change (LLM-0007).
 
+## Secrets
+
+Worker secrets are edited in Doppler `worker/prd` and nowhere else. Doppler's
+Fly.io sync (`worker` → Syncs → Fly.io, app `jeve-backend`, config `prd`)
+pushes the whole config to the app's `fly secrets`; with the sync's restart
+option on, the machines restart to pick it up, and otherwise they do at the
+next deploy. Nothing in CI or in this repo sets them.
+
+* `worker/prd` holds what the app reads as secrets: `OPENROUTER_API_KEY`,
+  `JEVE_DATABASE_URL` (direct), `MIGRATIONS_DB_URL` (for `release_command`),
+  and optionally `JEVE_DATABASE_POOLED_URL` and `BRAINTRUST_API_KEY` /
+  `BRAINTRUST_PROJECT_ID`. `docs/environment-variables.md` lists every name
+  the code reads.
+* Don't `fly secrets set` a worker secret: the next sync overwrites it.
+* A Fly secret beats a `fly.toml` `[env]` value of the same name, so a name in
+  both `worker/prd` and `[env]` takes Doppler's value.
+* Without `BRAINTRUST_API_KEY`, `jeve.tracing` is a silent no-op (LLM-0008);
+  `/state`'s `health.tracing` says whether the app has the key.
+
 ## First deploy
 
 ```bash
@@ -43,16 +62,7 @@ change (LLM-0007).
 fly postgres create --name jeve-db --region iad
 fly postgres attach jeve-db --app jeve-backend   # sets DATABASE_URL
 
-fly secrets set OPENROUTER_API_KEY=...           # the only billable path
-fly secrets set JEVE_DATABASE_URL=postgresql://...@jeve-db.internal:5432/jeve
-# Optional. Without a key, jeve.tracing is a no-op and nothing is traced —
-# silently, by design (LLM-0008). Nothing in CI sets these: `flyctl deploy`
-# does not read Doppler, so they arrive by `fly secrets set` or a Doppler
-# Config Sync. `/state`'s `health.tracing` says whether the app has the key.
-fly secrets set BRAINTRUST_API_KEY=...
-fly secrets set BRAINTRUST_PROJECT_ID=...        # unset: a project named jeve
-# Optional, if you front Postgres with a transaction-mode pooler:
-fly secrets set JEVE_DATABASE_POOLED_URL=postgresql://...:6432/jeve
+# Secrets: fill Doppler worker/prd and set up its Fly.io sync (see above).
 
 fly deploy            # release_command runs migrations, then api + sim
 cd apps/web && NEXT_PUBLIC_JEVE_API=https://jeve-api.punitarani.com \
@@ -139,7 +149,8 @@ unauthenticated and can spend.
 fly logs -a jeve-backend --process sim     # the daemon's voice
 fly checks list -a jeve-backend            # api health
 fly ssh console -a jeve-backend            # a shell inside a machine
-fly secrets set JEVE_HALT_CEILING_USD=...  # retune without a redeploy
+# Retune without a code change: set JEVE_HALT_CEILING_USD (or any knob) in
+# Doppler worker/prd. The sync pushes it, and it beats fly.toml's [env].
 ```
 
 **Rollback**: `fly releases` lists image versions;
@@ -152,8 +163,8 @@ spend ledger. For Fly Postgres, snapshot the volume:
 `fly volumes snapshots list <vol>` / `fly volumes create --snapshot-id`.
 Logical copy: `fly proxy 5433:5432 -a jeve-db` then
 `pg_dump postgresql://jeve:...@localhost:5433/jeve > backup.sql`.
-Restore is a fresh cluster + `psql < backup.sql` + `fly secrets set
-JEVE_DATABASE_URL=...`.
+Restore is a fresh cluster + `psql < backup.sql`, then point
+`JEVE_DATABASE_URL` at it in Doppler `worker/prd`.
 
 **Spend**: `make spend` reads the `spend_entries` table directly (the
 `ops/spend.json` checkpoint is a local convenience). The same table backs

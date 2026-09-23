@@ -88,7 +88,9 @@ the codebase reads them; they authenticate the deploy jobs.
 Three projects, matching the `.env.*.example` files:
 
 * **app** — `NEXT_PUBLIC_JEVE_API` (build-time only)
-* **worker** — everything above for api + sim; synced to `fly secrets`
+* **worker** — everything above for api + sim; `prd` is synced to the
+  `jeve-backend` app's `fly secrets` by Doppler's Fly.io sync, and a secret
+  beats a `fly.toml` `[env]` value of the same name
 * **infra** — the CI/CD credentials
 
 ```bash
