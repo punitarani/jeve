@@ -246,6 +246,8 @@ def test_rendering_prose_is_one_trace_over_the_fallback_ladder(
     assert root.type == "task"
     assert root.fields["input"]["seq"] == encounter_seq
     assert root.fields["metadata"]["outcome"] == "ok"
+    # One shape for `output` on every path: `lines` here, `reason` on failure.
+    assert root.fields["output"] == {"lines": body["prose"]["lines"]}
     # The order the gateway resolved, not the preference constant: a slug that
     # does not resolve drops out of the ladder (LLM-0005).
     ladder = gateway.generative_models

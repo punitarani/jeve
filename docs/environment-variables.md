@@ -73,8 +73,8 @@ of it the `agent.tick` batch.
 The key traces every run that has it, not only the deployed daemon: with it in
 a local `.env`, `make soak` sends a trace per tick and `make e2e` a replay's
 worth. Give local runs a `BRAINTRUST_PROJECT_ID` of their own. Inside a
-project, `metadata.policy` on `sim.tick` and `metadata.mode` on each batch tell
-rules, replay and recording runs apart.
+project, a `sim.tick`'s metadata (policy, root seed, database name and the
+world's switches) and each batch's `metadata.mode` tell runs and arms apart.
 
 Spans carry OpenRouter's reported cost as `metrics.estimated_cost`, so a trace
 and the `spend_entries` ledger price a call the same way. A tracing failure is

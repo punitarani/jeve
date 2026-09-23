@@ -344,7 +344,8 @@ def test_a_replayed_tick_is_one_trace_whose_batches_carry_their_decisions(
     for tick in spans.roots:
         clock = tick.fields["input"]
         assert clock["label"] == SimTime(clock["sim_time"]).label()
-        assert tick.fields["metadata"] == {"policy": "JevPolicy"}
+        assert tick.fields["metadata"]["policy"] == "JevPolicy"
+        assert tick.fields["metadata"]["root_seed"] == ROOT_SEED
         assert all(child.name.startswith("decide ") for child in tick.children)
 
     batches = [batch for tick in spans.roots for batch in tick.children]
@@ -422,6 +423,8 @@ def test_a_gated_batch_says_so_without_asking_anyone(spans: RecordingSink) -> No
     fine = ctx("file.ticket", "p2", module_down=False)
     policy = JevPolicy(ROOT_SEED, Recorder(mode="replay"))
     try:
+        # Nothing asked is nothing traced: not a batch named for no kind.
+        assert policy.decide_many([]) == []
         policy.decide_many([served])
         policy.decide_many([served, fine])
     finally:

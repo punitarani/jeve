@@ -27,8 +27,7 @@ the root sat, made every trace look empty.
 
 ## Considered Options
 
-- **A tick is the root; each batch lists its decisions** — taken; the
-  maintainer chose the root and the level of detail.
+- **A tick is the root; each batch lists its decisions** — taken.
 - **Keep the batch as the root, with input and output** — three traces a tick,
   most of them cache lookups, with nothing tying them to the moment.
 - **Trace only batches that call the model** — cache-served decisions vanish
@@ -70,6 +69,6 @@ halt a tick. Spans read what was sent and never rebuild it (DECIDE-0004).
   quarters of it is the `agent.tick` batch. If that costs too much, list
   distributions once per model call before cutting detail.
 - Bad: `jeve.world` now imports `jeve.tracing`, and rules runs trace too when
-  the key is set (`metadata.policy` tells them apart).
+  the key is set (the tick's metadata names the policy, seed and database).
 - What would reverse it: a tracing failure that reaches a tick, or an ingest
   bill that outweighs reading the traces.

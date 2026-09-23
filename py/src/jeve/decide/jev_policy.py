@@ -153,6 +153,9 @@ class JevPolicy:
         return self.decide_many([ctx])[0]
 
     def decide_many(self, contexts: Sequence[DecisionContext]) -> list[Decision]:
+        if not contexts:
+            # Nothing was asked: no lookup, no call, and no span to say so.
+            return []
         # LLM-0009: the batch is the fan-in under the tick's span. Identical
         # situations in one tick share a request, so only here are the cache
         # hit rate — the whole cost story — and each decision's settling

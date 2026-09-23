@@ -1158,8 +1158,10 @@ async def encounter_dialogue(
                     )
 
             await asyncio.to_thread(keep)
+            # Always an object, so `output` has one shape whichever path the
+            # render took: `lines` when it worked, `reason` when it did not.
             span.log(
-                output=lines,
+                output={"lines": lines},
                 metadata={"model": model, "outcome": "ok", "skipped": failures},
             )
             body["prose"] = {

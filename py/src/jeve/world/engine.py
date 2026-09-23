@@ -446,9 +446,7 @@ class Engine:
         # asks for nests under it, so one trace reads as fifteen minutes of the
         # town. A tick that raises carries the error on this span, and its
         # retry is a trace of its own.
-        with tracing.span(
-            "sim.tick", type="task", metadata={"policy": type(self._policy).__name__}
-        ) as span:
+        with tracing.span("sim.tick", type="task", metadata=self._run()) as span:
             try:
                 with self._conn.transaction():
                     meta = self._meta()
@@ -460,10 +458,11 @@ class Engine:
                     # transaction, never before it.
                     span.log(input=report.clock())
                     self._advance(report, SimTime(report.sim_time))
-                    # Inside the transaction too: nothing the trace needs is
-                    # computed after the commit, where a failure would reach
-                    # the daemon as a tick that had in fact advanced.
-                    span.log(output=report.summary())
+                    # Summarised inside the transaction, so nothing after the
+                    # commit can fail and reach the daemon as a tick that had
+                    # in fact advanced; logged after it, so a tick whose COMMIT
+                    # fails does not claim work that was rolled back.
+                    done = report.summary()
             except BaseException:
                 # The rows are gone but the ids they drew are not. Put the
                 # counters back before anything retries, or the retry numbers
@@ -472,7 +471,25 @@ class Engine:
                     db.resync_sequences(self._conn)
                     self._conn.commit()
                 raise
+            span.log(output=done)
         return report
+
+    def _run(self) -> dict[str, object]:
+        """Which world a tick belongs to, for its trace (LLM-0009).
+
+        A local key traces soak arms, episode studies and replays into the
+        same project as the daemon; these are what tell them apart. The
+        database is named, never located: no host, no credentials.
+        """
+
+        return {
+            "policy": type(self._policy).__name__,
+            "root_seed": self._root,
+            "database": self._conn.info.dbname,
+            "encounters": self.encounters,
+            "spatial": self.spatial,
+            "episodes": self.episodes,
+        }
 
     def _advance(self, report: TickReport, now: SimTime) -> None:
         """Everything one tick does. Runs inside the tick's transaction."""

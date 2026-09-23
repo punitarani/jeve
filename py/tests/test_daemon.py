@@ -186,7 +186,14 @@ def test_a_tick_is_a_trace_and_a_failed_one_carries_its_error(
     assert clock["tick_seq"] == report.tick_seq
     assert clock["sim_time"] == report.sim_time
     assert clock["label"] == SimTime(report.sim_time).label()
-    assert retried.fields["metadata"] == {"policy": "RulesPolicy"}
+    assert retried.fields["metadata"] == {
+        "policy": "RulesPolicy",
+        "root_seed": ROOT_SEED,
+        "database": conn.info.dbname,
+        "encounters": True,
+        "spatial": True,
+        "episodes": True,
+    }
     summary = retried.fields["output"]
     assert summary["decisions"] == report.decisions
     assert summary["event_count"] == len(report.events)
