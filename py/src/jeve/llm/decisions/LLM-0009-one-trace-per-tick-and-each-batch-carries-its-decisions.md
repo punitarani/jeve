@@ -4,12 +4,12 @@ title: "one trace per tick, and each batch carries its decisions"
 status: "accepted"
 date: 2026-09-23
 deciders: ["claude"]
-scope: ["py/src/jeve/tracing.py", "py/src/jeve/world/engine.py", "py/src/jeve/decide/jev_policy.py", "py/src/jeve/llm/gateway.py", "py/src/jeve/api/app.py", "py/src/jeve/sim/daemon.py", "py/tests/test_tracing.py", "py/tests/test_jev_policy.py"]
+scope: ["py/src/jeve/tracing.py", "py/src/jeve/world/engine.py", "py/src/jeve/decide/jev_policy.py", "py/src/jeve/llm/gateway.py", "py/src/jeve/api/app.py", "py/src/jeve/sim/daemon.py", "py/src/jeve/config.py", "py/tests/test_tracing.py", "py/tests/test_jev_policy.py", "py/tests/test_daemon.py", "py/tests/test_dialogue.py"]
 tags: ["observability", "braintrust", "llm", "agent-decided"]
 supersedes: ["LLM-0008"]
 superseded-by: null
 relates-to: ["LLM-0004", "LLM-0007", "DECIDE-0004", "SIM-0002"]
-confirmation: "cd py && uv run pytest tests/test_tracing.py tests/test_jev_policy.py"
+confirmation: "cd py && uv run pytest tests/test_tracing.py tests/test_jev_policy.py tests/test_daemon.py"
 ---
 
 # LLM-0009 — one trace per tick, and each batch carries its decisions

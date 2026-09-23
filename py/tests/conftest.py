@@ -34,6 +34,14 @@ def pytest_configure(config: pytest.Config) -> None:
     and they must write to the same database their parent is watching.
     """
 
+    # LLM-0009: every tick is a span now, rules runs included, and the
+    # module-scoped fixtures that tick a world run before any function-scoped
+    # one could drop the key. So it goes here, once, before anything runs —
+    # and it stays gone for the daemon subprocesses too. A developer with the
+    # key exported still gets an offline run: "every module testable without
+    # network" is not conditional on someone's shell.
+    os.environ.pop("BRAINTRUST_API_KEY", None)
+
     worker = os.environ.get("PYTEST_XDIST_WORKER")
     if not worker:
         return
@@ -222,15 +230,13 @@ def spans() -> Iterator[RecordingSink]:
 
 
 @pytest.fixture(autouse=True)
-def _tracing_off(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _tracing_off() -> Iterator[None]:
     """No span leaves the process unless a test asks for one.
 
-    Dropping the key rather than only resetting state, because a developer
-    with `BRAINTRUST_API_KEY` exported must still get an offline run: "every
-    module testable without network" is not conditional on someone's shell.
+    The key is already gone (`pytest_configure`); this forgets whatever sink
+    the last test configured, so none carries over into the next.
     """
 
-    monkeypatch.delenv("BRAINTRUST_API_KEY", raising=False)
     tracing.reset()
     yield
     tracing.reset()

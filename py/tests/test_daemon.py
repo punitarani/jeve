@@ -169,10 +169,10 @@ def test_a_tick_is_a_trace_and_a_failed_one_carries_its_error(
     def explode(*args: object, **kwargs: object) -> None:
         raise RuntimeError("the cafe caught fire")
 
-    monkeypatch.setattr(engine, "_cafe", explode)
-    with pytest.raises(RuntimeError, match="caught fire"):
-        engine.tick()
-    monkeypatch.undo()
+    with monkeypatch.context() as fire:
+        fire.setattr(engine, "_cafe", explode)
+        with pytest.raises(RuntimeError, match="caught fire"):
+            engine.tick()
     report = engine.tick()
 
     failed, retried = spans.roots

@@ -77,6 +77,18 @@ class SimTime:
         hours, rest = divmod(self.time_of_day, HOUR)
         return f"d{self.day} {_WEEKDAYS[self.weekday]} {hours:02d}:{rest // MINUTE:02d}"
 
+    def describe(self) -> dict[str, object]:
+        """The moment as a reader sees it: what `/state` serves and a tick's
+        trace opens with. One mapping, so the two cannot drift apart."""
+
+        return {
+            "sim_time": self.seconds,
+            "label": self.label(),
+            "day": self.day,
+            "weekday": self.weekday,
+            "in_office_hours": self.in_office_hours,
+        }
+
     def __str__(self) -> str:
         return self.label()
 

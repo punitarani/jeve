@@ -223,13 +223,8 @@ def state() -> dict[str, object]:
 
 
 def _clock(meta: dict[str, Any]) -> dict[str, object]:
-    now = SimTime(int(meta["sim_time"]))
     return {
-        "sim_time": now.seconds,
-        "label": now.label(),
-        "day": now.day,
-        "weekday": now.weekday,
-        "in_office_hours": now.in_office_hours,
+        **SimTime(int(meta["sim_time"])).describe(),
         "tick_seq": int(meta["tick_seq"]),
         "status": meta["status"],
         "speed": float(meta["speed"]),

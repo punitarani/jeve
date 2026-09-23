@@ -162,8 +162,9 @@ class JevPolicy:
         # visible together. A hit never reaches the gateway, so it is a row of
         # this span's output rather than a span of its own; the input is
         # logged up front so a batch that fails still says what it was asked.
+        kinds = sorted({ctx.kind for ctx in contexts})
         with tracing.span(
-            _batch_name(contexts),
+            _batch_name(kinds),
             type="task",
             input=[_asked(ctx) for ctx in contexts],
             metadata={"mode": self._recorder.mode},
@@ -194,7 +195,7 @@ class JevPolicy:
             missing = [digest for digest in requests if digest not in stored]
             span.log(
                 metadata={
-                    "kinds": sorted({item.kind for item in prepared}),
+                    "kinds": kinds,
                     "contexts": len(contexts),
                     "lookups": lookups,
                     "cache_hits": hits,
@@ -347,7 +348,7 @@ class JevPolicy:
 type SettledBy = Literal["gated", "cache", "live"]
 
 
-def _batch_name(contexts: Sequence[DecisionContext]) -> str:
+def _batch_name(kinds: Sequence[str]) -> str:
     """`decide <kind>`, so a trace's children say what was being decided.
 
     Every call site asks one kind at a time, so the names are bounded by the
@@ -355,8 +356,7 @@ def _batch_name(contexts: Sequence[DecisionContext]) -> str:
     one per combination.
     """
 
-    kinds = {ctx.kind for ctx in contexts}
-    return f"decide {kinds.pop()}" if len(kinds) == 1 else "decide.batch"
+    return f"decide {kinds[0]}" if len(kinds) == 1 else "decide.batch"
 
 
 def _asked(ctx: DecisionContext) -> dict[str, object]:

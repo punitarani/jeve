@@ -128,13 +128,8 @@ class TickReport:
 
         now = SimTime(self.sim_time)
         return {
-            # First, so the one field Braintrust's table previews is readable.
-            "label": now.label(),
+            **now.describe(),
             "tick_seq": self.tick_seq,
-            "sim_time": self.sim_time,
-            "day": now.day,
-            "weekday": now.weekday,
-            "office_hours": now.in_office_hours,
             "cafe_open": now.cafe_open,
         }
 
