@@ -1110,7 +1110,7 @@ def _carry_the_news(
             agent
             for agent in sorted(present, key=lambda a: a.id)
             if agent.id not in inside
-            and agent.zone is carrier.zone
+            and (agent.zone, agent.floor) == (carrier.zone, carrier.floor)
             and agent.id not in holders
         ]
         if not outsiders:

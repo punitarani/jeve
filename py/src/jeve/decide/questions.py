@@ -555,14 +555,30 @@ def _present(ctx: DecisionContext) -> list[dict[str, object]]:
     )
 
 
-def _priority(person: dict[str, object], *, own_org: str, vendor: object) -> int:
-    """Whom it matters most to notice: the vendor whose product is down,
-    then colleagues from other floors, then everybody else."""
+def _priority(
+    person: dict[str, object],
+    *,
+    own_org: str,
+    vendor: object,
+    owed: frozenset[str] = frozenset(),
+) -> int:
+    """Whom it matters most to notice: the vendor whose product is down, then
+    a firm there is a live bill with, then colleagues from other floors, then
+    everybody else.
+
+    The bill belongs here because a promise can only be made to somebody who is
+    owed (WORLD-0006). At four firms every room offered everyone, so the payer
+    and the creditor's clerk met by arithmetic; at twelve, a list of six that
+    ignored the bill between them meant the two people it concerns were rarely
+    offered each other, and the channel went quiet.
+    """
 
     org = str(person.get("org"))
     if vendor is not None and org == vendor:
         return 0
-    return 1 if org == own_org else 2
+    if org in owed:
+        return 1
+    return 2 if org == own_org else 3
 
 
 def candidates(
@@ -571,19 +587,20 @@ def candidates(
     own_org: str,
     vendor: object,
     strengths: dict[str, int] | None = None,
+    owed: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Who is offered as somebody to talk to: at most `CANDIDATES` of the
-    people here, the vendor's staff first, then colleagues, then the people
-    they know best (MEM-0003), then the rest in a stable order. The one
-    function both policies and the world use, so the labels a model chooses
-    from and the people the rules twin picks among are the same short list
-    (DECIDE-0005)."""
+    people here, the vendor's staff first, then a firm there is money between,
+    then colleagues, then the people they know best (MEM-0003), then the rest
+    in a stable order. The one function both policies and the world use, so the
+    labels a model chooses from and the people the rules twin picks among are
+    the same short list (DECIDE-0005)."""
 
     known = strengths or {}
     ranked = sorted(
         present,
         key=lambda p: (
-            _priority(p, own_org=own_org, vendor=vendor),
+            _priority(p, own_org=own_org, vendor=vendor, owed=owed),
             -known.get(str(p.get("id")), 0),
             str(p.get("id")),
         ),

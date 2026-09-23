@@ -41,6 +41,11 @@ from tests.worldcache import build_once
 CAFE = next(org.id for org in ORGS if org.social and org.kind == "cafe")
 """Where the district's meetings happen, from the roster (CORE-0012)."""
 
+ASKER = "halloran.front_office.office_manager.0"
+VENDOR = "tallybird.support.support_lead.0"
+"""The two ends of an outage: the office manager who is stuck, and the
+support desk that can do something about it."""
+
 pytestmark = pytest.mark.timeout(900)
 
 # Long enough for all three stakes. Subscription bills fall due on day 14, and
@@ -205,7 +210,7 @@ def test_a_meeting_with_nothing_between_them_stays_a_one_shot_encounter(
     present, made, by_id = stage(
         engine,
         conn,
-        ["halloran.paralegal.11", "halloran.junior_associate.10"],
+        ["halloran.front_office.paralegal.0", "halloran.associates.junior_associate.0"],
         CAFE,
     )
     consumed = episodes.run(
@@ -228,7 +233,7 @@ def test_an_episode_replaces_the_encounter_it_grew_from(
 
     engine, report = fresh(conn, RulesPolicy(ROOT_SEED))
     outage(engine, report)
-    ids = ["halloran.office_manager.12", "tallybird.support.6"]
+    ids = ["halloran.front_office.office_manager.0", "tallybird.support.support_lead.0"]
     present, made, by_id = stage(engine, conn, ids, CAFE)
     consumed = episodes.run(
         engine, report, SimTime(report.sim_time), present, made, by_id, ["invoicing"]
@@ -265,13 +270,13 @@ def test_a_promise_needs_the_press_to_have_landed_first(
     policy = Watching(
         ROOT_SEED,
         {
-            "halloran.office_manager.12": [{"act": "press"}, {"act": "ask"}],
-            "tallybird.support.6": [{"act": "explain"}, {"act": "promise"}],
+            ASKER: [{"act": "press"}, {"act": "ask"}],
+            VENDOR: [{"act": "explain"}, {"act": "promise"}],
         },
     )
     engine, report = fresh(conn, policy)
     outage(engine, report)
-    ids = ["halloran.office_manager.12", "tallybird.support.6"]
+    ids = ["halloran.front_office.office_manager.0", "tallybird.support.support_lead.0"]
     present, made, by_id = stage(engine, conn, ids, CAFE)
     episodes.run(
         engine, report, SimTime(report.sim_time), present, made, by_id, ["invoicing"]
@@ -296,8 +301,8 @@ def test_word_of_mouth_reaches_a_ticket(conn: Connection[DictRow]) -> None:
     own draw was going to arrive, and a notice is what the ticket flow reads.
     """
 
-    teller = "halloran.office_manager.12"
-    hearer = "halloran.junior_associate.10"
+    teller = "halloran.front_office.office_manager.0"
+    hearer = "halloran.associates.junior_associate.0"
     policy = Scripted(
         ROOT_SEED,
         {
@@ -358,8 +363,8 @@ def test_a_promise_is_recorded_and_raises_the_pressure_on_the_bill(
     and both policies have to see it or the rules twin stops being a control.
     """
 
-    payer = "thirdrail.owner.18"
-    creditor = "ledgerline.client_admin.17"
+    payer = "thirdrail.front_of_house.owner.0"
+    creditor = "ledgerline.client_services.client_admin.0"
     policy = Scripted(
         ROOT_SEED,
         {payer: [{"act": "promise", "settled": True}], creditor: [{"act": "press"}]},
@@ -417,8 +422,8 @@ def test_a_promise_is_scored_either_way(conn: Connection[DictRow]) -> None:
     memory.promise(
         conn,
         episode_id=1,
-        from_person_id="thirdrail.owner.18",
-        to_person_id="ledgerline.client_admin.17",
+        from_person_id="thirdrail.front_of_house.owner.0",
+        to_person_id="ledgerline.client_services.client_admin.0",
         invoice_id=invoice_id,
         sim_time=report.sim_time,
         seq=seq,
@@ -439,8 +444,8 @@ def test_a_promise_is_scored_either_way(conn: Connection[DictRow]) -> None:
     memory.promise(
         conn,
         episode_id=1,
-        from_person_id="thirdrail.owner.18",
-        to_person_id="ledgerline.client_admin.17",
+        from_person_id="thirdrail.front_of_house.owner.0",
+        to_person_id="ledgerline.client_services.client_admin.0",
         invoice_id=invoice_id,
         sim_time=report.sim_time,
         seq=seq,
@@ -458,8 +463,8 @@ def test_an_episode_can_escalate_an_outage_and_still_only_once(
 ) -> None:
     """The consequence a meeting has always had, reached from the other arm."""
 
-    asker = "halloran.office_manager.12"
-    vendor = "tallybird.support.6"
+    asker = "halloran.front_office.office_manager.0"
+    vendor = "tallybird.support.support_lead.0"
     policy = Scripted(
         ROOT_SEED, {asker: [{"act": "press"}], vendor: [{"act": "explain"}]}
     )
@@ -500,8 +505,8 @@ def test_the_vendor_cannot_escalate_to_itself(conn: Connection[DictRow]) -> None
     affected and could press a colleague — which `test_space` caught the first
     time the shipped world ran them."""
 
-    engineer = "tallybird.engineer.2"
-    vendor = "tallybird.support.6"
+    engineer = "tallybird.engineering.engineer.0"
+    vendor = "tallybird.support.support_lead.0"
     policy = Scripted(
         ROOT_SEED, {engineer: [{"act": "press"}], vendor: [{"act": "promise"}]}
     )
@@ -530,7 +535,7 @@ def test_nobody_is_pulled_into_two_conversations_at_once(
 
     engine, report = fresh(conn, RulesPolicy(ROOT_SEED))
     outage(engine, report)
-    ids = ["halloran.office_manager.12", "tallybird.support.6"]
+    ids = ["halloran.front_office.office_manager.0", "tallybird.support.support_lead.0"]
     present, made, by_id = stage(engine, conn, ids, CAFE)
     episodes.run(
         engine, report, SimTime(report.sim_time), present, made, by_id, ["invoicing"]
@@ -555,8 +560,13 @@ def test_the_seeded_fact_starts_in_exactly_one_head(
     with it (the scenario's behaviour #6)."""
 
     seed(conn, root_seed=ROOT_SEED)
-    holders = memory.holders_of(conn, memory.Fact.price_rise("tallybird").id)
-    assert holders == ["tallybird.engineer.2"]
+    # Whose price rise it is comes from the roster: the district buys its
+    # provisions from a supplier, and it is that firm's rise the buyers'
+    # orders answer (WORLD-0010), not the software vendor's.
+    supplier = next(org for org in ORGS if org.archetype == "supplier")
+    holders = memory.holders_of(conn, memory.Fact.price_rise(supplier.id).id)
+    assert len(holders) == 1, holders
+    assert holders[0].startswith(f"{supplier.id}."), holders
     conn.commit()
 
 
@@ -832,13 +842,21 @@ def test_a_world_begun_before_episodes_carries_on_with_them(
         "DROP TABLE commitments, episode_participants, episodes, knowledge, facts "
         "CASCADE"
     )
-    conn.execute("DELETE FROM schema_migrations WHERE name = '0009_episodes.sql'")
+    # Both of the migrations that shape those tables: 0009 makes them and 0014
+    # widens the zone to any firm's id (WORLD-0008), so a world rebuilt from
+    # 0009 alone would still be checking the old town's six zone names.
+    conn.execute(
+        "DELETE FROM schema_migrations WHERE name IN "
+        "('0009_episodes.sql', '0014_episodes_zone.sql')"
+    )
     _hand_the_world_to_the_daemon(conn)
 
     assert daemon.main(["--until-day", "6", *DAEMON]) == 0
 
     with db.connect(autocommit=True) as watch:
-        assert "0009_episodes.sql" in db.applied(watch)
+        applied = db.applied(watch)
+        assert "0009_episodes.sql" in applied
+        assert "0014_episodes_zone.sql" in applied
         incident = watch.execute(
             "SELECT id, ended_sim FROM incidents WHERE module_id = 'invoicing' "
             "AND started_sim < %s ORDER BY started_sim DESC LIMIT 1",

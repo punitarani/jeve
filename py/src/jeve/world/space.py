@@ -47,9 +47,10 @@ from dataclasses import dataclass
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
-from jeve.core.clock import HOUR, TICK, SimTime
+from jeve.core.clock import DAY, HOUR, TICK, SimTime
 from jeve.core.orgs import BY_ID, ORGS, module_owner, social_places, staff_ids, uses
 from jeve.core.seed import derive_rng, derive_seed
+from jeve.decide.gates import ASK_FROM_DAYS_BEFORE_DUE
 from jeve.decide.policy import DecisionContext
 from jeve.decide.questions import candidates
 from jeve.memory import beliefs
@@ -276,6 +277,7 @@ def _facts(
     others: list[Agent],
     outage: str | None,
     strained: dict[str, bool],
+    owed: dict[str, frozenset[str]],
 ) -> dict[str, Any]:
     vendor = module_owner(outage) if outage else None
     org = BY_ID[agent.org]
@@ -283,10 +285,18 @@ def _facts(
         {"id": o.id, "org": o.org, "role": o.role} for o in others
     ]
     # Everyone here is counted for the model; only a few are offered by name
-    # of a label (DECIDE-0005), the people they know best sooner (MEM-0003).
+    # of a label (DECIDE-0005), the people they know best sooner (MEM-0003),
+    # and a firm there is a live bill with ahead of them, because a promise can
+    # only be made to somebody who is owed (WORLD-0006).
     # The mapping from label to person is here, in facts, never in the state.
     known = beliefs.strengths(engine.conn, agent.id)
-    offered = candidates(present, own_org=agent.org, vendor=vendor, strengths=known)
+    offered = candidates(
+        present,
+        own_org=agent.org,
+        vendor=vendor,
+        strengths=known,
+        owed=owed.get(agent.org, frozenset()),
+    )
     incident = episodes.open_incident(engine, [outage]) if outage else None
     return {
         "outage_hours": (
@@ -318,6 +328,29 @@ def _facts(
         "social": {p.kind: p.id for p in social_places() if p.id != agent.org},
         "minds_counter": org.archetype == "retail",
     }
+
+
+def _live_bills(engine: Engine, now: SimTime) -> dict[str, frozenset[str]]:
+    """For each firm, the firms it has an unsettled bill with, either way.
+
+    One query for the room rather than one per person: this runs inside the
+    tick's transaction, and the answer is the same for everyone who works at
+    the same firm.
+    """
+
+    horizon = now.seconds + ASK_FROM_DAYS_BEFORE_DUE * DAY
+    rows = engine.conn.execute(
+        "SELECT DISTINCT from_org_id, to_org_id FROM invoices "
+        "WHERE paid_sim IS NULL AND written_off_sim IS NULL "
+        "AND to_org_id IS NOT NULL AND due_sim <= %s",
+        (horizon,),
+    ).fetchall()
+    out: dict[str, set[str]] = {}
+    for row in rows:
+        payer, issuer = str(row["to_org_id"]), str(row["from_org_id"])
+        out.setdefault(payer, set()).add(issuer)
+        out.setdefault(issuer, set()).add(payer)
+    return {org: frozenset(others) for org, others in out.items()}
 
 
 def _dwell(
@@ -415,6 +448,7 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
 
     deciding = _wakes(engine, report, now, present, arrived, down)
     strained = _strained(engine, report)
+    owed = _live_bills(engine, now)
     contexts: list[DecisionContext] = []
     for agent in deciding:
         # Colleagues at their own desks are always together; that is not an
@@ -433,7 +467,9 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
                 role=agent.role,
                 sim_time=report.sim_time,
                 kind="agent.tick",
-                facts=_facts(engine, report, agent, others, outage, strained),
+                facts=_facts(
+                    engine, report, agent, others, outage, strained, owed
+                ),
                 traits=agent.traits,
             )
         )
