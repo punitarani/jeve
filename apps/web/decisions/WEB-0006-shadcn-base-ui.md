@@ -10,7 +10,7 @@ tags: ["ui", "dependencies", "agent-decided"]
 supersedes: []
 superseded-by: null
 relates-to: ["WEB-0005"]
-confirmation: "make check && cd apps/web && pnpm exec next build && test -d out"
+confirmation: "pnpm --filter @jeve/web exec tsc --noEmit && cd apps/web && pnpm exec next build && test -d out"
 
 ---
 

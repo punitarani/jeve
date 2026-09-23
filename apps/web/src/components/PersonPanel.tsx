@@ -192,10 +192,10 @@ export function PersonPanel() {
 								</TableHead>
 								<TableHead className="h-auto px-1.5 py-1 text-xs">by</TableHead>
 								<TableHead className="h-auto px-1.5 py-1 text-xs">
-									chose
+									draw
 								</TableHead>
 								<TableHead className="h-auto px-1.5 py-1 text-xs">
-									draw
+									chose
 								</TableHead>
 							</TableRow>
 						</TableHeader>
@@ -216,9 +216,6 @@ export function PersonPanel() {
 										</TableCell>
 										<TableCell className="px-1.5 py-1 text-xs">
 											<Badge variant="outline">{d.source}</Badge>
-										</TableCell>
-										<TableCell className="px-1.5 py-1 text-xs">
-											{summarise(d.chosen)}
 										</TableCell>
 										<TableCell className="px-1.5 py-1 text-xs">
 											{typeof draw === "number" ? (
@@ -243,6 +240,9 @@ export function PersonPanel() {
 											) : (
 												<span className="muted">—</span>
 											)}
+										</TableCell>
+										<TableCell className="px-1.5 py-1 text-xs">
+											{summarise(d.chosen)}
 										</TableCell>
 									</TableRow>
 								);

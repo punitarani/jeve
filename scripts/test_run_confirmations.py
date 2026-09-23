@@ -72,32 +72,6 @@ class Rewrite(unittest.TestCase):
         ):
             self.assertEqual(rc.rewrite(command, "collect"), command)
 
-    def test_make_check_is_dropped_from_the_front(self) -> None:
-        """OPS-0004: the suite the job already ran is not run again. What the
-        record asks for beyond it survives, in order."""
-
-        self.assertEqual(
-            rc.rewrite(
-                "make check && cd apps/web && pnpm exec next build && test -d out",
-                "collect",
-            ),
-            "cd apps/web && pnpm exec next build && test -d out",
-        )
-
-    def test_a_confirmation_that_is_only_the_suite_becomes_a_no_op(self) -> None:
-        self.assertEqual(rc.rewrite("make check", "collect"), "true")
-
-    def test_make_check_survives_in_run_mode(self) -> None:
-        """Locally there is no earlier suite run to lean on."""
-
-        self.assertEqual(rc.rewrite("make check && ls", "run"), "make check && ls")
-
-    def test_make_in_the_middle_is_left_alone(self) -> None:
-        self.assertEqual(
-            rc.rewrite("cd apps/web && make check", "collect"),
-            "cd apps/web && make check",
-        )
-
     def test_run_mode_rewrites_nothing(self) -> None:
         command = "cd py && uv run pytest tests/test_api.py"
         self.assertEqual(rc.rewrite(command, "run"), command)
@@ -179,6 +153,22 @@ class TheRealIndex(unittest.TestCase):
                     "{}: pytest confirmation not collected and not chained: {}".format(
                         ids, command
                     ),
+                )
+
+    def test_no_confirmation_runs_the_whole_suite_again(self) -> None:
+        """CI has already run the suite once, in parallel (OPS-0002).
+
+        WEB-0006's `make check` ran all of it a second time, serially: fifteen
+        of the python job's twenty-four minutes. It never names pytest, so the
+        test above let it through.
+        """
+
+        for ids, command in rc.load(rc.INDEX):
+            for wrapper in ("make check", "make test", "py:test", "-t test"):
+                self.assertNotIn(
+                    wrapper,
+                    command,
+                    "{}: `{}` re-runs the whole suite: {}".format(ids, wrapper, command),
                 )
 
 
