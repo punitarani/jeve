@@ -495,6 +495,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### WEB-0008: The hero camera is a director, not a clock
+
+**Status**: accepted (2026-09-23)  
+**Scope**: `packages/world/src/attention.ts`, `packages/world/src/index.ts`, `packages/world/test/attention.test.ts`, `apps/web/src/components/WorldHero.tsx`  
+**Tags**: hero, camera, agent-decided
+
+The hero's camera watches `WorldModel` every frame and looks wherever people are: occupied rooms, the street while anyone is crossing it, a fresh conversation, a just-fired escalation — and the whole town when nobody is out. Empty buildings are never a shot.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### WORLD-0001: Build and tune the world on rules before wiring in any model
 
 **Status**: accepted (2026-09-20)  
