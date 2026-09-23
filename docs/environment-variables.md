@@ -10,7 +10,8 @@ this table, setting it does nothing. Sources: `py/src/jeve/config.py`,
 | Variable | Read by | Default | Notes |
 |---|---|---|---|
 | `JEVE_DATABASE_URL` | everything | `postgresql://jeve:jeve@127.0.0.1:55432/jeve` | The **direct** DSN. The daemon's writer lock and migrations require it — never a transaction-mode pooler. |
-| `DATABASE_URL` | everything | — | Fallback; `fly postgres attach` writes this. |
+| `DATABASE_URL` | everything | — | Fallback; `fly postgres attach` writes this. In production, leave it unset: the api reads it before `JEVE_DATABASE_URL`. |
+| `MIGRATIONS_DB_URL` | `fly.toml` `release_command` | falls back to `JEVE_DATABASE_URL` | The DDL-capable role migrations run under, so the app keeps its least-privilege DSN. |
 | `JEVE_DATABASE_POOLED_URL` | api | falls back to `DATABASE_URL` then `JEVE_DATABASE_URL` | Pooled reads for HTTP requests. |
 | `JEVE_PG_PORT` | `db.dsn()` | `55432` | Local-only default port when no URL is set. |
 
@@ -87,13 +88,17 @@ the codebase reads them; they authenticate the deploy jobs.
 
 Three projects, matching the `.env.*.example` files:
 
-* **app** — `NEXT_PUBLIC_JEVE_API` (build-time only)
-* **worker** — everything above for api + sim; `prd` is synced to the
+* **app** — `NEXT_PUBLIC_JEVE_API` (build-time only). CI does not read it
+  from here: `deploy-web` builds with the GitHub repository variable
+  `vars.NEXT_PUBLIC_JEVE_API`, so change that to move the site's API host.
+* **worker** — the variables above for api + sim. `prd` is synced to the
   `jeve-backend` app's `fly secrets` by Doppler's Fly.io sync, and a secret
-  beats a `fly.toml` `[env]` value of the same name
-* **infra** — the CI/CD credentials
+  beats a `fly.toml` `[env]` value of the same name — so `prd` holds only
+  secrets (the list is in `docs/deployment.md`), never the knobs `fly.toml`
+  sets
+* **infra** — the CI/CD credentials; CI reads them from `infra/ci`
 
 ```bash
 doppler run --project worker --config dev -- make api
-doppler run --project infra  --config prd -- make deploy
+doppler run --project infra  --config ci  -- make deploy
 ```
