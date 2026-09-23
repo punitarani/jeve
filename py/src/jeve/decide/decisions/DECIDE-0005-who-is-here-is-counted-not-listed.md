@@ -8,7 +8,7 @@ scope: ["py/src/jeve/decide/questions.py", "py/src/jeve/decide/policy.py", "py/t
 tags: ["questions", "cache", "cost", "agent-decided"]
 supersedes: []
 superseded-by: null
-relates-to: ["DECIDE-0003", "DECIDE-0004", "WORLD-0003", "WORLD-0007", "MEM-0001"]
+relates-to: ["DECIDE-0003", "DECIDE-0004", "WORLD-0003", "WORLD-0009", "MEM-0001"]
 confirmation: "cd py && uv run pytest tests/test_questions.py"
 ---
 

@@ -1,4 +1,4 @@
-"""Every storey of the district, furnished and walked (WEB-0004, WORLD-0006).
+"""Every storey of the district, furnished and walked (WEB-0004, WORLD-0008).
 
 A layout is written in its building's own frame, so that it survives the
 roster changing: the same function furnishes a 12-tile floor and a 24-tile one.

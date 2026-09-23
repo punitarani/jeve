@@ -142,7 +142,11 @@ class RulesPolicy:
             pressure = 0.25 * promptness
         else:
             pressure = promptness + 0.12 * -days_until_due
-        if ctx.facts.get("chased") or ctx.facts.get("reminded_in_person"):
+        if ctx.facts.get("promised"):
+            # They said they would. Both policies have to agree about that or
+            # the rules twin stops being a control arm for episodes.
+            pressure += 0.35
+        elif ctx.facts.get("chased") or ctx.facts.get("reminded_in_person"):
             pressure += 0.2
         if runway_days < 14:
             pressure -= 0.3
@@ -241,7 +245,7 @@ class RulesPolicy:
         social = ctx.facts.get("social")
         places = list(social) if isinstance(social, dict) else []
 
-        # Asked at decision points, not every tick (WORLD-0007): a desk
+        # Asked at decision points, not every tick (WORLD-0009): a desk
         # decision comes round six or so times a day, so the odds of an
         # outing are per stretch of work, not per quarter hour.
         if not ctx.facts.get("at_workplace"):
@@ -260,7 +264,7 @@ class RulesPolicy:
             else:
                 choice = "stay"
         # The same table as the model's answers go through: a place is a
-        # place whoever decided (WORLD-0006).
+        # place whoever decided (WORLD-0008).
         next_zone, next_floor = resolve_destination(ctx, choice)
 
         sociability = _num(ctx.traits.get("sociability"), 0.5)
@@ -271,7 +275,7 @@ class RulesPolicy:
         if with_id is not None:
             # The outage when there is one; otherwise mostly small talk, some
             # shop, and now and then money — which is how word of a price
-            # rise gets round (MEM-0002).
+            # rise gets round (MEM-0003).
             if outage and about < 0.5:
                 topic = "the_outage"
             else:
@@ -293,7 +297,7 @@ class RulesPolicy:
             "mood": 1 if outage else 2,
             "raise_outage": raised,
         }
-        # Beliefs, revised alongside (MEM-0002): the rules twin reads them off
+        # Beliefs, revised alongside (MEM-0003): the rules twin reads them off
         # the facts the model would be told.
         if outage:
             chosen["vendor_reliability"] = _reliability(ctx.facts.get("outage_hours"))
@@ -336,6 +340,71 @@ class RulesPolicy:
             return {"readiness": 0}, {}
         return {"readiness": 1 if _num(ctx.facts.get("overdue_bills"), 0) else 2}, {}
 
+    def _episode_round(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """One round of a group interaction. Null model N1 for episodes.
+
+        Crude on purpose: whoever can act on the matter tends to promise, whoever
+        cannot tends to press, and everybody's patience for it runs out. What it
+        must get right is the *shape* — that a second round can do something the
+        first did not, and that the thing eventually ends — so that the rules
+        twin is a real control arm for "does resolution change the outcome?"
+        rather than a stand-in that settles instantly.
+
+        Takes the same four draws in the same order on every branch, so a change
+        to one rule cannot shift the luck of another.
+        """
+
+        move, tell, stop, _spare = (_uniform(rng) for _ in range(4))
+        role = str(ctx.facts.get("role_in_stake", "bystander"))
+        vocality = _num(ctx.traits.get("vocality"), 0.4)
+        sociability = _num(ctx.traits.get("sociability"), 0.5)
+        tension = _num(ctx.facts.get("tension"), 0.0)
+
+        if role == "holder":
+            # Pressed, and with nothing yet given: most people give their word.
+            if ctx.facts.get("pressed") and not ctx.facts.get("promised"):
+                act = "promise" if move < 0.55 + 0.3 * vocality else "decline"
+            elif ctx.facts.get("promised"):
+                act = "small_talk"
+            else:
+                act = "explain" if move < 0.7 else "ask"
+        elif role == "asker":
+            if ctx.facts.get("promised"):
+                act = "small_talk"
+            elif not ctx.facts.get("pressed"):
+                act = "press" if move < 0.3 + 0.6 * vocality else "explain"
+            else:
+                act = "ask" if move < 0.5 else "small_talk"
+        else:
+            act = "ask" if move < 0.35 * sociability else "small_talk"
+
+        # Somebody has to be able to walk away, or an episode only ever ends on
+        # its round cap and the exit reason stops carrying information.
+        if stop < 0.12 + 0.18 * tension - 0.1 * sociability:
+            act = "leave"
+
+        # Settled means "nothing left to say about it". For the two sides of a
+        # stake that is a promise or a refusal; for somebody who is only in the
+        # room it is having nothing left to pass on. Without that second clause
+        # a conversation between bystanders could never end except by running
+        # out of rounds, and `exit_reason` stopped telling us anything.
+        tellable = bool(ctx.facts.get("tellable_topic"))
+        settled = bool(ctx.facts.get("promised") or ctx.facts.get("refused")) or (
+            role == "bystander" and not tellable
+        )
+        mention = tellable and tell < 0.35 + 0.5 * vocality
+        return (
+            {
+                "act": act,
+                "settled": settled,
+                "mood": 1 if tension >= 2 else 2,
+                "mention": mention,
+            },
+            {"move": move, "tell": tell, "stop": stop},
+        )
+
     def _catering_order(
         self, ctx: DecisionContext, rng: object
     ) -> tuple[dict[str, object], dict[str, float]]:
@@ -347,7 +416,7 @@ class RulesPolicy:
         order = "large" if roll < large else "small" if roll < large + small else "none"
         return {"order": order}, {"order": roll}
 
-    # -- the archetype flows (WORLD-0008) ------------------------------------
+    # -- the archetype flows (WORLD-0010) ------------------------------------
 
     def _supply_order(
         self, ctx: DecisionContext, rng: object

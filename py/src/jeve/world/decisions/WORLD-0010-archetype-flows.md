@@ -1,10 +1,10 @@
 ---
-id: WORLD-0008
+id: WORLD-0010
 title: Archetype flows — rent, supplies and stock, credit lines, and a second vendor
 status: accepted
 date: 2026-09-22
 deciders: ["claude"]
-scope: ["py/src/jeve/world/flows.py", "py/migrations/0011_archetypes.sql", "py/tests/test_flows.py"]
+scope: ["py/src/jeve/world/flows.py", "py/migrations/0012_archetypes.sql", "py/tests/test_flows.py"]
 tags: ["flows", "ledger", "economy", "agent-decided"]
 supersedes: []
 superseded-by: null
@@ -12,7 +12,7 @@ relates-to: ["WORLD-0004", "WORLD-0005", "CORE-0012", "CORE-0009", "DECIDE-0003"
 confirmation: "cd py && uv run pytest tests/test_flows.py"
 ---
 
-# WORLD-0008 — Archetype flows — rent, supplies and stock, credit lines, and a second vendor
+# WORLD-0010 — Archetype flows — rent, supplies and stock, credit lines, and a second vendor
 
 ## Context and Problem Statement
 

@@ -1,4 +1,4 @@
--- CORE-0012 / WORLD-0006: a district of storeys.
+-- CORE-0012 / WORLD-0008: a district of storeys.
 --
 -- Twelve firms of any kind, teams that work on floors, products that belong
 -- to a vendor, and a position that has a floor. The vocabulary that used to be

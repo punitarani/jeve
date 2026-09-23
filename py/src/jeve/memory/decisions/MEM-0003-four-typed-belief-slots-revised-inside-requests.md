@@ -1,18 +1,18 @@
 ---
-id: MEM-0002
+id: MEM-0003
 title: Beliefs are four typed slots revised by score questions inside existing requests; relationships decay in SQL
 status: accepted
 date: 2026-09-22
 deciders: ["claude"]
-scope: ["py/src/jeve/memory/**", "py/migrations/0012_beliefs.sql", "py/tests/test_beliefs.py"]
+scope: ["py/src/jeve/memory/**", "py/migrations/0013_beliefs.sql", "py/tests/test_beliefs.py"]
 tags: ["memory", "beliefs", "diffusion", "churn", "agent-decided"]
 supersedes: []
 superseded-by: null
-relates-to: ["MEM-0001", "DECIDE-0005", "WORLD-0007", "WORLD-0008", "CORE-0008"]
+relates-to: ["MEM-0001", "DECIDE-0005", "WORLD-0009", "WORLD-0010", "CORE-0008"]
 confirmation: "cd py && uv run pytest tests/test_beliefs.py"
 ---
 
-# MEM-0002 — Beliefs are four typed slots revised by score questions inside existing requests; relationships decay in SQL
+# MEM-0003 — Beliefs are four typed slots revised by score questions inside existing requests; relationships decay in SQL
 
 ## Context and Problem Statement
 

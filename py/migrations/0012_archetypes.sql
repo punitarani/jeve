@@ -1,4 +1,4 @@
--- WORLD-0008: archetype flows — rent, supplies and stock, credit lines.
+-- WORLD-0010: archetype flows — rent, supplies and stock, credit lines.
 --
 -- A retailer with a supplier keeps stock, and a sale takes a unit of it; a
 -- supplier can put its prices up; a firm short of runway can draw a line of

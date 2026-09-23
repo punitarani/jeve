@@ -246,7 +246,7 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
         )
     )
 
-    # The archetype flows (WORLD-0008): rent is paid, shelves are restocked,
+    # The archetype flows (WORLD-0010): rent is paid, shelves are restocked,
     # a line of credit is either repaid or its borrower was seen going under,
     # and both vendors' products failed and were triaged.
     rent_paid = {
@@ -338,7 +338,7 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
 
 
 def _diffusion(conn: Connection[DictRow], days: int) -> list[str]:
-    """How a fact spreads (MEM-0002): who knew of the price rise, by day, and
+    """How a fact spreads (MEM-0003): who knew of the price rise, by day, and
     how many subscribers each vendor lost to the other."""
 
     known = conn.execute(
@@ -592,7 +592,13 @@ def _ensure_database(name: str) -> None:
 
 
 def run_world(
-    name: str, *, days: int, policy: str, calls: str, outage: bool, max_wait: float
+    name: str,
+    *,
+    days: int,
+    policy: str,
+    calls: str,
+    outage: bool,
+    max_wait: float,
 ) -> int:
     """Seed `name` and run it to `days` through the daemon loop. Returns its exit."""
 

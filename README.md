@@ -15,7 +15,7 @@ nothing that computes the world may read it back.
 Twelve firms in three rows of buildings, 225 staff on 27 floors, coupled
 tightly enough that a bad Tuesday at one is a bad Friday at another. The
 roster is one spec, `py/src/jeve/core/orgs.py` (CORE-0012); a team is a floor
-of its building (WORLD-0006).
+of its building (WORLD-0008).
 
 | Firm | Business | Floors | Runs on |
 | --- | --- | --- | --- |
@@ -57,8 +57,15 @@ make db-up          # Postgres + migrations (docker compose)
 make check          # lint, mypy --strict, tests — all offline
 make e2e            # whole stack on recorded calls: free, no key, ~5 min
 make sim            # the live world — spends real money, slowly
+make episodes       # do extra rounds inside a meeting change anything? free
 make api            # FastAPI on :8000
 ```
+
+`make episodes` answers a research question rather than running the world: it
+plays the same 21 sim-days twice, once with a meeting resolved in one shot and
+once with rounds, and writes `ops/episodes.md`. Both arms run on rules, so it is
+free. The first run found that the two resolutions disagree about what a meeting
+is worth — see `docs/design/011-episodes.md`.
 
 `make sim` is governed: a per-day budget slows the clock before it stops it,
 per-process and global ceilings back that up, and OpenRouter's account cap is
@@ -68,7 +75,8 @@ the hard stop. Defaults are gentle ($2/day); set the account cap anyway.
 
 | Path | What |
 | --- | --- |
-| `py/src/jeve/` | The simulation: `core → llm → decide → world → sim`, with `gen` and `api` outside |
+| `py/src/jeve/` | The simulation: `core → llm → decide → world → sim`, with `memory`, `gen` and `api` outside |
+| `py/src/jeve/world/episodes.py` | A meeting with a stake gets rounds, not one shot (WORLD-0006) — on in every world (WORLD-0007) |
 | `apps/web/` | Next.js static export — voxel town hero, `/world` explorer, causal timeline |
 | `packages/world/` | GL-free voxel scene model; three.js is a view over it |
 | `packages/contracts/` | zod schemas generated from the pydantic API contract |

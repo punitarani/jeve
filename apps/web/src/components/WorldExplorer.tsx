@@ -36,7 +36,7 @@ function floorWord(floor: number): string {
 
 /**
  * Where somebody is, for a caption: a zone is a firm's id, `plaza` or
- * `home` (WORLD-0006), and inside a building the floor says which storey.
+ * `home` (WORLD-0008), and inside a building the floor says which storey.
  */
 function where(zone: string, floor: number): string {
 	if (zone === "home") return "at home";
@@ -536,7 +536,7 @@ function OrgPanel({
 					</dd>
 				</dl>
 				<h4>Teams, by floor</h4>
-				{/* A team is a floor (WORLD-0006), so a team row is a level cut
+				{/* A team is a floor (WORLD-0008), so a team row is a level cut
 				    (WEB-0007): clicking one takes the storeys above it off, and the
 				    floor the team works on is the one in view — the same cut as the
 				    control in the strip, which follows. Pressed again, it puts the

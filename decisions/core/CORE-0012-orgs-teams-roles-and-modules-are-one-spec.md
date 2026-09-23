@@ -4,11 +4,11 @@ title: Orgs, teams, roles and modules are one spec in core; nothing else names a
 status: accepted
 date: 2026-09-22
 deciders: ["claude"]
-scope: ["py/src/jeve/core/orgs.py", "py/src/jeve/core/names.py", "py/src/jeve/core/clock.py", "py/tests/test_orgs.py", "py/migrations/0009_district.sql", "tools/contract-gen/generate_zod.py"]
+scope: ["py/src/jeve/core/orgs.py", "py/src/jeve/core/names.py", "py/src/jeve/core/clock.py", "py/tests/test_orgs.py", "py/migrations/0010_district.sql", "tools/contract-gen/generate_zod.py"]
 tags: ["world", "data", "roster", "agent-decided"]
 supersedes: []
 superseded-by: null
-relates-to: ["WORLD-0001", "WORLD-0005", "WORLD-0006", "CORE-0009", "CORE-0011"]
+relates-to: ["WORLD-0001", "WORLD-0005", "WORLD-0008", "CORE-0009", "CORE-0011"]
 confirmation: "cd py && uv run pytest tests/test_orgs.py"
 ---
 

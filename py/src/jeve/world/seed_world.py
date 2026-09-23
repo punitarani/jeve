@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-from jeve import db
+from jeve import db, memory
 from jeve.core.clock import DAY, DISTRICT_CLOSE, at
 from jeve.core.names import person_name
 from jeve.core.orgs import (
@@ -146,7 +146,8 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
                      ledger_txns, ledger_entries, modules, incidents,
                      subscriptions, tickets, invoices, payments, retail_sales,
                      decisions, positions, outage_notices, loans, beliefs,
-                     relationships
+                     relationships, facts, knowledge, episodes,
+                     episode_participants, commitments
                      RESTART IDENTITY CASCADE
             """
         )
@@ -302,6 +303,31 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             subs,
         )
 
+        # One thing known to exactly one person on day zero (MEM-0002). The
+        # scenario calls for it: the share of the town holding it over time is
+        # the diffusion measure, and it means something only because nobody
+        # else starts with it. Somebody on the supplier's own sales desk, not
+        # its owner — the owner talks to everyone, which would make the measure
+        # about their diary. The district's price rise is the provisions
+        # supplier's, which is the one the buyers' orders answer (WORLD-0010).
+        supplier = next((org for org in ORGS if org.archetype == "supplier"), None)
+        teller = (
+            next(
+                (
+                    person
+                    for person in staff_ids(supplier.id)
+                    if ".sales." in person or ".admin." in person
+                ),
+                None,
+            )
+            if supplier is not None
+            else None
+        )
+        if supplier is not None and teller is not None:
+            rise = memory.Fact.price_rise(supplier.id)
+            memory.record_fact(conn, rise, sim_time=0)
+            memory.learn(conn, teller, rise.id, sim_time=0)
+
         # Receivables already in flight, some falling due inside the window.
         invoices: list[tuple[str, str | None, str | None, int, int, int, str]] = []
         # Last month's subscriptions, a couple of days past due: the first thing
@@ -456,7 +482,7 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         ]
         # Rent goes out on the first working day of the month; supplies are
         # ordered on Monday mornings; the supplier puts its prices up in the
-        # second week, which is the story's second shock (WORLD-0008).
+        # second week, which is the story's second shock (WORLD-0010).
         landlords = sorted({org.landlord for org in ORGS if org.landlord is not None})
         schedule += [
             (at(1, 9, 30), 0, "rent.run", landlord, '{"month": 0}')
@@ -471,7 +497,7 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         schedule += [
             (at(9, 9), 0, "supply.reprice", supplier, "{}") for supplier in suppliers
         ]
-        # Every night, what fades fades (MEM-0002).
+        # Every night, what fades fades (MEM-0003).
         schedule.append((at(0) + DISTRICT_CLOSE, 0, "day.end", None, "{}"))
         # A good week's stock on the shelves to begin with.
         for org in ORGS:

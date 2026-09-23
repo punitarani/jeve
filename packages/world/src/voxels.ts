@@ -13,7 +13,7 @@
  * that corner; and each block's colour is nudged by a hash of where it is, so
  * a wall is made of blocks and a lawn is not one green.
  *
- * Nothing here knows a firm's id or colours (WORLD-0006): a building's
+ * Nothing here knows a firm's id or colours (WORLD-0008): a building's
  * palette comes with it on `/world/map`, and what a kind of firm builds —
  * how tall, what floor, what hangs over the door — is a table keyed by
  * `Building.kind` with a default, so a thirteenth firm renders unasked.

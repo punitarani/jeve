@@ -1,5 +1,5 @@
 /**
- * The spatial world's domain vocabulary (WORLD-0003, WEB-0002, WORLD-0006).
+ * The spatial world's domain vocabulary (WORLD-0003, WEB-0002, WORLD-0008).
  *
  * What lives here is what the *client's scene model* needs beyond the wire:
  * the tile-kind union and the Tile and Node coordinates. Zones are strings —

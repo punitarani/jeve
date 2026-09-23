@@ -1,4 +1,4 @@
-"""The district: twelve buildings in three rows, with floors (WORLD-0006).
+"""The district: twelve buildings in three rows, with floors (WORLD-0008).
 
 Built in code rather than drawn, and served to the client as data, so the
 renderer and the pathfinder cannot disagree about where a wall is. The map is

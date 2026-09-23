@@ -8,7 +8,7 @@ scope: ["packages/world/src/render.ts", "packages/world/src/voxels.ts", "package
 tags: ["three.js", "rendering", "storeys", "performance", "agent-decided"]
 supersedes: []
 superseded-by: null
-relates-to: ["WEB-0002", "WEB-0003", "WEB-0004", "WORLD-0006"]
+relates-to: ["WEB-0002", "WEB-0003", "WEB-0004", "WORLD-0008"]
 confirmation: "cd apps/web && npx tsc --noEmit -p tsconfig.json"
 ---
 
@@ -16,7 +16,7 @@ confirmation: "cd apps/web && npx tsc --noEmit -p tsconfig.json"
 
 ## Context and Problem Statement
 
-WORLD-0006 made the town a district of twelve firms with one to three storeys
+WORLD-0008 made the town a district of twelve firms with one to three storeys
 each, and a team a floor. The renderer was built for one street of
 single-storey buildings: one instanced mesh for every static voxel, a camera,
 a fog and a pan limit sized in tiles that were right for a forty-tile town, and

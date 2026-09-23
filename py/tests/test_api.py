@@ -436,7 +436,7 @@ def test_the_map_is_served_as_data(client: TestClient) -> None:
         assert building["floors"] == BY_ID[building["zone"]].floors
         assert building["palette"] == asdict(BY_ID[building["zone"]].palette)
     # Every upper floor is a storey of its own over the building's footprint,
-    # with the stair where the building says it is (WORLD-0006).
+    # with the stair where the building says it is (WORLD-0008).
     storeys = {(s["zone"], s["floor"]): s for s in body["storeys"]}
     assert set(storeys) == {
         (b["zone"], floor) for b in body["buildings"] for floor in range(1, b["floors"])

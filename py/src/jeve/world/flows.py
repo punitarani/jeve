@@ -610,7 +610,7 @@ def deliver_catering(
     )
 
 
-# -- flow 11: rent (WORLD-0008) ------------------------------------------------
+# -- flow 11: rent (WORLD-0010) ------------------------------------------------
 #
 # The landlord bills every tenant on the first working day of the month and
 # sends someone round once a month; the bill is settled by the same daily
@@ -673,7 +673,7 @@ def maintenance_visit(
     )
 
 
-# -- flow 12: supplies and stock (WORLD-0008) ----------------------------------
+# -- flow 12: supplies and stock (WORLD-0010) ----------------------------------
 #
 # A retailer with a supplier sells from stock. Its buyer orders once a week —
 # how much is the judgement — the supplier delivers next morning on foot, bills
@@ -852,7 +852,7 @@ def reprice_supplies(
         org_id=org_id,
         payload={"multiplier": multiplier, "buyers": [b.id for b in buyers_of(org_id)]},
     )
-    # The buyers hear first; from them it spreads by word of mouth (MEM-0002).
+    # The buyers hear first; from them it spreads by word of mouth (MEM-0003).
     for buyer in buyers_of(org_id):
         person = engine.conn.execute(
             "SELECT id FROM persons WHERE org_id = %s AND role = ANY(%s) "
@@ -865,7 +865,7 @@ def reprice_supplies(
             )
 
 
-# -- nightly: what fades (MEM-0002) ---------------------------------------------
+# -- nightly: what fades (MEM-0003) ---------------------------------------------
 
 
 @scheduler.job("day.end")
@@ -879,7 +879,7 @@ def day_end(
     engine.schedule(report.sim_time + DAY, "day.end", None, {})
 
 
-# -- flow 13: credit lines (WORLD-0008) ----------------------------------------
+# -- flow 13: credit lines (WORLD-0010) ----------------------------------------
 #
 # A firm whose runway is short may ask the bank for a line; the bank's lending
 # officer decides; interest runs monthly; the line is repaid by rule when the

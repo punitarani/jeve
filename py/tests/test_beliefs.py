@@ -1,4 +1,4 @@
-"""Beliefs are typed slots revised inside existing requests (MEM-0002).
+"""Beliefs are typed slots revised inside existing requests (MEM-0003).
 
 On rules, so nothing here needs a cassette: the rules twin writes the same
 levels a model would be asked for. Each test is about a mechanism — a belief

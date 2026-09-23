@@ -400,7 +400,7 @@ test("a team row in the firm's panel cuts the building at that team's floor", as
   const panel = page.getByTestId("org-panel");
   await expect(panel).toHaveAttribute("data-org", building!.org_id);
 
-  // A team is a floor (WORLD-0006). The one highest up: its floor is the cut
+  // A team is a floor (WORLD-0008). The one highest up: its floor is the cut
   // that says the most, since it is the only one that leaves the whole
   // building standing while still being a choice.
   const rows = panel.getByTestId("org-team");

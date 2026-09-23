@@ -70,6 +70,30 @@ ASKING: dict[str, dict[str, object]] = {
         "competitor": "tallybird",
         "reliability": 1,
     },
+    # The richest path through an episode round: somebody who can settle the
+    # matter, already pushed, with a piece of news in their pocket — so `act`,
+    # `settled`, `mood` and `mention` are all in the request.
+    "episode.round": {
+        "org": "halloran",
+        "here": "thirdrail",
+        "stake": "invoice",
+        "role_in_stake": "holder",
+        "days_late": 9,
+        "large": True,
+        "present": [
+            {
+                "id": "ledgerline.client_services.client_admin.1",
+                "org": "ledgerline",
+                "role": "client_admin",
+            }
+        ],
+        "raised": True,
+        "pressed": True,
+        "promised": False,
+        "refused": False,
+        "tension": 1,
+        "tellable_topic": "price_rise",
+    },
     "agent.tick": {
         "org": "halloran",
         "team": "halloran.partners",
@@ -251,7 +275,7 @@ def test_people_in_the_room_are_described_not_named() -> None:
     }
     keys = [ask.key for ask in prepared.asks]
     # With an outage on their mind, what they now think of the vendor is
-    # asked last, after everything that moves the world (MEM-0002).
+    # asked last, after everything that moves the world (MEM-0003).
     assert keys == [
         "next_zone",
         "mood",

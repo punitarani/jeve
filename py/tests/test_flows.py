@@ -433,7 +433,7 @@ def test_a_firm_that_cannot_afford_lunch_is_not_asked(
     assert ordered is not None and int(ordered["n"]) == 0
 
 
-# -- the archetype flows (WORLD-0008) -----------------------------------------
+# -- the archetype flows (WORLD-0010) -----------------------------------------
 
 
 def test_rent_is_billed_by_the_landlord_and_paid_by_every_tenant(

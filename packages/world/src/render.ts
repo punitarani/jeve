@@ -16,7 +16,7 @@
  *
  * Nothing here is sized to the town in tiles. Every distance — the camera's,
  * the fog's, how far one may pan, where the clouds are — is a multiple of the
- * map's span, worked out in `build` (WORLD-0006: the district is twice the
+ * map's span, worked out in `build` (WORLD-0008: the district is twice the
  * town it replaced, and will grow again).
  */
 import type { Palette, TownMap } from "@jeve/contracts";

@@ -6,7 +6,7 @@ a bad Friday at another. Names are fictional.
 > **2026-09-22.** This document is the original four-firm plan and is kept as the
 > reasoning behind the flows. The world it describes grew into a district: twelve firms,
 > teams as floors, 225 staff and 970 counterparties, all described once in
-> `py/src/jeve/core/orgs.py` (CORE-0012, WORLD-0006). Where a count below disagrees with
+> `py/src/jeve/core/orgs.py` (CORE-0012, WORLD-0008). Where a count below disagrees with
 > the spec, the spec is right.
 
 Design rule inherited from 01: **emergence has to come from interaction structure** — cash

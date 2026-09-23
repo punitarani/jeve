@@ -1,10 +1,10 @@
-"""Space, and why it matters (WORLD-0003, WORLD-0006).
+"""Space, and why it matters (WORLD-0003, WORLD-0008).
 
 Staff have positions: a zone, a floor, a tile. At a *decision point* — when
 they arrive, when the stay they chose runs out, when a piece of software they
 use goes down, when someone from its vendor walks in, or at lunch — a person
 decides where to go next and whether to stop and talk to someone who is in the
-same place (WORLD-0007). Two people on the same floor of the same building is
+same place (WORLD-0009). Two people on the same floor of the same building is
 an *encounter*, and an encounter is the only way some things can happen: a
 lawyer whose invoicing is down can press the vendor to fix it only if she and
 someone from the vendor are standing in the same room.
@@ -32,6 +32,12 @@ How long a stay lasts is code, not a question (DECIDE-0001): a band of ticks
 per kind of place, drawn about the person and the moment (CORE-0009). An hour
 or two at the desk; a quarter or half hour anywhere else; long enough at the
 vendor's to say your piece. Nobody goes two hours without being asked.
+
+What a meeting *changes* lives in `episodes.py`, at either resolution: the
+one-shot encounter below calls `episodes.escalate` for its single consequence,
+and a meeting with a real stake becomes a multi-round episode instead. This
+module is about where people are and who stops to talk; that one is about what
+comes of it.
 """
 
 from __future__ import annotations
@@ -47,6 +53,7 @@ from jeve.core.seed import derive_rng, derive_seed
 from jeve.decide.policy import DecisionContext
 from jeve.decide.questions import candidates
 from jeve.memory import beliefs
+from jeve.world import episodes
 from jeve.world.map import HOME, PLAZA, Node, Tile, entry_for, find_path, spot_for, town
 
 if TYPE_CHECKING:
@@ -58,7 +65,7 @@ if TYPE_CHECKING:
 ESCALATION_KEEPS = 4
 ESCALATION_FLOOR = 2 * TICK
 
-# How long a stay lasts, in ticks, by the kind of place chosen (WORLD-0007).
+# How long a stay lasts, in ticks, by the kind of place chosen (WORLD-0009).
 # Drawn in code, never asked: a dwell is pacing, not a judgement. The top of
 # the longest band is the mandatory timer — nobody goes two hours unasked.
 DWELL_TICKS: dict[str, tuple[int, int]] = {
@@ -262,14 +269,6 @@ def send(
     return runner.id
 
 
-def _known_outage(agent: Agent, down: list[str]) -> str | None:
-    """A broken module this person has reason to know about: one their firm
-    depends on, or, for a vendor's own staff, one their firm sells."""
-
-    known = sorted(set(down) & agent.uses)
-    return known[0] if known else None
-
-
 def _facts(
     engine: Engine,
     report: TickReport,
@@ -284,11 +283,11 @@ def _facts(
         {"id": o.id, "org": o.org, "role": o.role} for o in others
     ]
     # Everyone here is counted for the model; only a few are offered by name
-    # of a label (DECIDE-0005), the people they know best sooner (MEM-0002).
+    # of a label (DECIDE-0005), the people they know best sooner (MEM-0003).
     # The mapping from label to person is here, in facts, never in the state.
     known = beliefs.strengths(engine.conn, agent.id)
     offered = candidates(present, own_org=agent.org, vendor=vendor, strengths=known)
-    incident = _open_incident(engine, [outage]) if outage else None
+    incident = episodes.open_incident(engine, [outage]) if outage else None
     return {
         "outage_hours": (
             (report.sim_time - int(incident["started"])) // HOUR if incident else 0
@@ -347,7 +346,7 @@ def _wakes(
     arrived: set[str],
     down: list[str],
 ) -> list[Agent]:
-    """Who has a decision to make this tick (WORLD-0007).
+    """Who has a decision to make this tick (WORLD-0009).
 
     Arrival; the stay they chose running out; a module they use going down
     since they last decided; somebody from the vendor of a module they know
@@ -366,7 +365,7 @@ def _wakes(
     vendors_in = {(a.zone, a.floor, a.org) for a in present if a.id in arrived}
     awake: list[Agent] = []
     for agent in present:
-        outage = _known_outage(agent, down)
+        outage = episodes.known_outage(agent.org, down)
         if (
             agent.id in arrived
             or now.seconds >= agent.due_at
@@ -427,7 +426,7 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
             if other.id != agent.id
             and not (agent.at_workplace and other.org == agent.org)
         ]
-        outage = _known_outage(agent, down)
+        outage = episodes.known_outage(agent.org, down)
         contexts.append(
             DecisionContext(
                 person_id=agent.id,
@@ -442,7 +441,17 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
     made = engine.decide_many(report, contexts)
     by_id = {agent.id: agent for agent in present}
     if engine.encounters:
-        _encounters(engine, report, deciding, made, by_id, down)
+        # A meeting with a real stake gets rounds instead of one shot
+        # (WORLD-0006). What comes back is every pair an episode already
+        # accounted for: resolving the same meeting twice would double-count it.
+        # Only the people who were asked can start one — the rest of the room
+        # can still be drawn into it, which is why both lists are passed.
+        consumed: set[frozenset[str]] = set()
+        if engine.episodes:
+            consumed = episodes.run(
+                engine, report, now, deciding, made, by_id, down, room=present
+            )
+        _encounters(engine, report, deciding, made, by_id, down, consumed)
 
     # Moves, after everyone who decided did so from where they stood, and the
     # stay each one chose; then everybody whose day is over goes home.
@@ -508,10 +517,10 @@ def _revise(
     engine: Engine, report: TickReport, agent: Agent, decision: Made, down: list[str]
 ) -> None:
     """Whatever the decision said about the world, written down as a belief
-    (MEM-0002): about the vendor whose product is down, about their employer."""
+    (MEM-0003): about the vendor whose product is down, about their employer."""
 
     level = decision.chosen.get("vendor_reliability")
-    outage = _known_outage(agent, down)
+    outage = episodes.known_outage(agent.org, down)
     if level is not None and outage is not None:
         beliefs.set_level(
             engine.conn,
@@ -536,8 +545,9 @@ def _encounters(
     made: list[Made],
     by_id: dict[str, Agent],
     down: list[str],
+    consumed: set[frozenset[str]] | None = None,
 ) -> None:
-    met: set[frozenset[str]] = set()
+    met: set[frozenset[str]] = set(consumed or ())
     for agent, decision in zip(present, made, strict=True):
         other_id = decision.chosen.get("with")
         if not decision.chosen.get("interact") or not isinstance(other_id, str):
@@ -553,9 +563,9 @@ def _encounters(
         met.add(pair)
 
         topic = str(decision.chosen.get("topic") or "small_talk")
-        outage = _known_outage(agent, down)
+        outage = episodes.known_outage(agent.org, down)
         incident = (
-            _open_incident(engine, [outage])
+            episodes.open_incident(engine, [outage])
             if topic == "the_outage" and outage
             else None
         )
@@ -578,7 +588,7 @@ def _encounters(
         )
         # Two people who talked know each other a little better, and what
         # one knew the other now knows: an outage they discussed, a price
-        # rise that came up over money (MEM-0002). Diffusion is a copy.
+        # rise that came up over money (MEM-0003). Diffusion is a copy.
         beliefs.bump_relationship(engine.conn, agent.id, other.id, report.sim_time)
         if topic == "the_outage" and incident is not None:
             fact = f"outage:{incident['id']}"
@@ -606,26 +616,6 @@ def _facts_known(engine: Engine, person_id: str, prefix: str) -> list[str]:
     ]
 
 
-def _open_incident(engine: Engine, down: list[str]) -> dict[str, Any] | None:
-    if not down:
-        return None
-    row = engine.conn.execute(
-        "SELECT id, module_id, cause_event_seq, escalated_sim, started_sim "
-        "FROM incidents WHERE ended_sim IS NULL AND module_id = ANY(%s) "
-        "ORDER BY id LIMIT 1",
-        (down,),
-    ).fetchone()
-    if row is None:
-        return None
-    return {
-        "id": int(row["id"]),
-        "module": str(row["module_id"]),
-        "cause": int(row["cause_event_seq"]) if row["cause_event_seq"] else None,
-        "escalated": row["escalated_sim"] is not None,
-        "started": int(row["started_sim"]),
-    }
-
-
 def _escalate(
     engine: Engine,
     report: TickReport,
@@ -637,7 +627,7 @@ def _escalate(
 ) -> None:
     """A customer has cornered the vendor in person. The fix gets priority."""
 
-    incident = _open_incident(engine, [module])
+    incident = episodes.open_incident(engine, [module])
     if incident is None or incident["escalated"]:
         return
     pending = engine.conn.execute(

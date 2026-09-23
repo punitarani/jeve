@@ -1,4 +1,4 @@
--- MEM-0002: four typed belief slots per person, and who knows whom.
+-- MEM-0003: four typed belief slots per person, and who knows whom.
 --
 -- A belief is a level, not a sentence: how reliable a vendor is, how strained
 -- an employer, how trustworthy a counterparty, and whether a fact is known.

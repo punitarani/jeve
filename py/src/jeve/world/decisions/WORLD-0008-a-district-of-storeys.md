@@ -1,10 +1,10 @@
 ---
-id: WORLD-0006
+id: WORLD-0008
 title: A district of storeys — zones are buildings, teams are floors, encounters are per floor
 status: accepted
 date: 2026-09-22
 deciders: ["claude"]
-scope: ["py/src/jeve/world/map.py", "py/src/jeve/world/space.py", "py/src/jeve/world/seed_world.py", "py/migrations/0009_district.sql", "py/tests/test_layouts.py", "py/tests/test_space.py", "py/src/jeve/api/contracts.py"]
+scope: ["py/src/jeve/world/map.py", "py/src/jeve/world/space.py", "py/src/jeve/world/seed_world.py", "py/migrations/0010_district.sql", "py/tests/test_layouts.py", "py/tests/test_space.py", "py/src/jeve/api/contracts.py"]
 tags: ["space", "map", "floors", "encounters", "agent-decided"]
 supersedes: []
 superseded-by: null
@@ -12,7 +12,7 @@ relates-to: ["WORLD-0003", "CORE-0012", "WEB-0002", "WEB-0004", "CORE-0009"]
 confirmation: "cd py && uv run pytest tests/test_layouts.py tests/test_space.py"
 ---
 
-# WORLD-0006 — A district of storeys — zones are buildings, teams are floors, encounters are per floor
+# WORLD-0008 — A district of storeys — zones are buildings, teams are floors, encounters are per floor
 
 ## Context and Problem Statement
 

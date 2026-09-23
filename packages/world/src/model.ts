@@ -10,7 +10,7 @@
  * person who changed zone, the nodes they walked. The client's whole job is to
  * spread that walk over the real seconds until the next tick.
  *
- * A zone is a string: a firm's id, `plaza` or `home` (WORLD-0006). A node is
+ * A zone is a string: a firm's id, `plaza` or `home` (WORLD-0008). A node is
  * a tile and a floor; floor 0 is the ground and the street, and each upper
  * floor is a storey of its own over its building's footprint.
  */

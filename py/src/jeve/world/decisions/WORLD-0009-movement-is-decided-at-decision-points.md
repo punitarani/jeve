@@ -1,18 +1,18 @@
 ---
-id: WORLD-0007
+id: WORLD-0009
 title: Movement is decided at decision points with a dwell, not every tick
 status: accepted
 date: 2026-09-22
 deciders: ["claude"]
-scope: ["py/src/jeve/world/space.py", "py/migrations/0010_wake.sql", "py/tests/test_space.py"]
+scope: ["py/src/jeve/world/space.py", "py/migrations/0011_wake.sql", "py/tests/test_space.py"]
 tags: ["space", "cadence", "cost", "agent-decided"]
 supersedes: []
 superseded-by: null
-relates-to: ["WORLD-0003", "WORLD-0006", "DECIDE-0001", "DECIDE-0005", "CORE-0009"]
+relates-to: ["WORLD-0003", "WORLD-0008", "DECIDE-0001", "DECIDE-0005", "CORE-0009"]
 confirmation: "cd py && uv run pytest tests/test_space.py"
 ---
 
-# WORLD-0007 — Movement is decided at decision points with a dwell, not every tick
+# WORLD-0009 — Movement is decided at decision points with a dwell, not every tick
 
 ## Context and Problem Statement
 

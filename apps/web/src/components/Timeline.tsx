@@ -169,6 +169,39 @@ function describe(event: SimEvent): string {
       return late(p.days_late, "d late");
     case "invoice.written_off":
       return join(cents(p.amount_cents), late(p.days_late, "d late"));
+    // WORLD-0006. A conversation with rounds. `depth` is the episode's own
+    // nesting, not the timeline's cascade depth, so it is spelled out.
+    case "episode.opened":
+      return join(
+        words(p.stake),
+        words(p.zone),
+        count(asArray(p.participants).length, "people"),
+        p.depth === 1 && "side conversation",
+      );
+    case "episode.round":
+      return join(
+        typeof p.round === "number" && `round ${p.round + 1}`,
+        asArray(p.acts)
+          .map((act) => words((act as Record<string, unknown>).act))
+          .filter(Boolean)
+          .join(", "),
+      );
+    case "episode.closed":
+      return join(
+        words(p.stake),
+        words(p.exit_reason),
+        p.pressed === true && "pressed",
+        p.promised === true && "promised",
+        count(p.facts_passed, "facts passed"),
+      );
+    case "fact.passed":
+      return join(words(p.topic), count(asArray(p.to).length, "told"));
+    case "outage.heard":
+      return join(String(p.module_id ?? ""), "heard second hand");
+    case "promise.made":
+      return join(invoice(p), "by a set day");
+    case "promise.broken":
+      return join(invoice(p), late(p.days_promised, "d promised"));
     default:
       return "";
   }
@@ -201,6 +234,14 @@ function count(value: unknown, unit: string): string {
 
 function ticket(p: Record<string, unknown>): string {
   return typeof p.ticket_id === "number" ? `ticket #${p.ticket_id}` : "";
+}
+function invoice(p: Record<string, unknown>): string {
+  return typeof p.invoice_id === "number" ? `invoice #${p.invoice_id}` : "";
+}
+/** A payload list, or nothing. `count(asArray(x).length)` is always a number,
+ * so a kind whose list is absent reads as "0 people" rather than vanishing. */
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 /** Money is integer cents everywhere; `money` is the one formatter. */

@@ -1,4 +1,4 @@
--- WORLD-0007: movement is decided at decision points, not every tick.
+-- WORLD-0009: movement is decided at decision points, not every tick.
 --
 -- When somebody next decides where to go, and when they last did. A dwell is
 -- drawn in code when a decision is made; an outage, a relevant arrival or the

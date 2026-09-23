@@ -1,4 +1,4 @@
-"""Typed beliefs and relationships (MEM-0002).
+"""Typed beliefs and relationships (MEM-0003).
 
 A belief is a slot with four described levels, held by a person about an
 entity: how reliable a vendor's software is, how strained their employer is,

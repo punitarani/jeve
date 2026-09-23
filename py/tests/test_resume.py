@@ -56,7 +56,7 @@ TABLES = {
     "persons": "id",
     "modules": "id",
     "outage_notices": "incident_id, person_id",
-    # Stock, prices and lines of credit move with the world (WORLD-0008).
+    # Stock, prices and lines of credit move with the world (WORLD-0010).
     "orgs": "id",
     "loans": "id",
 }
