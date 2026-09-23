@@ -485,6 +485,201 @@ class Economics(BaseModel):
     note: str
 
 
+# -- the field report (GET /report) -----------------------------------------
+
+
+class ReportVitals(BaseModel):
+    sim_days: int
+    events: int
+    decisions: int
+    modelled: int = Field(description="Decisions a model call answered.")
+    distinct_calls: int
+    cache_hit_rate: float = Field(
+        description="1 - distinct_calls / modelled: the share of modelled "
+        "decisions answered by a call made before."
+    )
+    spend_usd: float = Field(
+        description="Priced as /economics prices it: each call this run used, "
+        "once, at what it cost when first made."
+    )
+    ledger_entries: int
+    ledger_imbalance_cents: int = Field(
+        description="Sum of every ledger entry. Zero, or the books are wrong."
+    )
+    incidents: int
+    incidents_escalated: int
+    escalations: int
+    escalations_in_cafe: int
+    persons: dict[str, int]
+
+
+class ReportCashSeries(BaseModel):
+    account_id: str
+    org_id: str | None = Field(description="Null for the household sector.")
+    name: str
+    values: list[int] = Field(
+        description="Cents at the end of each sim-day, from `first_day`."
+    )
+
+
+class ReportCash(BaseModel):
+    first_day: int
+    series: list[ReportCashSeries]
+
+
+class ReportCacheDay(BaseModel):
+    day: int
+    decisions: int = Field(description="Modelled decisions that sim-day.")
+    new_calls: int = Field(description="Of those, calls never made before.")
+
+
+class ReportCallSet(BaseModel):
+    question_set: str
+    decisions: int
+    gated: int = Field(description="Settled by a gate, with no model call.")
+    calls: int
+    usd: float
+
+
+class ReportPerson(BaseModel):
+    id: str
+    name: str
+    org_id: str
+    role: str
+    decisions: int = Field(description="agent.tick decisions.")
+    mood: float | None = Field(description="Mean chosen mood, 0-3.")
+    talk_share: float = Field(description="Share of ticks they chose to talk.")
+    cafe_share: float = Field(
+        description="Share of their time on the map spent at the cafe, walked "
+        "from agent.moved."
+    )
+    raised: int = Field(description="Outages they escalated in person.")
+    received: int = Field(description="Escalations raised with them.")
+    sociability: float
+    diligence: float
+
+
+class ReportHourShare(BaseModel):
+    hour: int
+    share: float
+
+
+class ReportCafeHour(BaseModel):
+    hour: int
+    sales: int
+    walkouts: int
+
+
+class ReportMood(BaseModel):
+    mind: str = Field(
+        description="`ordinary`, the id of the module the prompt said was down, "
+        "or `other`."
+    )
+    decisions: int
+    mood: float
+
+
+class ReportPayroll(BaseModel):
+    org_id: str
+    name: str
+    paid: int
+    held: int
+    last_paid_day: int | None
+    insolvency_warnings: int
+
+
+class ReportCollections(BaseModel):
+    paid: int
+    mean_days_late: float | None
+    max_days_late: int | None
+    open: int
+    overdue: int
+    written_off: int
+
+
+class ReportHouseholds(BaseModel):
+    wages_cents: int
+    spending_cents: int
+
+
+class ReportOutage(BaseModel):
+    module_id: str
+    name: str
+    incidents: int
+    escalated: int
+    minutes_to_escalate: float | None
+    minutes_escalated: float | None = Field(
+        description="Mean outage length when someone escalated it."
+    )
+    minutes_not_escalated: float | None
+    tickets: int
+
+
+class ReportTopic(BaseModel):
+    topic: str
+    n: int
+
+
+class ReportKnowledge(BaseModel):
+    first_hand: int
+    relayed: int
+    encounters: int
+
+
+class ReportAnswer(BaseModel):
+    """One distinct model call: the state it was asked about and its answer."""
+
+    uses: int
+    state: dict[str, Any]
+    ans: dict[str, Any] = Field(
+        description="Per question: P(yes) for a yes/no question, otherwise "
+        "the distribution."
+    )
+
+
+class CastMember(BaseModel):
+    """Who the town replay draws: their seat and their walk to the cafe."""
+
+    id: str
+    name: str
+    org_id: str
+    role: str
+    seat: tuple[int, int]
+    spot: tuple[int, int]
+    path: list[tuple[int, int]]
+
+
+class FieldReport(BaseModel):
+    """GET /report — the field report, recomputed at most once per tick."""
+
+    seq: int
+    as_of: str = Field(
+        description="The database's clock when this was served, ISO-8601 UTC."
+    )
+    clock: Clock
+    health: Health
+    model: str | None = Field(
+        description="The build that answered the latest modelled decision."
+    )
+    vitals: ReportVitals
+    cash: ReportCash
+    cache_by_day: list[ReportCacheDay]
+    calls: list[ReportCallSet]
+    people: list[ReportPerson]
+    office_at_cafe: list[ReportHourShare]
+    cafe_by_hour: list[ReportCafeHour]
+    mood_by_mind: list[ReportMood]
+    payroll: list[ReportPayroll]
+    collections: ReportCollections
+    households: ReportHouseholds
+    outages: list[ReportOutage]
+    topics: list[ReportTopic]
+    knowledge: ReportKnowledge
+    answers: dict[str, list[ReportAnswer]]
+    cast: list[CastMember]
+    queue: list[tuple[int, int]]
+
+
 # Emission order for the generated file: a schema is written only after the
 # schemas it references, because `z.object({ x: Foo })` reads Foo at module
 # load.
@@ -526,4 +721,22 @@ MODELS: list[type[BaseModel]] = [
     Episode,
     EpisodePage,
     Economics,
+    ReportVitals,
+    ReportCashSeries,
+    ReportCash,
+    ReportCacheDay,
+    ReportCallSet,
+    ReportPerson,
+    ReportHourShare,
+    ReportCafeHour,
+    ReportMood,
+    ReportPayroll,
+    ReportCollections,
+    ReportHouseholds,
+    ReportOutage,
+    ReportTopic,
+    ReportKnowledge,
+    ReportAnswer,
+    CastMember,
+    FieldReport,
 ]

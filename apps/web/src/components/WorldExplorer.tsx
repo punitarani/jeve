@@ -77,6 +77,9 @@ export function WorldExplorer() {
 				<Link href="/" className="muted push-right">
 					← timeline
 				</Link>
+				<Link href="/reports" className="muted" data-testid="world-reports">
+					reports
+				</Link>
 			</header>
 			<div className="world-body">
 				<div

@@ -4,8 +4,9 @@
 #         session-level advisory lock; a transaction pooler would lose it)
 #
 # Deploy with: fly deploy            (both groups, one image, one release)
-# Secrets:     fly secrets set OPENROUTER_API_KEY=... JEVE_DATABASE_URL=... \
-#                JEVE_DATABASE_POOLED_URL=...
+# Secrets:     Doppler worker/prd, kept on this app by Doppler's Fly.io sync
+#              (docs/deployment.md). A secret beats an [env] value of the
+#              same name.
 # Database region: us-east-1 (closest Fly region: iad).
 
 app = "jeve-backend"

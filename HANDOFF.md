@@ -49,11 +49,12 @@ stake, and is the control arm `make episodes` compares against.
 
 ## Not yet done
 
-* **Nothing is deployed.** Fly app, Cloudflare site, and secrets exist only
-  as configuration. `docs/deployment.md` is the checklist: `fly postgres
-  create` + `attach`, `fly secrets set OPENROUTER_API_KEY` +
-  `JEVE_DATABASE_URL`, `fly deploy`, then `wrangler deploy` with
-  `NEXT_PUBLIC_JEVE_API` baked in.
+* **Deploys are CI's.** A push to `main` ships api + sim to Fly and then the
+  site to Cloudflare (OPS-0003). Worker secrets live in Doppler `worker/prd`,
+  which Doppler's Fly.io sync keeps on the app; nobody runs
+  `fly secrets set`. The site's API host is baked in at build time from the
+  GitHub repository variable `NEXT_PUBLIC_JEVE_API`. `docs/deployment.md` is
+  the runbook.
 * `JEVE_POLICY=jev` in production spends real money continuously. The
   guardrail ladder is env-tunable (`JEVE_*_CEILING_USD`, `JEVE_RUN_CAP_USD=0`
   in prod); the hard stop is the OpenRouter account cap — set it.

@@ -48,13 +48,13 @@ def pooled_dsn() -> str:
     `JEVE_DATABASE_POOLED_URL` is the managed side of a Fly Postgres pair;
     without it the API shares `dsn()`. Advisory locks and migrations must
     never use this — a transaction-mode pooler does not hold session state.
+
+    Without a pooled URL it is `dsn()` exactly, never `DATABASE_URL` first:
+    with both that and `JEVE_DATABASE_URL` set, the api read one database and
+    the daemon wrote the other, and the page showed a world nobody was running.
     """
 
-    return (
-        os.environ.get("JEVE_DATABASE_POOLED_URL")
-        or os.environ.get("DATABASE_URL")
-        or dsn()
-    )
+    return os.environ.get("JEVE_DATABASE_POOLED_URL") or dsn()
 
 
 # Prepared statements are cached per physical connection; behind a

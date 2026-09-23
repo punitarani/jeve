@@ -24,6 +24,7 @@ from psycopg.rows import DictRow
 from psycopg_pool import ConnectionPool
 
 from jeve import db, tracing
+from jeve.api import report
 from jeve.config import load_settings
 from jeve.core.clock import SimTime
 
@@ -39,7 +40,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     writer lock is a session lock and must ride a dedicated connection.
     """
 
-    global _pool
+    global _pool, _report_lock
+    _report_lock = asyncio.Lock()
     pool = db.connect_pool()
     await asyncio.to_thread(pool.open)
     _pool = pool
@@ -150,7 +152,6 @@ def state() -> dict[str, object]:
         ).fetchone()
         if meta is None:
             raise HTTPException(503, "the world has not been seeded")
-        now = SimTime(int(meta["sim_time"]))
 
         cash = {
             str(row["org_id"]): int(row["cents"])
@@ -211,17 +212,7 @@ def state() -> dict[str, object]:
 
         return {
             "seq": _max_seq(conn),
-            "clock": {
-                "sim_time": now.seconds,
-                "label": now.label(),
-                "day": now.day,
-                "weekday": now.weekday,
-                "in_office_hours": now.in_office_hours,
-                "tick_seq": int(meta["tick_seq"]),
-                "status": meta["status"],
-                "speed": float(meta["speed"]),
-                "run_id": meta["run_id"],
-            },
+            "clock": _clock(meta),
             "health": _health(meta),
             "orgs": orgs,
             "modules": modules,
@@ -229,6 +220,21 @@ def state() -> dict[str, object]:
             "unpaid_invoices": totals,
             "persons": {str(row["kind"]): int(row["n"]) for row in people},
         }
+
+
+def _clock(meta: dict[str, Any]) -> dict[str, object]:
+    now = SimTime(int(meta["sim_time"]))
+    return {
+        "sim_time": now.seconds,
+        "label": now.label(),
+        "day": now.day,
+        "weekday": now.weekday,
+        "in_office_hours": now.in_office_hours,
+        "tick_seq": int(meta["tick_seq"]),
+        "status": meta["status"],
+        "speed": float(meta["speed"]),
+        "run_id": meta["run_id"],
+    }
 
 
 STALE_AFTER_S = 30.0
@@ -558,6 +564,73 @@ def economics() -> dict[str, object]:
             "billed when each was first made. `without_dedup` prices every "
             "decision as its own call; it is an upper bound, not a measurement."
         ),
+    }
+
+
+_report_lock: asyncio.Lock | None = None
+_report_memo: tuple[tuple[str, str, str, int, int], dict[str, object]] | None = None
+
+
+def _report_meta() -> tuple[dict[str, Any], int]:
+    with _db() as conn:
+        meta = conn.execute(
+            "SELECT *, EXTRACT(EPOCH FROM now() - heartbeat_at)::float8 "
+            "AS heartbeat_age_s, current_database() AS db, "
+            "to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+            "AS as_of FROM sim_meta"
+        ).fetchone()
+        if meta is None:
+            raise HTTPException(503, "the world has not been seeded")
+        return dict(meta), _max_seq(conn)
+
+
+def _report_body(now: SimTime) -> dict[str, object]:
+    with _db() as conn:
+        return report.aggregate(conn, now)
+
+
+@app.get("/report")
+async def field_report() -> dict[str, object]:
+    """The field report: the world's aggregates, as `/reports` draws them (API-0003).
+
+    A handful of full scans, so the aggregates are memoised on what would
+    change them — which world, which tick, which last event — and a
+    page left open, or a crowd arriving at once, costs one computation per
+    tick rather than one per request. The lock makes the crowd wait for that
+    one instead of each starting its own. Clock and health are read fresh
+    every time: they are cheap, and a stale heartbeat is the one thing a
+    reader must not be shown.
+    """
+
+    global _report_lock, _report_memo
+    meta, seq = await asyncio.to_thread(_report_meta)
+    # Which world (a reseed truncates sim_meta, so started_at is new even
+    # when the run_id is not), then how far along it is.
+    world = (str(meta["db"]), str(meta["run_id"]), str(meta["started_at"]))
+    key = (*world, int(meta["tick_seq"]), seq)
+    # An asyncio lock, so the crowd waits on the event loop. A threading lock
+    # in a sync endpoint parks each waiter on a worker thread, and forty of
+    # those is the whole threadpool: /state and /health would stall behind
+    # one slow report. Made per event loop, which is what an asyncio lock is
+    # bound to — each TestClient, and each server, runs its own.
+    if _report_lock is None:
+        _report_lock = asyncio.Lock()
+    async with _report_lock:
+        # A memo at least as new as this request's key will do: a reader who
+        # read the clock just before a tick is not owed the older world, and
+        # recomputing it would evict the newer one everyone else is asking for.
+        memo = _report_memo
+        if memo is None or memo[0][:3] != world or memo[0][3:] < key[3:]:
+            now = SimTime(int(meta["sim_time"]))
+            memo = (key, await asyncio.to_thread(_report_body, now))
+            _report_memo = memo
+        body = memo[1]
+    return {
+        "seq": seq,
+        "as_of": str(meta["as_of"]),
+        "clock": _clock(meta),
+        "health": _health(meta),
+        **body,
     }
 
 
