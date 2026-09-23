@@ -467,9 +467,7 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
                 role=agent.role,
                 sim_time=report.sim_time,
                 kind="agent.tick",
-                facts=_facts(
-                    engine, report, agent, others, outage, strained, owed
-                ),
+                facts=_facts(engine, report, agent, others, outage, strained, owed),
                 traits=agent.traits,
             )
         )
