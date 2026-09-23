@@ -441,7 +441,7 @@ export type EpisodeOutcome = z.infer<typeof EpisodeOutcome>;
 /** GET /episodes/{id} — a meeting that got more than one round. */
 export const Episode = z.object({
   id: z.number().int(),
-  zone: z.enum(["software_office", "law_office", "accounting_office", "cafe", "plaza", "home"]),
+  zone: z.string(),
   stake: z.enum(["outage", "invoice", "news"]),
   stake_ref: z.string(),
   depth: z.number().int(),
