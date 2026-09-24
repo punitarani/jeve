@@ -44,7 +44,7 @@ from jeve.decide.policy import DecisionContext
 from jeve.world import scheduler
 
 if TYPE_CHECKING:
-    from jeve.world.engine import Engine, TickReport
+    from jeve.world.engine import Engine, Made, TickReport
 
 WEEK = 7 * DAY
 MONTH = 28 * DAY
@@ -790,16 +790,36 @@ def missed_payday(
 NOTICE = 14 * DAY
 """Two weeks' notice: somebody who decides to go works it out."""
 PAY_LATE_LOOKBACK = 56 * DAY
+QUITS_MONTHLY: dict[str, float] = {"thirdrail": 0.040}
+"""The month's chance that somebody with nothing pushing them resigns anyway —
+a better offer, a step up, a move (WORLD-0014). BLS JOLTS quits, seasonally
+adjusted, March-July 2026: accommodation and food services 3.5-4.2% a month;
+professional and business services 1.8-2.2%, the rest of the street."""
+QUITS_MONTHLY_DEFAULT = 0.020
+UNPUSHED_REASONS: tuple[tuple[str, float], ...] = (
+    ("better_offer", 37.0),
+    ("advancement", 33.0),
+    ("flexibility", 24.0),
+    ("moving_on", 22.0),
+)
+"""Why the content leave, weighted as Pew Research Center's February 2022
+survey of people who quit in 2021 named each a major reason: low pay 37%, no
+advancement 33%, inflexible hours 24%, relocating 22%."""
 
 
 def careers(engine: Engine, report: TickReport) -> None:
-    """Once a month, everyone but the head of each firm weighs whether to stay
+    """Once a month, everyone but the head of each firm may move on
     (WORLD-0014). Before, the only ways to leave were unpaid wages and a firm
     failing, so a healthy town had no turnover at all; real small businesses
-    lose 1-4% of their staff a month to quits (BLS JOLTS). What they weigh is
-    what the world knows about them: how they have been feeling, how they get
-    on with the people they work with (MEM-0004), whether wages have been late,
-    whether the firm is struggling, and how swamped the desk is."""
+    lose 2-4% of their staff a month to quits (BLS JOLTS).
+
+    Somebody with something pushing them — wages late, a colleague they have
+    fallen out with, a desk that is swamped, a firm in trouble, a bad month —
+    is asked (`career.review`), with what the world knows about them. Somebody
+    with nothing pushing them is not: asked every month, Jev put a contented
+    employee's chance of resigning at about 0.10 (three 60-day worlds), five
+    times the rate at which people actually quit. A month's base rate is a
+    hazard, not a judgement, so theirs is their industry's quit rate."""
 
     from jeve.world.space import SWAMPED_AT  # space -> shocks -> economy
 
@@ -838,6 +858,40 @@ def careers(engine: Engine, report: TickReport) -> None:
             "AND kind = 'insolvency.warning' AND sim_time >= %s",
             (org, report.sim_time - PAY_LATE_LOOKBACK),
         ).fetchone()
+        facts: dict[str, object] = {
+            "org": org,
+            "mood": int(person["mood"]),
+            "friends_at_work": int(colleagues["friends"]) if colleagues else 0,
+            "fallen_out_at_work": int(colleagues["fallen_out"]) if colleagues else 0,
+            "pay_late": bool(pay_late and int(pay_late["n"])),
+            "firm_struggling": bool(struggling and int(struggling["n"])),
+            "swamped": org == "tallybird" and swamped,
+        }
+        pushed = (
+            facts["pay_late"]
+            or facts["firm_struggling"]
+            or facts["swamped"]
+            or int(facts["fallen_out_at_work"]) > 0  # type: ignore[call-overload]
+            or int(person["mood"]) == 0
+        )
+        if not pushed:
+            # Keyed by the person and the month (CORE-0009).
+            rng = derive_rng(
+                engine.root_seed,
+                "career.lapse",
+                str(person["id"]),
+                report.sim_time // MONTH,
+            )
+            if rng.random() < QUITS_MONTHLY.get(org, QUITS_MONTHLY_DEFAULT):
+                point, total = rng.random() * sum(w for _, w in UNPUSHED_REASONS), 0.0
+                reason = UNPUSHED_REASONS[-1][0]
+                for name, weight in UNPUSHED_REASONS:
+                    total += weight
+                    if point < total:
+                        reason = name
+                        break
+                _give_notice(engine, report, person, reason, facts, made=None)
+            continue
         asked.append(person)
         contexts.append(
             DecisionContext(
@@ -845,50 +899,62 @@ def careers(engine: Engine, report: TickReport) -> None:
                 role=str(person["role"]),
                 sim_time=report.sim_time,
                 kind="career.review",
-                facts={
-                    "org": org,
-                    "mood": int(person["mood"]),
-                    "friends_at_work": int(colleagues["friends"]) if colleagues else 0,
-                    "fallen_out_at_work": int(colleagues["fallen_out"])
-                    if colleagues
-                    else 0,
-                    "pay_late": bool(pay_late and int(pay_late["n"])),
-                    "firm_struggling": bool(struggling and int(struggling["n"])),
-                    "swamped": org == "tallybird" and swamped,
-                },
+                facts=facts,
                 traits=dict(person["traits"] or {}),
             )
         )
-    for person, made in zip(asked, engine.decide_many(report, contexts), strict=True):
-        if not made.chosen.get("notice"):
-            continue
-        reason = str(made.chosen.get("reason") or "other")
-        seq = engine.emit(
-            report,
-            "staff.notice",
-            actor_id=str(person["id"]),
-            org_id=str(person["org_id"]),
-            decision_id=made.id,
-            payload={
-                "person_id": str(person["id"]),
-                "role": str(person["role"]),
-                "reason": reason,
-                "leaves_sim": report.sim_time + NOTICE,
-                "decided_by": made.source,
-            },
-        )
-        engine.schedule(
-            report.sim_time + NOTICE,
-            "staff.leaves",
-            str(person["id"]),
-            {
-                "org": str(person["org_id"]),
-                "reason": reason,
-                "cause": seq,
-                "decision_id": made.id,
-                "decided_by": made.source,
-            },
-        )
+    for person, ctx, made in zip(
+        asked, contexts, engine.decide_many(report, contexts), strict=True
+    ):
+        if made.chosen.get("notice"):
+            reason = str(made.chosen.get("reason") or "other")
+            _give_notice(engine, report, person, reason, ctx.facts, made=made)
+
+
+def _give_notice(
+    engine: Engine,
+    report: TickReport,
+    person: DictRow,
+    reason: str,
+    facts: dict[str, object],
+    *,
+    made: Made | None,
+) -> None:
+    """Somebody resigns: said now, worked for two weeks, then gone. A notice
+    no decision made (the month's hazard) says so, with what was true of them
+    all the same."""
+
+    decided_by = made.source if made is not None else "rules"
+    seq = engine.emit(
+        report,
+        "staff.notice",
+        actor_id=str(person["id"]),
+        org_id=str(person["org_id"]),
+        decision_id=made.id if made is not None else None,
+        payload={
+            "person_id": str(person["id"]),
+            "role": str(person["role"]),
+            "reason": reason,
+            "pushed": made is not None,
+            "mood": facts.get("mood"),
+            "pay_late": facts.get("pay_late"),
+            "fallen_out_at_work": facts.get("fallen_out_at_work"),
+            "leaves_sim": report.sim_time + NOTICE,
+            "decided_by": decided_by,
+        },
+    )
+    engine.schedule(
+        report.sim_time + NOTICE,
+        "staff.leaves",
+        str(person["id"]),
+        {
+            "org": str(person["org_id"]),
+            "reason": reason,
+            "cause": seq,
+            "decision_id": made.id if made is not None else None,
+            "decided_by": decided_by,
+        },
+    )
 
 
 @scheduler.job("staff.leaves")

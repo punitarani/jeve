@@ -61,6 +61,17 @@ PRIORS: tuple[Prior, ...] = (
         "The low end is Xero's lowest country, the high end Atradius's collection lag.",
     ),
     Prior(
+        "late_reason_cash_flow",
+        0.20,
+        0.50,
+        "share of late bills, by the payer's reason",
+        "Atradius Payment Practices Barometer, US 2025: top reasons B2B customers "
+        "pay late — liquidity 45% of respondents, payment-process delays 33%, "
+        "supply-chain disruption 26%, disputes 23%",
+        "Respondents name several reasons; liquidity is 45 of the 127 mentions "
+        "(0.35), the most cited. Here each late bill has one reason, the payer's.",
+    ),
+    Prior(
         "cafe_peak_hour",
         8.0,
         10.0,

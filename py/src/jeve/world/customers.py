@@ -39,6 +39,12 @@ TRUST_START = 3
 
 AT_RISK_BELOW = 2
 """Trust at 0 or 1 puts a customer at risk; 2 and above renews without asking."""
+LAPSE_MONTHLY = 0.01
+"""A content customer's month: no complaint, but a business closes, a need
+goes, a cheaper tool turns up (WORLD-0014). SaaS Capital 2025: about 90% of
+revenue retained a year on small contracts, some 0.9% lost a month. Asking
+them instead left Jev at 0.56 to renew a customer who trusts the vendor
+fully: 41% of subscribers lost a month (three 60-day worlds)."""
 
 RETENTION_DISCOUNT = 0.25
 RETAIN_ABOVE_CENTS = 500_00
@@ -50,6 +56,13 @@ WIN_BACK_CHANCE = 0.12
 DISPUTE_WINDOW = 3 * DAY
 DISPUTE_DISCOUNT = 0.15
 LARGE_CENTS = 200_000
+"""A large bill, as the firm that issued it sees size."""
+UNEXPECTED_ABOVE = 1.5
+"""A bill is larger than its payer expected when it is half as much again as
+their last one from the same firm — or, for a first bill, as that firm's
+median bill (WORLD-0014). It was `LARGE_CENTS`, a line two thirds of all bills
+crossed, so most clients were told every bill was bigger than they expected,
+and Jev queried 52-67% of those (three 60-day worlds)."""
 
 VENDOR_BAD_NEWS = ("insolvency", "payroll_late", "churned")
 """Topics that, heard about the vendor, put a customer at risk: the scenario's
@@ -198,19 +211,25 @@ def renewals(engine: Engine, report: TickReport) -> dict[int, float]:
         ).fetchall()
     ]
     at_risk: list[tuple[dict[str, Any], str]] = []
-    renewing: list[tuple[dict[str, Any], str]] = []
     for sub in subs:
         holder = holder_of(engine, sub)
         if holder is None:
             continue
-        # Every subscriber weighs the month (WORLD-0014). Only the ones at risk
-        # used to be asked, so a content customer never left: zero churn in a
-        # quiet world, against 2-6% a month for small SaaS customers
-        # (ChartMogul). The account manager still only calls the ones at risk.
-        renewing.append((sub, holder))
         if trust(engine, holder) < AT_RISK_BELOW or heard_bad_news(engine, holder):
             at_risk.append((sub, holder))
-    if not renewing:
+            continue
+        # Content customers are not asked, and not immortal either: a month's
+        # small chance of going for reasons of their own, keyed by the
+        # subscription and the month (CORE-0009).
+        rng = derive_rng(
+            engine.root_seed,
+            "subscription.lapse",
+            int(sub["id"]),
+            report.sim_time // economy.MONTH,
+        )
+        if rng.random() < LAPSE_MONTHLY:
+            cancel(engine, report, sub, holder, None)
+    if not at_risk:
         return discounts
 
     manager = engine.conn.execute(
@@ -263,7 +282,7 @@ def renewals(engine: Engine, report: TickReport) -> dict[int, float]:
                 )
 
     contexts = []
-    for sub, holder in renewing:
+    for sub, holder in at_risk:
         contexts.append(
             DecisionContext(
                 person_id=holder,
@@ -282,7 +301,7 @@ def renewals(engine: Engine, report: TickReport) -> dict[int, float]:
             )
         )
     for (sub, holder), made in zip(
-        renewing, engine.decide_many(report, contexts), strict=True
+        at_risk, engine.decide_many(report, contexts), strict=True
     ):
         if made.chosen.get("renew"):
             continue
@@ -318,8 +337,15 @@ def _traits(engine: Engine, person_id: str) -> dict[str, object]:
 
 
 def cancel(
-    engine: Engine, report: TickReport, sub: dict[str, Any], holder: str, made: Made
+    engine: Engine,
+    report: TickReport,
+    sub: dict[str, Any],
+    holder: str,
+    made: Made | None,
 ) -> None:
+    """A subscription ends: decided by its holder, or — `made` None — lapsed
+    for a reason of the holder's own (LAPSE_MONTHLY)."""
+
     engine.conn.execute(
         "UPDATE subscriptions SET active = false, cancelled_sim = %s WHERE id = %s",
         (report.sim_time, int(sub["id"])),
@@ -329,15 +355,16 @@ def cancel(
         "subscription.cancelled",
         actor_id=holder,
         org_id="tallybird",
-        decision_id=made.id,
+        decision_id=made.id if made is not None else None,
         payload={
             "subscription_id": int(sub["id"]),
             "by": holder,
             "trust": trust(engine, holder),
             "heard_bad_news": heard_bad_news(engine, holder),
+            "reason": "unhappy" if made is not None else "lapsed",
             "module_id": str(sub["module_id"]),
             "monthly_cents": int(sub["monthly_cents"]),
-            "decided_by": made.source,
+            "decided_by": made.source if made is not None else "rules",
         },
     )
     # That the vendor is losing customers is news, and it travels (MEM-0002):
@@ -395,6 +422,28 @@ def win_back(engine: Engine, report: TickReport, month: int) -> None:
 # -- disputes ----------------------------------------------------------------------
 
 
+def expected_amount(engine: Engine, bill: dict[str, Any]) -> float:
+    """What the payer of this bill had reason to expect it to come to: their
+    last services bill from the same firm, else the firm's median one."""
+
+    row = engine.conn.execute(
+        "SELECT amount_cents FROM invoices WHERE kind = 'services' "
+        "AND from_org_id = %s AND id < %s AND (to_person_id = %s OR to_org_id = %s) "
+        "ORDER BY id DESC LIMIT 1",
+        (bill["from_org_id"], bill["id"], bill["to_person_id"], bill["to_org_id"]),
+    ).fetchone()
+    if row is None:
+        row = engine.conn.execute(
+            "SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY amount_cents) "
+            "AS amount_cents FROM invoices WHERE kind = 'services' "
+            "AND from_org_id = %s AND id < %s",
+            (bill["from_org_id"], bill["id"]),
+        ).fetchone()
+    if row is None or row["amount_cents"] is None:
+        return float(bill["amount_cents"])  # the first bill a firm ever sent
+    return float(row["amount_cents"])
+
+
 def disputes(engine: Engine, report: TickReport, now: SimTime) -> None:
     """A bill just received is read, and perhaps queried, at the payer's own
     moment for their inbox (CORE-0009)."""
@@ -429,7 +478,8 @@ def disputes(engine: Engine, report: TickReport, now: SimTime) -> None:
                 kind="invoice.dispute",
                 facts={
                     "issuer": str(bill["from_org_id"]),
-                    "large": int(bill["amount_cents"]) >= LARGE_CENTS,
+                    "larger_than_expected": int(bill["amount_cents"])
+                    > UNEXPECTED_ABOVE * expected_amount(engine, bill),
                     "price_rise": heard_price_rise(
                         engine, payer, str(bill["from_org_id"])
                     ),

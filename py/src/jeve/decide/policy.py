@@ -189,18 +189,27 @@ class RulesPolicy:
             pressure -= 0.3
         draw, why = _uniform(rng), _uniform(rng)
         pay = draw < max(0.05, min(0.98, pressure))
-        # Why not, when not: cash first when cash is short (liquidity is the
-        # most common reason in the trade surveys), a query while disputed,
-        # otherwise process delays, other bills and plain oversight.
+        # Why not, when not: before the date, it is not due; cash first when
+        # cash is short (liquidity is the most cited reason in the trade
+        # surveys), a query while disputed; otherwise the payment process (a
+        # batch, a sign-off — the next most cited), other bills, oversight.
         if pay:
             reason = "due"
+        elif days_until_due > 0:
+            reason = "not_due"
         elif runway_days < 14:
             reason = "cash_flow"
         elif ctx.facts.get("disputed"):
             reason = "query"
         else:
             reason = (
-                "approval" if why < 0.5 else "other_bills" if why < 0.8 else "forgot"
+                "routine"
+                if why < 0.45
+                else "approval"
+                if why < 0.6
+                else "other_bills"
+                if why < 0.85
+                else "forgot"
             )
         return {"pay": pay, "reason": reason}, {"pay": draw, "why_not": why}
 
@@ -511,9 +520,10 @@ class RulesPolicy:
     def _career_review(
         self, ctx: DecisionContext, rng: object
     ) -> tuple[dict[str, object], dict[str, float]]:
-        """A month's quit chance: about two in a hundred for someone content
-        (BLS JOLTS: 1.2-3.5% of staff quit a month), more for someone unhappy,
-        unpaid, fallen out with a colleague or swamped; a friend at work keeps
+        """A month's quit chance for somebody something is pushing (only they
+        are asked; the content face their industry's quit rate, WORLD-0014):
+        the base rate and more for someone unhappy, unpaid, fallen out with a
+        colleague, swamped or in a firm in trouble; a friend at work keeps
         people. The reason is whatever pushed hardest."""
 
         draw, why = _uniform(rng), _uniform(rng)
@@ -523,6 +533,7 @@ class RulesPolicy:
         chance += 0.05 if ctx.facts.get("pay_late") else 0.0
         chance += 0.03 if ctx.facts.get("fallen_out_at_work") else 0.0
         chance += 0.02 if ctx.facts.get("swamped") else 0.0
+        chance += 0.03 if ctx.facts.get("firm_struggling") else 0.0
         chance -= 0.01 if _num(ctx.facts.get("friends_at_work"), 0.0) >= 1 else 0.0
         notice = draw < max(0.005, min(0.3, chance))
         if not notice:
@@ -533,8 +544,10 @@ class RulesPolicy:
             reason = "people"
         elif ctx.facts.get("swamped"):
             reason = "workload"
+        elif ctx.facts.get("firm_struggling"):
+            reason = "security"
         else:
-            reason = "better_offer" if why < 0.6 else "moving_on"
+            reason = "better_offer" if why < 0.5 else "advancement"
         return {"notice": notice, "reason": reason}, {"notice": draw, "why": why}
 
     def _founder_review(
@@ -647,7 +660,7 @@ class RulesPolicy:
             0.02
             + 0.08 * (0.9 - patience)
             + (0.06 if ctx.facts.get("price_rise") else 0.0)
-            + (0.03 if ctx.facts.get("large") else 0.0)
+            + (0.03 if ctx.facts.get("larger_than_expected") else 0.0)
         )
         draw = _uniform(rng)
         return {"dispute": draw < chance}, {"dispute": draw}

@@ -129,7 +129,7 @@ ASKING: dict[str, dict[str, object]] = {
     },
     "invoice.dispute": {
         "issuer": "halloran",
-        "large": True,
+        "larger_than_expected": True,
         "price_rise": True,
         "firm": False,
     },

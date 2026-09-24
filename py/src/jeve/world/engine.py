@@ -1705,7 +1705,9 @@ class Engine:
         (WORLD-0014): keyed by the client and the month (CORE-0009), so a
         client's cash is tight for a month, not for a tick."""
 
-        rng = derive_rng(self.root_seed, "client.cash", person_id, now.day // 30)
+        rng = derive_rng(
+            self.root_seed, "client.cash", person_id, now.seconds // economy.MONTH
+        )
         return math.exp(
             math.log(CLIENT_BUFFER_MEDIAN_DAYS)
             + CLIENT_BUFFER_SIGMA * rng.gauss(0.0, 1.0)

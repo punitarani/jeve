@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jeve.evals.arms import ARMS, DEV_SEEDS, HELD_OUT_SEEDS, slug
+from jeve.evals.arms import ARMS, DEV_SEEDS, HELD_OUT_SEEDS, TRIAL_SEEDS, slug
 from jeve.evals.priors import BY_MEASURE, PRIORS
 from jeve.evals.runner import RUNS
 from jeve.evals.stats import paired, proportion_interval, summary
@@ -31,6 +31,21 @@ PLAUSIBILITY = (
     "cafe_lunch_share",
     "cafe_walkout_share",
     "dispute_share",
+    "late_reason_routine",
+    "late_reason_approval",
+    "late_reason_query",
+    "late_reason_forgot",
+    "late_reason_other_bills",
+    "days_to_collect_mean",
+    "receivables_open_share",
+)
+HEALTH = (
+    "insolvency_warnings",
+    "firms_failed",
+    "payroll_held_or_missed",
+    "staff_left",
+    "subscriptions_cancelled",
+    "detectors_firing",
 )
 DEPTH = (
     "persona_signal",
@@ -50,7 +65,34 @@ DEPTH = (
     "trust_spread",
     "negative_events",
     "ontology_gaps",
+    "repeat_meeting_share",
+    "meetings_top10_pair_share",
+    "distinct_pairs_met",
+    "drift_first_last_week",
 )
+SIGNAL = (
+    "event_payload_fields_mean",
+    "event_caused_share",
+    "causal_depth_mean",
+    "causal_depth_max",
+    "decision_facts_share",
+    "decision_facts_fields_mean",
+    "late_bill_reason_share",
+    "late_bill_reminded_share",
+    "late_bill_chases_mean",
+)
+TRIAL_CONTRASTS: tuple[tuple[str, str, str], ...] = (
+    ("before-rules", "rules", "The rules twin, before the signal work and after."),
+    (
+        "before",
+        "jev-llm-rounds",
+        "Production's world (Jev, conversations routed to tier 1), before the "
+        "signal work and after.",
+    ),
+    ("jev", "jev-llm-rounds", "In the world after: conversations routed or not."),
+)
+"""The trial's contrasts cross a code change, which no arm's `against` can say:
+`before` and `before-rules` ran at e9a8c2b and survive as their JSON."""
 COST = (
     "cost_per_day_usd",
     "decisions_per_day",
@@ -111,6 +153,11 @@ def _arm_table(
     header = "| measure | " + " | ".join(arms) + tail
     lines = [header, "|---|" + "---:|" * len(arms) + ("---|---|" if bands else "")]
     for measure in measures:
+        # A measure no world here can answer (added after these ran) is left
+        # out rather than shown as a row of dashes.
+        known = [_value(worlds.get((a, s)), measure) for a in arms for s in seeds]
+        if all(v is None for v in known):
+            continue
         cells = []
         for arm in arms:
             present = [worlds.get((arm, s)) for s in seeds]
@@ -183,6 +230,42 @@ def _contrasts(
     return lines
 
 
+def _trial_contrasts(
+    worlds: dict[tuple[str, int], World], seeds: Sequence[int]
+) -> list[str]:
+    lines: list[str] = []
+    measures = PLAUSIBILITY + HEALTH + DEPTH + SIGNAL + COST
+    for before, after, note in TRIAL_CONTRASTS:
+        if not any((before, s) in worlds for s in seeds):
+            continue
+        if not any((after, s) in worlds for s in seeds):
+            continue
+        rows: list[str] = []
+        clear = 0
+        for measure in measures:
+            a = [_value(worlds.get((before, s)), measure) for s in seeds]
+            b = [_value(worlds.get((after, s)), measure) for s in seeds]
+            p = paired(a, b)
+            if p.delta is None:
+                continue
+            clear += p.clear
+            mark = " **clear**" if p.clear else ""
+            rows.append(f"| `{measure}` | {p.text(_digits(measure))}{mark} | {p.n} |")
+        lines += [
+            f"#### `{after}` against `{before}`",
+            "",
+            f"{note} Paired by seed: Δ = {after} - {before}, bootstrap 95% "
+            f"interval, d_z. {clear} of {len(rows)} measures have an interval "
+            "that excludes zero.",
+            "",
+            "| measure | Δ [95% CI], d_z | seeds |",
+            "|---|---|---:|",
+            *rows,
+            "",
+        ]
+    return lines
+
+
 def _judge_section() -> list[str]:
     if not JUDGE_DIR.exists():
         return ["No judge results yet."]
@@ -209,9 +292,10 @@ def _judge_section() -> list[str]:
 
 
 def render(arms: Sequence[str]) -> str:
-    worlds = load(arms, [*DEV_SEEDS, *HELD_OUT_SEEDS])
+    worlds = load(arms, [*DEV_SEEDS, *HELD_OUT_SEEDS, *TRIAL_SEEDS])
     held = [s for s in HELD_OUT_SEEDS if any((a, s) in worlds for a in arms)]
     dev = [s for s in DEV_SEEDS if any((a, s) in worlds for a in arms)]
+    trial = [s for s in TRIAL_SEEDS if any((a, s) in worlds for a in arms)]
     days = sorted({w.days for w in worlds.values()})
     lines = [
         "# Evals: realism, depth and quality as numbers",
@@ -223,32 +307,52 @@ def render(arms: Sequence[str]) -> str:
         "",
         f"Arms: {', '.join(f'`{a}`' for a in arms)}. Dev seeds: "
         f"{', '.join(map(str, dev)) or 'none'}. Held-out seeds: "
-        f"{', '.join(map(str, held)) or 'none yet'}. Horizon: "
+        f"{', '.join(map(str, held)) or 'none yet'}. Trial seeds: "
+        f"{', '.join(map(str, trial)) or 'none yet'}. Horizon: "
         f"{', '.join(f'{d} sim-days' for d in days)}. Cells are mean ± sd over seeds.",
         "",
     ]
-    for label, seeds in (("held-out seeds", held), ("dev seeds", dev)):
+    for label, seeds in (
+        ("60-day trial seeds", trial),
+        ("held-out seeds", held),
+        ("dev seeds", dev),
+    ):
         if not seeds:
             continue
+        # Only the arms that ran on these seeds get a column.
+        here = [a for a in arms if any((a, s) in worlds for s in seeds)]
+        everything = PLAUSIBILITY + HEALTH + DEPTH + SIGNAL + COST
         lines += [
             f"## On the {label}",
             "",
             "### Plausibility: stylized facts against real-world bands",
             "",
-            *_arm_table(worlds, arms, seeds, PLAUSIBILITY, bands=True),
+            *_arm_table(worlds, here, seeds, PLAUSIBILITY, bands=True),
+            "",
+            "### Health: does the economy hold up?",
+            "",
+            *_arm_table(worlds, here, seeds, HEALTH, bands=False),
             "",
             "### Depth: does who someone is, what they remember and whom they "
             "meet change what they do?",
             "",
-            *_arm_table(worlds, arms, seeds, DEPTH, bands=False),
+            *_arm_table(worlds, here, seeds, DEPTH, bands=False),
+            "",
+            "### Signal: what each record says, and how far a consequence travels",
+            "",
+            *_arm_table(worlds, here, seeds, SIGNAL, bands=False),
             "",
             "### Cost and integrity",
             "",
-            *_arm_table(worlds, arms, seeds, COST, bands=False),
+            *_arm_table(worlds, here, seeds, COST, bands=False),
             "",
             "### Contrasts",
             "",
-            *_contrasts(worlds, arms, seeds, PLAUSIBILITY + DEPTH + COST),
+            *(
+                _trial_contrasts(worlds, seeds)
+                if seeds is trial
+                else _contrasts(worlds, here, seeds, everything)
+            ),
         ]
     lines += ["## Believability: the judge", "", *_judge_section()]
     failing = sorted({c for w in worlds.values() for c in w.checks_failed})

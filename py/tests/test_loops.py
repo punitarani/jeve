@@ -286,8 +286,7 @@ def test_customers_remember_outages_and_some_leave(conn: Connection[DictRow]) ->
         "SELECT count(*) FROM persons WHERE (beliefs->>'vendor_reliability')::int < 3",
     )
     assert lowered > 0
-    # Renewal is asked of every holder at the monthly billing (WORLD-0014),
-    # the ones who lost trust among them.
+    # Renewal is asked only of customers at risk, at the monthly billing.
     asked = conn.execute(
         "SELECT person_id FROM decisions WHERE question_set = 'subscription.renew'"
     ).fetchall()
@@ -307,22 +306,43 @@ def test_customers_remember_outages_and_some_leave(conn: Connection[DictRow]) ->
         assert memory.holders_of(conn, "churned:tallybird")
 
 
-def test_a_confident_customer_weighs_the_month_but_is_not_courted(
+def test_a_confident_customer_is_not_asked_whether_to_stay(
     conn: Connection[DictRow],
 ) -> None:
-    """Every holder is asked whether to stay (WORLD-0014): content customers
-    leave too, at a few in a hundred a month. Only one at risk is worth the
-    account manager's call, so a world where nobody is at risk offers nothing."""
+    engine, report = fresh(conn)
+    assert customers.renewals(engine, report) == {}
+    assert count(conn, "SELECT count(*) FROM decisions") == 0
+    conn.rollback()
+
+
+def test_the_content_are_not_asked_whether_to_leave_but_some_leave(
+    conn: Connection[DictRow],
+) -> None:
+    """A month's base rate is a hazard, not a question (WORLD-0014): asked,
+    Jev put a contented employee's resignation at about 0.10 a month. Nobody
+    in a fresh town has anything pushing them, so nobody is asked — and over
+    enough months, somebody still goes, for a reason Pew's survey names."""
 
     engine, report = fresh(conn)
-    holders = count(conn, "SELECT count(*) FROM subscriptions WHERE active")
-    assert customers.renewals(engine, report) == {}
-    asked = count(
-        conn,
-        "SELECT count(*) FROM decisions WHERE question_set = 'subscription.renew'",
+    for month in range(12):
+        later = TickReport(
+            tick_seq=2 + month, sim_time=report.sim_time + month * 28 * DAY
+        )
+        economy.careers(engine, later)
+    assert (
+        count(
+            conn, "SELECT count(*) FROM decisions WHERE question_set = 'career.review'"
+        )
+        == 0
     )
-    assert 0 < asked <= holders
-    assert count(conn, "SELECT count(*) FROM decisions") == asked
+    notices = conn.execute(
+        "SELECT payload FROM events WHERE kind = 'staff.notice'"
+    ).fetchall()
+    assert notices, "a year of hazards and nobody resigned"
+    for row in notices:
+        payload = dict(row["payload"])
+        assert payload["pushed"] is False and payload["decided_by"] == "rules"
+        assert payload["reason"] in {name for name, _ in economy.UNPUSHED_REASONS}
     conn.rollback()
 
 

@@ -131,7 +131,14 @@ def _payments(conn: Connection[DictRow], m: Measures, end: int) -> None:
         reason = str(r["late_reason"])
         reasons[gate.get(reason, reason)] += int(r["n"])
     total = sum(reasons.values())
-    for reason in ("cash_flow", "approval", "query", "forgot", "other_bills"):
+    for reason in (
+        "cash_flow",
+        "routine",
+        "approval",
+        "query",
+        "forgot",
+        "other_bills",
+    ):
         m.values[f"late_reason_{reason}"] = (
             reasons.get(reason, 0) / total if total else None
         )
@@ -423,6 +430,58 @@ def _ties(conn: Connection[DictRow], m: Measures) -> None:
     m.values["distinct_pairs_met"] = float(len(counts))
 
 
+def _signal(conn: Connection[DictRow], m: Measures) -> None:
+    """How much each record says (WORLD-0013), and how far a consequence
+    travels. A decision that kept its facts can be explained after the fact;
+    an event that names its causes can be followed; a bill left late with a
+    reason can be told apart from one forgotten."""
+
+    m.values["event_payload_fields_mean"] = _scalar(
+        conn,
+        "SELECT avg((SELECT count(*) FROM jsonb_object_keys(payload))) FROM events "
+        "WHERE jsonb_typeof(payload) = 'object'",
+    )
+    m.values["event_caused_share"] = _scalar(
+        conn, "SELECT avg((cardinality(causes) > 0)::int) FROM events"
+    )
+    m.values["decision_facts_share"] = _scalar(
+        conn, "SELECT avg((facts IS NOT NULL)::int) FROM decisions"
+    )
+    m.values["decision_facts_fields_mean"] = _scalar(
+        conn,
+        "SELECT avg((SELECT count(*) FROM jsonb_object_keys(facts))) FROM decisions "
+        "WHERE jsonb_typeof(facts) = 'object'",
+    )
+    late = conn.execute(
+        "SELECT count(*) AS n, count(late_reason) AS reasoned, "
+        "count(reminded_sim) AS reminded, avg(chases) AS chases FROM invoices "
+        "WHERE kind <> 'supplies' AND written_off_sim IS NULL AND due_sim < ("
+        "  SELECT sim_time FROM sim_meta) - %s AND (paid_sim IS NULL "
+        "  OR paid_sim - due_sim >= %s)",
+        (DAY, DAY),
+    ).fetchone()
+    assert late is not None
+    n = int(late["n"])
+    m.values["late_bill_reason_share"] = int(late["reasoned"]) / n if n else None
+    m.values["late_bill_reminded_share"] = int(late["reminded"]) / n if n else None
+    m.values["late_bill_chases_mean"] = (
+        float(late["chases"]) if n and late["chases"] is not None else None
+    )
+    # Depth of the causal graph: an event with no causes is depth 0, and one
+    # caused by others is one deeper than the deepest of them. Walked in seq
+    # order, which is causal order: a cause is always emitted first.
+    depth: dict[int, int] = {}
+    deep: list[int] = []
+    for row in conn.execute("SELECT seq, causes FROM events ORDER BY seq"):
+        causes = [int(c) for c in row["causes"] or []]
+        d = 1 + max((depth.get(c, 0) for c in causes), default=-1)
+        depth[int(row["seq"])] = d
+        if d:
+            deep.append(d)
+    m.values["causal_depth_mean"] = statistics.fmean(deep) if deep else None
+    m.values["causal_depth_max"] = float(max(deep)) if deep else None
+
+
 # -- cost and integrity -------------------------------------------------------------
 
 
@@ -495,6 +554,7 @@ def measure(conn: Connection[DictRow]) -> Measures:
     _health(conn, m)
     _drift(conn, m, end)
     _ties(conn, m)
+    _signal(conn, m)
     _cost(conn, m)
     m.checks_failed = [c.name for c in soak.checks(conn, days=m.days) if not c.ok]
     m.values["invariants_failed"] = float(len(m.checks_failed))

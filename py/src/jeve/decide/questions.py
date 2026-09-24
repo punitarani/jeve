@@ -493,22 +493,28 @@ _PAY = Ask(
 
 
 LATE_REASONS: dict[str, str] = {
+    "not_due": "It is not due yet, so there is no hurry.",
     "cash_flow": "They are waiting for money to come in before they pay out.",
-    "approval": "It is waiting on someone's sign-off or the next payment run.",
+    "routine": "They pay bills in a batch, when they next sit down to them.",
+    "approval": "It is waiting on someone's sign-off.",
     "query": "They have a question or a disagreement about the bill.",
     "forgot": "It has slipped their mind among everything else.",
     "other_bills": "Other bills are being paid first.",
     "other": "Something else.",
 }
 """Why a bill is left unpaid, typed (WORLD-0013): the reasons the trade
-surveys count — liquidity, process delays, disputes (Atradius US 2025) — plus
-the two every bookkeeper knows. The world keeps the last one on the bill."""
+surveys count — liquidity, payment-process delays (a batch, a sign-off),
+disputes (Atradius US 2025) — plus the two every bookkeeper knows, and the
+plainest of all before the date. The world keeps the last one on the bill.
+
+Without "not_due" and "routine", Jev put 0.60 on "other" across 24 states from
+a 60-day world, and 17 of the 24 reached for it; with them, 0.02 and none."""
 _WHY_NOT = Ask(
     "why_not",
     "P",
     Choice(
-        instructions="If this person leaves the invoice unpaid today, what is the "
-        "main reason?",
+        instructions="Suppose this person does not pay the invoice today. What "
+        "would be the main reason?",
         criteria=dict(LATE_REASONS),
     ),
 )
@@ -1745,13 +1751,23 @@ def _prepare_leave(ctx: DecisionContext) -> Prepared:
 # -- career.review: does somebody move on (WORLD-0014) ------------------------
 
 QUIT_REASONS: dict[str, str] = {
-    "better_offer": "Another job that pays or suits them better.",
+    "better_offer": "Better pay somewhere else.",
+    "advancement": "There is no step up for them here.",
+    "people": (
+        "They do not feel respected, or do not get on with the people they work with."
+    ),
     "workload": "The work has become too much.",
-    "people": "They do not get on with the people they work with.",
-    "pay": "Their wages have not been reliable.",
+    "flexibility": "They need hours that fit around family or the rest of their life.",
+    "pay": "Their wages have not been paid reliably.",
+    "security": "They worry about the firm's future.",
     "moving_on": "A change of life: moving away, study, a new start.",
     "other": "Something else.",
 }
+"""Pew Research Center's reasons people quit (February 2022, those who left a
+job in 2021: low pay, no advancement, feeling disrespected, inflexible hours,
+too many hours, relocating), and two this street adds: wages paid late, and a
+firm in trouble. With five of them, Jev put 0.24 on "other" (24 states, 9 of
+them reaching for it); with these, asked as a supposition, 0.07 and none."""
 _NOTICE = Ask(
     "notice",
     "P",
@@ -1767,7 +1783,8 @@ _QUIT_WHY = Ask(
     "why",
     "P",
     Choice(
-        instructions="If this person resigns this month, what is the main reason?",
+        instructions="Suppose this person resigned this month. What would be the "
+        "main reason?",
         criteria=dict(QUIT_REASONS),
     ),
 )
@@ -2213,7 +2230,7 @@ def _prepare_dispute(ctx: DecisionContext) -> Prepared:
         "bill": f"A bill has just arrived from {ORG_WORDS.get(issuer, 'a firm')}.",
         "size": (
             "It is larger than they expected."
-            if ctx.facts.get("large")
+            if ctx.facts.get("larger_than_expected")
             else "It is about what they expected."
         ),
     }

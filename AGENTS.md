@@ -419,6 +419,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### MEM-0004: Who has met whom is a typed tie, and it shapes who is approached
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/memory/ties.py`, `py/migrations/0015_signal.sql`, `py/src/jeve/decide/policy.py`, `py/tests/test_ties.py`, `py/tests/test_query_plans.py`  
+**Tags**: memory, relationships, encounters, episodes, agent-decided
+
+`ties` holds one row per pair (`a < b`): meetings, warmth, first and last meeting, and the last topic. Encounters, episodes and promises write it, and questions read it as words.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### OPS-0001: deployment topology — fly process groups, workers static assets, doppler secrets
 
 **Status**: accepted (2026-09-21)  
@@ -702,6 +714,30 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: escalation, encounters, support, agent-decided
 
 A complaint raised with an engineer (the founder, an engineering lead, an engineer or an SRE) shortens the outage at once, as before; raised with anyone else, it becomes an `escalation.handoff` decision a quarter of an hour later — relay it to engineering, or leave it in the queue. Support escalates by rule once three blocked customers' tickets are triaged against one outage, and a customer can ring their account manager as a workaround (WORLD-0011).
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0013: Decisions and events carry their inputs, reasons and pressure
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/migrations/0015_signal.sql`, `py/src/jeve/world/engine.py`, `py/src/jeve/world/space.py`, `py/src/jeve/decide/questions.py`, `py/src/jeve/evals/metrics.py`, `py/tests/test_field_report.py`  
+**Tags**: signal, decisions, events, payments, typed-decisions, agent-decided
+
+Every decision stores the facts it was asked on (`decisions.facts`). A late bill carries a typed reason, and the pressure put on it is recorded: how often it was chased, whether it was raised in person, and any promise to pay. Events name what their consumers need to explain them.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0014: Calibrate to cited data, and make a monthly base rate a hazard, not a question
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/world/engine.py`, `py/src/jeve/world/economy.py`, `py/src/jeve/world/customers.py`, `py/src/jeve/decide/policy.py`, `py/src/jeve/evals/priors.py`, `py/tests/test_loops.py`  
+**Tags**: calibration, economy, hazards, typed-decisions, evals, agent-decided
+
+Rates are set from cited data. A month's base rate for people with nothing pushing them is a rule hazard. Jev is asked only when something in the situation pushes.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 
