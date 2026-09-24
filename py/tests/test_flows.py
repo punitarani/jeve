@@ -285,12 +285,15 @@ def test_wages_cannot_be_paid_from_an_empty_account(
 
 
 def test_books_close_when_the_month_can_be_stated(conn: Connection[DictRow]) -> None:
-    run(conn, days=5)
+    # A week and a day: two clients close on Friday, and the third, which
+    # Ledgerline had no room for, on Monday (WORLD-0011).
+    run(conn, days=8)
     closed = conn.execute(
-        "SELECT org_id, seq, payload FROM events WHERE kind = 'close.completed' "
-        "ORDER BY org_id"
+        "SELECT org_id, seq, sim_time, payload FROM events "
+        "WHERE kind = 'close.completed' ORDER BY org_id"
     ).fetchall()
     assert [str(c["org_id"]) for c in closed] == ["halloran", "tallybird", "thirdrail"]
+    assert sorted(int(c["sim_time"]) for c in closed) == [at(4, 9), at(4, 9), at(7, 9)]
     for close in closed:
         # The accountant's fee goes out because the work was done: an invoice
         # from Ledgerline that cites the close, booked as a receivable.
@@ -336,16 +339,17 @@ def test_an_outage_nobody_chased_delays_the_close_and_the_fee(
     with monkeypatch.context() as patch:
         patch.setattr(episodes, "prioritise", lambda *args, **kwargs: None)
         run(conn, days=8, encounters=False, variant="no-queue")
-    unchased_at, unchased_deferrals = halloran_close()
+    unchased_at, _ = halloran_close()
 
     assert chased_deferrals == 0 and chased_at == at(4, 9)
-    assert unchased_deferrals >= 1
     assert unchased_at > chased_at
 
-    # The deferral says why, and the late close says what unblocked it.
+    # Held back, whether put off on the day or queued behind the clients who
+    # were ready (WORLD-0011): the holdup says why, and the late close says
+    # what unblocked it.
     deferral = conn.execute(
-        "SELECT seq, causes FROM events WHERE kind = 'close.deferred' "
-        "AND org_id = 'halloran' ORDER BY seq LIMIT 1"
+        "SELECT seq, causes FROM events WHERE kind IN ('close.deferred', "
+        "'close.queued') AND org_id = 'halloran' ORDER BY seq LIMIT 1"
     ).fetchone()
     assert deferral is not None
     why = conn.execute(

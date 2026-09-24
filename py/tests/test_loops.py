@@ -24,6 +24,7 @@ from jeve.world import (
     economy,
     engineering,
     episodes,
+    flows,
     scheduler,
     shocks,
     space,
@@ -451,6 +452,66 @@ def test_late_wages_are_news_the_staff_hold(conn: Connection[DictRow]) -> None:
     assert "halloran.partner.8" not in holders
     assert memory.holders_of(conn, "insolvency:thirdrail")
     conn.rollback()
+
+
+def test_three_closes_due_together_and_one_waits_a_working_day(
+    conn: Connection[DictRow],
+) -> None:
+    """Ledgerline can close two months a day; the third client waits, and the
+    principal decides whose (the scenario's "which client to close first")."""
+
+    engine, _ = fresh(conn, day=4, hour=8)
+    plan = conn.execute(
+        "SELECT due_sim_time FROM scheduled WHERE kind = 'close.plan'"
+    ).fetchone()
+    assert plan is not None and int(plan["due_sim_time"]) == at(4, 8, 45)
+
+    def closes() -> dict[str, int]:
+        return {
+            str(r["subject_id"]): int(r["due_sim_time"])
+            for r in conn.execute(
+                "SELECT subject_id, due_sim_time FROM scheduled "
+                "WHERE kind = 'close.run'"
+            ).fetchall()
+        }
+
+    assert set(closes().values()) == {at(4, 9)}
+    flows.plan_closes(
+        engine, TickReport(tick_seq=1, sim_time=at(4, 8, 45)), "ledgerline", {}
+    )
+    due = closes()
+    # Day 4 is a Friday: the one that waits is closed on Monday.
+    waiting = [client for client, when in due.items() if when == at(7, 9)]
+    assert len(waiting) == 1
+    assert sorted(due.values()) == [at(4, 9), at(4, 9), at(7, 9)]
+    asked = conn.execute(
+        "SELECT chosen FROM decisions WHERE question_set = 'close.order'"
+    ).fetchone()
+    assert asked is not None and asked["chosen"]["waits"] == waiting[0]
+    # Nobody's month is stuck, so the rules twin keeps back the smallest fee.
+    assert waiting == ["thirdrail"]
+    queued = count(conn, "SELECT count(*) FROM events WHERE kind = 'close.queued'")
+    assert queued == 1
+    # And next month's plan is already on the calendar.
+    assert (
+        count(
+            conn,
+            "SELECT count(*) FROM scheduled WHERE kind = 'close.plan' "
+            "AND due_sim_time = %s",
+            at(32, 8, 45),
+        )
+        == 1
+    )
+
+
+def test_a_world_seeded_before_the_plan_gets_one(conn: Connection[DictRow]) -> None:
+    fresh(conn, day=1)
+    conn.execute("DELETE FROM scheduled WHERE kind = 'close.plan'")
+    economy.install(conn, root_seed=ROOT_SEED)
+    plan = conn.execute(
+        "SELECT due_sim_time FROM scheduled WHERE kind = 'close.plan'"
+    ).fetchone()
+    assert plan is not None and int(plan["due_sim_time"]) == at(4, 8, 45)
 
 
 def test_every_new_scheduled_job_has_a_handler() -> None:

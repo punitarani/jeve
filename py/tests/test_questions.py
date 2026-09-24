@@ -133,6 +133,13 @@ ASKING: dict[str, dict[str, object]] = {
     "escalation.handoff": {"by_phone": True, "backlog": 12},
     "time.log": {"pending_days": 3, "timetrack_down": True, "on_paper": True},
     "cover.shift": {"absent_role": "barista", "runway_days": 20},
+    "close.order": {
+        "clients": {
+            "halloran": {"stuck": False, "overdue_bills": 0, "fee_rank": 0},
+            "tallybird": {"stuck": True, "overdue_bills": 2, "fee_rank": 1},
+            "thirdrail": {"stuck": False, "overdue_bills": 0, "fee_rank": 2},
+        }
+    },
     "supplier.order": {"trend": 1.3, "pos_down": False, "runway_days": 20},
     "catering.accept": {"size": "large", "short_staffed": True},
     "founder.review": {

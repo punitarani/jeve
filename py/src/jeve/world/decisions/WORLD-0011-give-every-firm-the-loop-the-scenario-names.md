@@ -4,7 +4,7 @@ title: "Give every firm the loop the scenario names"
 status: "accepted"
 date: 2026-09-24
 deciders: ["claude"]
-scope: ["py/src/jeve/world/engineering.py", "py/src/jeve/world/customers.py", "py/src/jeve/world/timesheets.py", "py/src/jeve/world/shocks.py", "py/migrations/0012_loops.sql", "py/tests/test_loops.py"]
+scope: ["py/src/jeve/world/engineering.py", "py/src/jeve/world/customers.py", "py/src/jeve/world/timesheets.py", "py/src/jeve/world/shocks.py", "py/src/jeve/world/flows.py", "py/migrations/0012_loops.sql", "py/tests/test_loops.py"]
 tags: ["flows", "decisions", "scenario", "calibration", "agent-decided"]
 supersedes: []
 superseded-by: null
@@ -37,8 +37,11 @@ its consequences in code: engineering allocation and deploys (debt is live and
 drives the hazard), trust revised after an outage and renewal asked of
 customers at risk, a workaround chosen with every report, disputes and their
 resolution, time logged or not at the law firm, the cafe's cover, stock and
-catering acceptance, and the close's wait/nag/estimate. Shocks (Poisson 1.5 a
-week, keyed by the week) are the environment they answer to.
+catering acceptance, and the close's wait/nag/estimate. Ledgerline closes two
+clients a day and three fall due together, so its principal decides whose month
+waits (`close.plan`, a quarter of an hour ahead: the scheduler takes a tick's
+due rows off the queue before running any). Shocks (Poisson 1.5 a week, keyed
+by the week) are the environment they answer to.
 
 Asked at the event, never on a timer (DECIDE-0001's hazard rule): renewal only
 of customers at risk, the workaround with the report, disputes once per bill.

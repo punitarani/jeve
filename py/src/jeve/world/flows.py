@@ -473,6 +473,116 @@ CLOSE_FEE_CENTS: dict[str, int] = {
     "thirdrail": 450_00,
 }
 CLOSE_ATTEMPTS = 5
+CLOSE_CAPACITY = 2
+"""Clients Ledgerline can close in one working day. Three fall due together at
+every month-end, so somebody's month always waits (the scenario's Ledgerline
+row: "which client to close first")."""
+PLAN_AHEAD = 15 * 60
+
+
+def _stuck(engine: Engine, org_id: str) -> int | None:
+    """The month-end run that was blocked and has not gone out since, if any.
+
+    Read from the event log rather than the scheduler's queue, because the
+    scheduler has already taken this tick's due rows off the queue by the time
+    any of them is handled.
+    """
+
+    blocked = engine.conn.execute(
+        "SELECT max(seq) AS seq FROM events WHERE kind = 'invoice.blocked' "
+        "AND org_id = %s",
+        (org_id,),
+    ).fetchone()
+    blocked_seq = int(blocked["seq"]) if blocked and blocked["seq"] else None
+    if blocked_seq is None:
+        return None
+    sent = engine.conn.execute(
+        "SELECT 1 FROM events WHERE kind = 'invoice.issued' AND org_id = %s "
+        "AND seq > %s AND payload->>'invoice_kind' = 'services' LIMIT 1",
+        (org_id, blocked_seq),
+    ).fetchone()
+    return blocked_seq if sent is None else None
+
+
+@scheduler.job("close.plan")
+def plan_closes(
+    engine: Engine, report: TickReport, _subject: str, payload: dict[str, Any]
+) -> None:
+    """A quarter of an hour before the month's closes, decide whose waits.
+
+    Before, not at, nine: the scheduler takes a tick's due rows off the queue
+    before it runs any of them, so a job due alongside the closes could not
+    move one. Next month's plan is due a month on, as the closes are.
+    """
+
+    engine.schedule(report.sim_time + 28 * DAY, "close.plan", "ledgerline", {})
+    if economy.failed(engine, "ledgerline"):
+        return
+    due = engine.conn.execute(
+        "SELECT id, subject_id FROM scheduled WHERE kind = 'close.run' "
+        "AND due_sim_time > %s AND due_sim_time <= %s AND NOT payload ? 'attempt' "
+        "ORDER BY subject_id",
+        (report.sim_time, report.sim_time + PLAN_AHEAD),
+    ).fetchall()
+    clients = {str(r["subject_id"]): int(r["id"]) for r in due}
+    if len(clients) <= CLOSE_CAPACITY:
+        return
+    stuck = {client: _stuck(engine, client) for client in clients}
+    principal = _person(engine, "principal", "ledgerline")
+    if principal is None:
+        return
+    fees = sorted(clients, key=lambda c: -CLOSE_FEE_CENTS.get(c, 600_00))
+    made = engine.decide(
+        report,
+        DecisionContext(
+            person_id=str(principal["id"]),
+            role=str(principal["role"]),
+            sim_time=report.sim_time,
+            kind="close.order",
+            facts={
+                "clients": {
+                    client: {
+                        "stuck": stuck[client] is not None,
+                        "overdue_bills": _overdue_bills(engine, client, report),
+                        "fee_rank": fees.index(client),
+                    }
+                    for client in clients
+                }
+            },
+            traits=dict(principal["traits"] or {}),
+        ),
+    )
+    waits = str(made.chosen.get("waits", ""))
+    if waits not in clients:
+        return  # "other": everything is attempted today, and the day runs long
+    tomorrow = next_office_open(report.sim_time + DAY - report.sim_time % DAY)
+    blocked = stuck[waits]
+    seq = engine.emit(
+        report,
+        "close.queued",
+        actor_id=str(principal["id"]),
+        org_id=waits,
+        causes=[blocked] if blocked is not None else [],
+        decision_id=made.id,
+        payload={"client": waits, "until": tomorrow, "decided_by": made.source},
+    )
+    # The close that waited cites the wait, as one put off would cite its
+    # deferral: the chain from a blocked invoice run to a late fee stays whole.
+    engine.conn.execute(
+        "UPDATE scheduled SET due_sim_time = %s, "
+        "payload = payload || jsonb_build_object('deferred', %s::bigint) "
+        "WHERE id = %s",
+        (tomorrow, seq, clients[waits]),
+    )
+
+
+def _overdue_bills(engine: Engine, org_id: str, report: TickReport) -> int:
+    row = engine.conn.execute(
+        "SELECT count(*) AS n FROM invoices WHERE to_org_id = %s "
+        "AND paid_sim IS NULL AND due_sim < %s",
+        (org_id, report.sim_time),
+    ).fetchone()
+    return int(row["n"]) if row else 0
 
 
 @scheduler.job("close.run", office_hours_only=True)
@@ -493,29 +603,8 @@ def close_books(
     if accountant is None:
         return
     role = str(accountant["role"])
-    # Stuck means: a month-end run was blocked and nothing has gone out since.
-    # Read from the event log rather than the scheduler's queue, because the
-    # scheduler has already taken this tick's due rows off the queue by the
-    # time any of them is handled.
-    blocked = engine.conn.execute(
-        "SELECT max(seq) AS seq FROM events WHERE kind = 'invoice.blocked' "
-        "AND org_id = %s",
-        (org_id,),
-    ).fetchone()
-    blocked_seq = int(blocked["seq"]) if blocked and blocked["seq"] else None
-    stuck = None
-    if blocked_seq is not None:
-        sent = engine.conn.execute(
-            "SELECT 1 FROM events WHERE kind = 'invoice.issued' AND org_id = %s "
-            "AND seq > %s AND payload->>'invoice_kind' = 'services' LIMIT 1",
-            (org_id, blocked_seq),
-        ).fetchone()
-        stuck = blocked_seq if sent is None else None
-    overdue = engine.conn.execute(
-        "SELECT count(*) AS n FROM invoices WHERE to_org_id = %s "
-        "AND paid_sim IS NULL AND due_sim < %s",
-        (org_id, report.sim_time),
-    ).fetchone()
+    stuck = _stuck(engine, org_id)
+    overdue = _overdue_bills(engine, org_id, report)
     attempt = int(payload.get("attempt", 1))
 
     made = engine.decide(
@@ -528,7 +617,7 @@ def close_books(
             facts={
                 "client": org_id,
                 "invoices_stuck": stuck is not None,
-                "overdue_bills": int(overdue["n"]) if overdue else 0,
+                "overdue_bills": overdue,
                 "attempt": attempt,
             },
             traits=dict(accountant["traits"] or {}),

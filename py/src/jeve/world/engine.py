@@ -118,19 +118,16 @@ def _seq_of(value: object) -> list[int]:
 SUPPORT_ROLES = ("support", "support_lead")
 
 FRICTION: tuple[str, ...] = (
-    # Events that are one party failing, refusing or falling out with another.
-    # The golden field report counted zero of them in a month: "a conflict-free
-    # economy is degenerate" (the scenario, §6). Outages are left out: they
-    # are weather, and a world where software breaks and nobody minds is
-    # exactly the degenerate one. Read by the soak and by `/report`.
-    "cafe.walkout",
+    # One party failing, refusing or falling out with another. The golden field
+    # report counted none of them in a month: "a conflict-free economy is
+    # degenerate" (the scenario, §6). Measured on the base commit's rules world,
+    # a month held one. Left out on purpose: cafe walkouts (a queue, not a
+    # quarrel, and hundreds a week in any world), insolvency warnings (an alert
+    # to oneself), and outages and what they block (weather). Read by the soak
+    # and by `/report`.
     "catering.declined",
-    "close.deferred",
-    "close.rework",
     "escalation.dropped",
     "firm.failed",
-    "insolvency.warning",
-    "invoice.blocked",
     "invoice.disputed",
     "invoice.written_off",
     "payroll.held",
@@ -140,7 +137,6 @@ FRICTION: tuple[str, ...] = (
     "staff.left",
     "subscription.cancelled",
     "supplier.unpaid",
-    "time.lost",
 )
 
 

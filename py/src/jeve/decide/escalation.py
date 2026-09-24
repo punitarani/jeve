@@ -106,6 +106,7 @@ STAKES: dict[str, Stakes] = {
     "catering.accept": "medium",
     "supplier.order": "medium",
     "cover.shift": "medium",
+    "close.order": "medium",
     "escalation.handoff": "medium",
     # A firm's course, a person's job, a customer won or lost.
     "ticket.triage": "high",

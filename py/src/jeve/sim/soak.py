@@ -336,6 +336,7 @@ SCHEDULED_KINDS: tuple[str, ...] = (
     "invoice.dispute",
     "payment.timing",
     "payroll.release",
+    "close.order",
 )
 
 

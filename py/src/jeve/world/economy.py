@@ -1016,6 +1016,7 @@ def install(conn: Connection[DictRow], *, root_seed: int) -> None:
     )
     _split_the_household_purse(conn)
     _schedule_missing(conn, now)
+    _plan_the_next_close(conn, now)
     _price_seats(conn, root_seed=root_seed)
     # Paydays missed before now were missed under an economy with no
     # consequences; they are not counted against anyone.
@@ -1103,6 +1104,25 @@ def recurring(now: int) -> list[tuple[int, str, str | None, dict[str, object]]]:
             (at(day + 90, 10), "tax.quarter", org.id, {"due": at(day + 90, 10)}),
         ]
     return jobs
+
+
+def _plan_the_next_close(conn: Connection[DictRow], now: int) -> None:
+    """A world seeded before `close.plan` gets one, a quarter of an hour before
+    its next month-end closes. It then schedules itself a month on."""
+
+    if conn.execute("SELECT 1 FROM scheduled WHERE kind = 'close.plan'").fetchone():
+        return
+    row = conn.execute(
+        "SELECT min(due_sim_time) AS due FROM scheduled WHERE kind = 'close.run' "
+        "AND NOT payload ? 'attempt' AND due_sim_time > %s",
+        (now + 15 * 60,),
+    ).fetchone()
+    if row is not None and row["due"] is not None:
+        conn.execute(
+            "INSERT INTO scheduled (due_sim_time, kind, subject_id, payload) "
+            "VALUES (%s, 'close.plan', 'ledgerline', '{}')",
+            (int(row["due"]) - 15 * 60,),
+        )
 
 
 def _schedule_missing(conn: Connection[DictRow], now: int) -> None:

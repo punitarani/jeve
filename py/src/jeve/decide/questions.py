@@ -26,7 +26,7 @@ from typing import Literal
 
 from jeve.core.clock import SimTime
 from jeve.decide.policy import DecisionContext
-from jeve.llm.protocol import Choice, Noul, NoulCriteria, Score
+from jeve.llm.protocol import Choice, Noul, NoulCriteria, Prose, Score
 
 type Mode = Literal["J", "P"]
 """J: judgement, take the argmax. P: propensity, sample the distribution.
@@ -2209,6 +2209,74 @@ def _interpret_cover(
     return Outcome({"cover": choice if choice != "other" else "run_short"}, {})
 
 
+CLIENT_KEYS: dict[str, str] = {
+    "tallybird": "the_software_company",
+    "halloran": "the_law_firm",
+    "thirdrail": "the_cafe",
+}
+"""Ledgerline's clients, by the same keys a room uses for firms."""
+
+
+def _client_words(facts: object) -> str:
+    about = facts if isinstance(facts, dict) else {}
+    words = (
+        "Its month-end invoices have not gone out, so there is nothing firm to "
+        "close on yet."
+        if about.get("stuck")
+        else "Its month looks ready to close."
+    )
+    if int(_number(about.get("overdue_bills"))) > 0:
+        words += " It has bills of its own overdue."
+    rank = int(_number(about.get("fee_rank")))
+    words += (
+        " It pays the largest fee of the three."
+        if rank == 0
+        else " It pays the smallest fee."
+        if rank >= 2
+        else ""
+    )
+    return words
+
+
+def _prepare_close_order(ctx: DecisionContext) -> Prepared:
+    raw = ctx.facts.get("clients")
+    clients = raw if isinstance(raw, dict) else {}
+    keyed = [(CLIENT_KEYS[c], clients[c]) for c in sorted(clients) if c in CLIENT_KEYS]
+    criteria: dict[str, Prose | None] = {
+        key: f"{key.replace('_', ' ').capitalize()}'s month waits until tomorrow."
+        for key, _ in keyed
+    }
+    criteria["other"] = "Something else."
+    return Prepared(
+        ctx.kind,
+        asks=(
+            Ask(
+                "waits",
+                "J",
+                Choice(
+                    instructions=(
+                        "The accounting firm can close two clients' months today, "
+                        "and the third has to wait until tomorrow. Whose waits?"
+                    ),
+                    criteria=criteria,
+                ),
+            ),
+        ),
+        state={
+            "person": person_words(ctx.role, "ledgerline"),
+            "clients": {key: _client_words(about) for key, about in keyed},
+            "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
+        },
+    )
+
+
+def _interpret_close_order(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    by_key = {key: client for client, key in CLIENT_KEYS.items()}
+    return Outcome({"waits": by_key.get(str(got["waits"].value), "")}, {})
+
+
 _STOCK = Ask(
     "order",
     "J",
@@ -2321,6 +2389,7 @@ QUESTION_SETS: dict[str, QuestionSet] = {
         QuestionSet("escalation.handoff", _prepare_handoff, _interpret_handoff),
         QuestionSet("time.log", _prepare_log, _interpret_log),
         QuestionSet("cover.shift", _prepare_cover, _interpret_cover),
+        QuestionSet("close.order", _prepare_close_order, _interpret_close_order),
         QuestionSet("supplier.order", _prepare_stock, _interpret_stock),
         QuestionSet("catering.accept", _prepare_accept, _interpret_accept),
     )

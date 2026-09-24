@@ -642,10 +642,10 @@ This decision is immutable. To change it, write a new record and set `superseded
 ### WORLD-0011: Give every firm the loop the scenario names
 
 **Status**: accepted (2026-09-24)  
-**Scope**: `py/src/jeve/world/engineering.py`, `py/src/jeve/world/customers.py`, `py/src/jeve/world/timesheets.py`, `py/src/jeve/world/shocks.py`, `py/migrations/0012_loops.sql`, `py/tests/test_loops.py`  
+**Scope**: `py/src/jeve/world/engineering.py`, `py/src/jeve/world/customers.py`, `py/src/jeve/world/timesheets.py`, `py/src/jeve/world/shocks.py`, `py/src/jeve/world/flows.py`, `py/migrations/0012_loops.sql`, `py/tests/test_loops.py`  
 **Tags**: flows, decisions, scenario, calibration, agent-decided
 
-Each firm's loop is a decision at the moment it arises, with a rules twin and its consequences in code: engineering allocation and deploys (debt is live and drives the hazard), trust revised after an outage and renewal asked of customers at risk, a workaround chosen with every report, disputes and their resolution, time logged or not at the law firm, the cafe's cover, stock and catering acceptance, and the close's wait/nag/estimate. Shocks (Poisson 1.5 a week, keyed by the week) are the environment they answer to.
+Each firm's loop is a decision at the moment it arises, with a rules twin and its consequences in code: engineering allocation and deploys (debt is live and drives the hazard), trust revised after an outage and renewal asked of customers at risk, a workaround chosen with every report, disputes and their resolution, time logged or not at the law firm, the cafe's cover, stock and catering acceptance, and the close's wait/nag/estimate. Ledgerline closes two clients a day and three fall due together, so its principal decides whose month waits (`close.plan`, a quarter of an hour ahead: the scheduler takes a tick's due rows off the queue before running any). Shocks (Poisson 1.5 a week, keyed by the week) are the environment they answer to.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

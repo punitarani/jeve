@@ -446,6 +446,8 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             (closing, 0, "close.run", org_id, json.dumps({"due": closing}))
             for org_id in ("halloran", "tallybird", "thirdrail")
         ]
+        # And a quarter of an hour before, which of the three waits a day.
+        schedule.append((closing - 15 * 60, 0, "close.plan", "ledgerline", "{}"))
         # Lunch in from the cafe is thought about on Tuesdays and Thursdays.
         schedule += [
             (at(1, 10), 0, "catering.consider", org_id, "{}")

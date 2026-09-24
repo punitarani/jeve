@@ -594,6 +594,21 @@ class RulesPolicy:
             return {"cover": "cover_it"}, {}
         return {"cover": "call_in"}, {}
 
+    def _close_order(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """The month that cannot be stated yet waits; failing that, the client
+        that pays least."""
+
+        raw = ctx.facts.get("clients")
+        clients = raw if isinstance(raw, dict) else {}
+
+        def last(client: str) -> tuple[bool, float, str]:
+            about = clients[client] if isinstance(clients[client], dict) else {}
+            return (bool(about.get("stuck")), _num(about.get("fee_rank"), 0.0), client)
+
+        return {"waits": max(clients, key=last) if clients else ""}, {}
+
     def _supplier_order(
         self, ctx: DecisionContext, rng: object
     ) -> tuple[dict[str, object], dict[str, float]]:
