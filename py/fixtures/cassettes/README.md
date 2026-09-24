@@ -15,6 +15,6 @@ never point a long live run at it: `make soak` keeps its own cassette under
 If the file is absent — between a change to the key and the recording that
 follows — the tests that replay it skip, and `LIVE=1 make e2e` recreates it.
 
-Recorded 2026-09-24 by `LIVE=1 make e2e` against the world as of the
-field-report review (WORLD-0009 to WORLD-0012, DECIDE-0005): 1,078 calls,
-$0.033 from a cold cache (`ops/economics.md`).
+Recorded 2026-09-24 by `LIVE=1 make e2e` with conversations routed to tier 1
+(DECIDE-0006): 985 Jev calls and 106 tier-1 rows (87 GLM 5.3 Flash replies,
+19 Gemini 3.8 Flash), $0.134 from a cold cache (`ops/economics.md`).
