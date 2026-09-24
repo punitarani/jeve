@@ -58,6 +58,11 @@ export function WorldHero() {
           <span className="muted">
             {status?.visible ?? 0} out · {status?.walking ?? 0} walking
           </span>
+          {status?.watching ? (
+            <span className="muted" data-testid="hero-scene">
+              {status.watching}
+            </span>
+          ) : null}
           {status?.live ? (
             <Badge
               variant="outline"
