@@ -380,7 +380,10 @@ def test_the_report_places_every_member_of_staff(client: TestClient) -> None:
     for person in body["people"]:
         assert 0 <= person["cafe_share"] <= 1
         assert 0 <= person["talk_share"] <= 1
-    cafe = {p["id"]: p["cafe_share"] for p in body["people"]}
+    # Everyone who has worked a shift; the weekend part-timer has not, in a
+    # fixture that ends on a Friday (WORLD-0008).
+    cafe = {p["id"]: p["cafe_share"] for p in body["people"] if p["decisions"]}
+    assert "thirdrail.weekend.23" not in cafe
     # The cafe's staff work there; the fixture's office staff mostly do not.
     assert min(v for k, v in cafe.items() if k.startswith("thirdrail.")) > 0.9
     assert max(v for k, v in cafe.items() if not k.startswith("thirdrail.")) < 0.9
@@ -430,9 +433,13 @@ def test_a_reseeded_world_is_never_served_the_old_report(client: TestClient) -> 
 
 
 def test_what_is_on_their_mind_reads_the_prompt_vocabulary() -> None:
-    from jeve.api.report import ORDINARY_DAY, answer, mind_of
+    from jeve.api.report import answer, mind_of
+    from jeve.decide.questions import MIND_WORDS
 
-    assert mind_of(ORDINARY_DAY) == "ordinary"
+    assert mind_of(MIND_WORDS["nothing"]) == "ordinary"
+    # Money reaches the mind now (WORLD-0008), and the report says so by key.
+    assert mind_of(MIND_WORDS["unpaid"]) == "unpaid"
+    assert mind_of(MIND_WORDS["payday"]) == "payday"
     assert (
         mind_of("The pos software has been down and it is disrupting the day.") == "pos"
     )

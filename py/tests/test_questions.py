@@ -7,6 +7,8 @@ are checked where a broken set costs a test run rather than a night.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from jeve.decide import gates
@@ -76,6 +78,9 @@ ASKING: dict[str, dict[str, object]] = {
             {"id": "thirdrail.barista.20", "org": "thirdrail", "role": "barista"},
         ],
         "outage": "invoicing",
+        "mind": "outage:invoicing",
+        "dealings": {"thirdrail": "they_owe"},
+        "horizon": "tick",
         "can_raise": True,
     },
 }
@@ -222,11 +227,14 @@ def test_people_in_the_room_are_described_not_named() -> None:
     prepared = _prepare("agent.tick")
     assert prepared.state is not None
     here = prepared.state["who_is_here"]
+    # As firms, most relevant first: the vendor to somebody whose software is
+    # down, then a firm with a bill between it and theirs (report rec. 4).
     assert here == {
-        "person_a": "a sre from the software company",
-        "person_b": "a barista from the cafe",
+        "the_software_company": "one person from the software company",
+        "the_cafe": "one person who works at the cafe; their firm owes that firm money",
     }
     assert "tallybird.sre.4" not in str(prepared.state)
+    assert "thirdrail" not in str(prepared.state)
     keys = [ask.key for ask in prepared.asks]
     assert keys == [
         "next_zone",
@@ -247,3 +255,158 @@ def test_alone_there_is_nobody_to_ask_about() -> None:
 def test_raising_the_outage_is_only_asked_of_someone_who_can() -> None:
     facts = {**ASKING["agent.tick"], "can_raise": False}
     assert "raise_outage" not in [a.key for a in _prepare("agent.tick", facts).asks]
+
+
+def test_a_room_is_firms_not_a_list_of_people() -> None:
+    """The roster was the bill: every person present, in load order, so two
+    rooms differing only in which barista stood where never shared a call.
+    Now the room is at most three firms, and who in a firm is code's to pick."""
+
+    crowd = [
+        {"id": f"thirdrail.barista.{i}", "org": "thirdrail", "role": "barista"}
+        for i in range(3)
+    ] + [
+        {"id": "ledgerline.principal.13", "org": "ledgerline", "role": "principal"},
+        {"id": "halloran.partner.8", "org": "halloran", "role": "partner"},
+        {"id": "halloran.paralegal.11", "org": "halloran", "role": "paralegal"},
+        {"id": "tallybird.support.6", "org": "tallybird", "role": "support"},
+    ]
+    facts = {**ASKING["agent.tick"], "present": crowd, "dealings": {}}
+    shuffled = {**facts, "present": list(reversed(crowd))}
+    first, second = _prepare("agent.tick", facts), _prepare("agent.tick", shuffled)
+    assert first == second
+    assert first.state is not None
+    here = first.state["who_is_here"]
+    assert isinstance(here, dict) and len(here) == 3
+    assert next(iter(here)) == "the_software_company"
+    with_whom = next(a for a in first.asks if a.key == "with_whom").question
+    assert isinstance(with_whom, Choice)
+    assert list(with_whom.criteria) == [*here, "other"]
+
+
+def test_code_picks_the_person_in_the_chosen_firm() -> None:
+    from jeve.decide.questions import Resolved
+
+    crowd = [
+        {"id": f"thirdrail.barista.{i}", "org": "thirdrail", "role": "barista"}
+        for i in range(3)
+    ]
+    ctx = DecisionContext(
+        person_id="p",
+        role="partner",
+        sim_time=12 * 3600,
+        kind="agent.tick",
+        facts={
+            "org": "halloran",
+            "here": "cafe",
+            "own_zone": "law_office",
+            "present": crowd,
+        },
+    )
+    got = {
+        "next_zone": Resolved("stay", {}, None),
+        "mood": Resolved("2", {}, None),
+        "interact": Resolved(True, {}, 0.1),
+        "with_whom": Resolved("the_cafe", {}, 0.1),
+        "topic": Resolved("small_talk", {}, 0.1),
+    }
+    interpret = QUESTION_SETS["agent.tick"].interpret
+
+    def always(roll: float) -> Callable[[], float]:
+        return lambda: roll
+
+    picked = {
+        interpret(ctx, got, always(roll)).chosen["with"] for roll in (0.0, 0.5, 0.99)
+    }
+    assert picked == {p["id"] for p in crowd}
+
+
+def test_every_role_is_a_noun_phrase_with_the_right_article() -> None:
+    """The report quoted Jev being sent "a engineer", "a sre" and "a weekend at
+    the cafe" (defect 5)."""
+
+    from jeve.core.orgs import ORGS
+    from jeve.decide.questions import role_words
+    from jeve.world.seed_world import STAFF
+
+    roles = {role for _, role, _ in STAFF} | {
+        role for org in ORGS for role in org.headcount
+    }
+    for role in sorted(roles):
+        words = role_words(role)
+        article, noun = words.split(" ", 1)
+        assert article in ("a", "an", "the"), words
+        assert "_" not in noun, words
+        if article == "a":
+            assert noun[0] not in "aeiou", words
+        if article == "an":
+            assert noun[0] in "aeiou" or noun.startswith("IT"), words
+    assert role_words("weekend") == "a weekend part-timer"
+    assert role_words("sre") == "a site reliability engineer"
+
+
+def test_the_cafe_is_not_somewhere_the_cafe_walks_over_to() -> None:
+    facts: dict[str, object] = {
+        "org": "thirdrail",
+        "here": "cafe",
+        "own_zone": "cafe",
+        "present": [],
+        "horizon": "tick",
+    }
+    zone = _prepare("agent.tick", facts).asks[0].question
+    assert isinstance(zone, Choice)
+    assert "cafe" not in zone.criteria
+    assert "software_office" in zone.criteria
+
+
+def test_a_desk_asked_on_the_hour_is_asked_about_the_hour() -> None:
+    facts: dict[str, object] = {
+        "org": "halloran",
+        "here": "law_office",
+        "own_zone": "law_office",
+        "present": [],
+        "horizon": "hour",
+    }
+    zone = _prepare("agent.tick", facts).asks[0].question
+    assert isinstance(zone, Choice)
+    assert zone.instructions == "Where does this person go in the next hour?"
+    quarter = _prepare("agent.tick", {**facts, "horizon": "tick"}).asks[0].question
+    assert isinstance(quarter, Choice)
+    assert "fifteen minutes" in quarter.instructions
+
+
+def test_money_reaches_what_is_on_somebodys_mind() -> None:
+    """Findings 4 and 7: four values of `on_their_mind`, all about the outage."""
+
+    from jeve.decide.questions import MIND_WORDS, mind_words
+
+    said = {mind_words(key, None) for key in MIND_WORDS}
+    assert len(said) == len(MIND_WORDS)
+    assert "wages" in mind_words("unpaid", None)
+    assert mind_words("outage:pos", None) == (
+        "The pos software has been down and it is disrupting the day."
+    )
+    for key in ("unpaid", "payday", "short", "nothing"):
+        facts = {**ASKING["agent.tick"], "mind": key, "outage": None}
+        prepared = _prepare("agent.tick", facts)
+        assert prepared.state is not None
+        assert prepared.state["on_their_mind"] == MIND_WORDS[key]
+
+
+def test_catering_sees_the_money_and_a_held_payroll_orders_nothing() -> None:
+    """The founder of an insolvent firm ordered $420 of lunch: the question
+    said the account was comfortable whatever it held (defect 8)."""
+
+    from jeve.decide.questions import funds_words
+
+    assert funds_words(90) != funds_words(30) != funds_words(5)
+    tight = _prepare("catering.order", {**ASKING["catering.order"], "runway_days": 5})
+    assert tight.state is not None and "tight" in str(tight.state["funds"])
+    held = DecisionContext(
+        person_id="p",
+        role="founder",
+        sim_time=0,
+        kind="catering.order",
+        facts={"org": "tallybird", "can_afford": True, "payroll_held": True},
+    )
+    assert gates.settle(held) == {"order": "none"}

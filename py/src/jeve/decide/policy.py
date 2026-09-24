@@ -246,8 +246,12 @@ class RulesPolicy:
         elif ctx.facts.get("org") == "thirdrail":
             next_zone = here  # someone has to mind the counter
         else:
-            cafe = 0.25 if lunch else 0.04
-            next_zone = "cafe" if go < cafe else "plaza" if go < cafe + 0.04 else here
+            cafe, plaza = (0.25 if lunch else 0.04), 0.04
+            if ctx.facts.get("horizon") == "hour":
+                # Asked once an hour at a quiet desk (WORLD-0008): the chance
+                # of going at all in four quarter hours, not in one.
+                cafe, plaza = 1 - (1 - cafe) ** 4, 1 - (1 - plaza) ** 4
+            next_zone = "cafe" if go < cafe else "plaza" if go < cafe + plaza else here
 
         sociability = _num(ctx.traits.get("sociability"), 0.5)
         with_id: str | None = None
@@ -264,7 +268,9 @@ class RulesPolicy:
                 "interact": with_id is not None,
                 "with": with_id,
                 "topic": topic,
-                "mood": 1 if outage else 2,
+                "mood": _MOOD_BY_MIND.get(
+                    str(ctx.facts.get("mind") or "").split(":")[0], 1 if outage else 2
+                ),
                 "raise_outage": raised,
             },
             {"go": go, "talk": talk, "who": who, "about": about, "push": push},
@@ -372,8 +378,28 @@ class RulesPolicy:
         roll = _uniform(rng)
         stressed = _num(ctx.facts.get("team_mood"), 2.0) < 1.5
         small, large = (0.45, 0.2) if stressed else (0.3, 0.1)
+        if _num(ctx.facts.get("runway_days"), 60.0) < 21:
+            # A few weeks of costs in the bank: sandwiches at most.
+            small, large = small / 3, 0.0
         order = "large" if roll < large else "small" if roll < large + small else "none"
         return {"order": order}, {"order": roll}
+
+
+_MOOD_BY_MIND: dict[str, int] = {
+    "unpaid": 0,
+    "outage": 1,
+    "short": 1,
+    "let_down": 1,
+    "lost_customer": 1,
+    "swamped": 1,
+    "rough_week": 1,
+    "colleague_left": 1,
+    "nothing": 2,
+    "payday": 3,
+}
+"""The rules twin's mood, from what is on someone's mind. It used to be two
+values, outage or not, which is also the field report's finding about Jev: a
+mood that one situational input can move is a constant with a switch."""
 
 
 def _num(value: object, default: float) -> float:

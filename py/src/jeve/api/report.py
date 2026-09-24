@@ -28,10 +28,9 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve.core.clock import DAY, HOUR, SimTime
+from jeve.decide.questions import MIND_WORDS
 from jeve.world.map import BUILDINGS, ORG_ZONE, Zone, find_path, town
 
-ORDINARY_DAY = "Nothing unusual; an ordinary working day."
-"""`on_their_mind` when nothing is down (decide/questions.py, agent.tick)."""
 _OUTAGE_ON_MIND = re.compile(r"^The (\S+) software has been down")
 
 QUEUE_LENGTH = 5
@@ -362,12 +361,20 @@ def _cafe_by_hour(conn: Connection[DictRow]) -> list[dict[str, int]]:
     ]
 
 
+_MIND_KEYS: dict[str, str] = {
+    words: ("ordinary" if key == "nothing" else key)
+    for key, words in MIND_WORDS.items()
+}
+
+
 def mind_of(on_their_mind: str | None) -> str:
     """`on_their_mind` as a key: `ordinary`, the id of the module that is down,
-    or `other` for wording this reader has not been taught."""
+    one of the money and people states (`unpaid`, `short`, `payday`, ...: see
+    `decide.questions.MIND_WORDS`), or `other` for wording this reader has not
+    been taught."""
 
-    if on_their_mind == ORDINARY_DAY:
-        return "ordinary"
+    if on_their_mind in _MIND_KEYS:
+        return _MIND_KEYS[on_their_mind]
     found = _OUTAGE_ON_MIND.match(on_their_mind or "")
     return found.group(1) if found else "other"
 

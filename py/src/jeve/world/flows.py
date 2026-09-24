@@ -54,6 +54,17 @@ def weekly_wages(engine: Engine, org_id: str) -> int:
     return sum(WEEKLY_WAGE_CENTS.get(str(row["role"]), 1_000_00) for row in staff)
 
 
+def payroll_held(engine: Engine, org_id: str) -> bool:
+    """Is this firm's payroll waiting on a retry right now?"""
+
+    row = engine.conn.execute(
+        "SELECT 1 FROM scheduled WHERE kind = 'payroll.run' AND subject_id = %s "
+        "AND payload ? 'held' LIMIT 1",
+        (org_id,),
+    ).fetchone()
+    return row is not None
+
+
 def weekly_outgoings(engine: Engine, org_id: str) -> int:
     """What a week costs a firm to stay open."""
 
@@ -534,6 +545,12 @@ def consider_catering(
             facts={
                 "org": org_id,
                 "can_afford": cash >= 10 * CATERING_CENTS["large"],
+                # A firm that cannot pay its staff does not buy them lunch. The
+                # founder of an insolvent Tallybird ordered $420 of catering
+                # (field report, finding 3): the question said funds were
+                # "comfortably enough" whatever the balance.
+                "payroll_held": payroll_held(engine, org_id),
+                "runway_days": engine.runway_days(org_id, cash),
                 "team_mood": float(mood["mood"]) if mood and mood["mood"] else 2.0,
             },
             traits=dict(buyer["traits"] or {}),

@@ -24,6 +24,8 @@ export const Clock = z.object({
   status: z.enum(["running", "paused", "paused_budget", "waiting_on_model", "waiting_on_budget", "halted"]),
   speed: z.number(),
   run_id: z.string(),
+  /** The commit the daemon running this world was built from, or `unknown`. A change is also an `engine.changed` event, so a long run can be split at its deploys. */
+  engine_sha: z.string(),
 });
 export type Clock = z.infer<typeof Clock>;
 

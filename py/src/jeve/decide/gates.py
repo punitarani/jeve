@@ -74,7 +74,7 @@ def _payroll_release(ctx: DecisionContext) -> Settled | None:
 
 
 def _catering_order(ctx: DecisionContext) -> Settled | None:
-    if not ctx.facts.get("can_afford", True):
+    if not ctx.facts.get("can_afford", True) or ctx.facts.get("payroll_held"):
         return {"order": "none"}
     return None
 

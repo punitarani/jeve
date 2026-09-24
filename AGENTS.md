@@ -519,18 +519,6 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
-### WORLD-0003: Space is load-bearing — zones, encounters, and an escalation that reaches billing
-
-**Status**: accepted (2026-09-20)  
-**Scope**: `py/src/jeve/world/space.py`, `py/src/jeve/world/map.py`, `py/migrations/0003_space.sql`, `py/tests/test_space.py`  
-**Tags**: space, encounters, causality, jev, agent-decided
-
-Each open tick, each member of staff makes one `agent.tick` decision from where they stand now: where to go next, whether to talk, to whom, about what, their mood, and — only when it is possible — whether to press the vendor about an outage. Encounters resolve among people co-located *now*; then everyone moves.
-
-This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
-
----
-
 ### WORLD-0004: Four more flows, each built to carry a cascade somewhere new
 
 **Status**: accepted (2026-09-20)  
@@ -562,6 +550,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: episodes, defaults, encounters, resolution
 
 Episodes run in every world the daemon runs, with no flag, environment variable or make variable. The mechanism is WORLD-0006's, with the outage stake corrected (below).
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0008: Ask agent.tick at decision points, and describe a room as firms
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/world/space.py`, `py/src/jeve/decide/questions.py`, `py/src/jeve/core/orgs.py`, `py/migrations/0010_decision_points.sql`, `py/tests/test_space.py`, `py/tests/test_questions.py`  
+**Tags**: space, encounters, cost, cache, jev, agent-decided
+
+Somebody is asked `agent.tick` on arrival, while away from their workplace, in company from another firm, when what is on their mind changes, through lunch, and on the hour; cafe staff alone behind their counter are not asked. A quiet desk is asked about the next hour, everyone else about the next quarter.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

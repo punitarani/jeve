@@ -452,12 +452,19 @@ def run(
     engine: Engine,
     report: TickReport,
     now: SimTime,
-    present: list[Agent],
+    asked: list[Agent],
     made: list[Made],
     by_id: dict[str, Agent],
     down: list[str],
+    *,
+    present: list[Agent] | None = None,
 ) -> set[frozenset[str]]:
     """Open and run every episode this tick. Returns the pairs it consumed.
+
+    `asked` and `made` are the people at a decision point and what they chose
+    (WORLD-0008); `present` is everyone about, who may join a conversation they
+    did not start. Everyone present was asked, before WORLD-0008, and still is
+    when `present` is not given.
 
     A pair that became an episode must not also be recorded as a one-shot
     encounter: the same meeting resolved twice would double-count its effects,
@@ -466,7 +473,7 @@ def run(
     """
 
     consumed: set[frozenset[str]] = set()
-    for agent, decision in zip(present, made, strict=True):
+    for agent, decision in zip(asked, made, strict=True):
         other_id = decision.chosen.get("with")
         if not decision.chosen.get("interact") or not isinstance(other_id, str):
             continue
@@ -478,14 +485,23 @@ def run(
             continue
         if not _budget_left(engine, now):
             break
-        group = _grow(engine, present, agent, other, down, now)
+        group = _grow(engine, present or asked, agent, other, down, now)
         if group is None:
             continue
         stake, members = group
         ids = [a.id for a in members]
         if _recently_together(engine, ids, now):
             continue
-        _hold(engine, report, now, stake, members, present, parent_id=None, depth=0)
+        _hold(
+            engine,
+            report,
+            now,
+            stake,
+            members,
+            present or asked,
+            parent_id=None,
+            depth=0,
+        )
         # Every pair inside the episode is now accounted for, not only the two
         # whose decision opened it.
         for first in ids:

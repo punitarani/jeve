@@ -118,5 +118,51 @@ ORGS: tuple[OrgSpec, ...] = (
 
 BY_ID: dict[str, OrgSpec] = {org.id: org for org in ORGS}
 
+
+@dataclass(frozen=True, slots=True)
+class Shift:
+    """When one job is done: which weekdays (0 = Monday), from and to when, in
+    seconds after midnight."""
+
+    days: tuple[int, ...]
+    start: int
+    end: int
+
+    def covers(self, weekday: int, time_of_day: int) -> bool:
+        return weekday in self.days and self.start <= time_of_day < self.end
+
+
+_HOUR = 3600
+_WEEKDAYS = (0, 1, 2, 3, 4)
+OFFICE_HOURS = Shift(_WEEKDAYS, 9 * _HOUR, 17 * _HOUR)
+
+SHIFTS: dict[tuple[str, str], tuple[Shift, ...]] = {
+    # The cafe opens at seven, six days a week, and nobody works all of it.
+    # Hours used to belong to the firm, so every member of cafe staff worked
+    # every open hour and the weekend part-timer worked six days (field
+    # report, defect 5). Two baristas split the day between them; the
+    # n-th person in a role takes the n-th shift, round the list.
+    ("thirdrail", "owner"): (Shift(_WEEKDAYS, 8 * _HOUR, 16 * _HOUR),),
+    ("thirdrail", "manager"): (Shift((1, 2, 3, 4, 5), 10 * _HOUR, 18 * _HOUR),),
+    ("thirdrail", "shift_lead"): (Shift(_WEEKDAYS, 7 * _HOUR, 15 * _HOUR),),
+    ("thirdrail", "barista"): (
+        Shift(_WEEKDAYS, 7 * _HOUR, 13 * _HOUR),
+        Shift(_WEEKDAYS, 12 * _HOUR, 18 * _HOUR),
+    ),
+    ("thirdrail", "baker"): (Shift((0, 1, 2, 3, 4, 5), 7 * _HOUR, 12 * _HOUR),),
+    ("thirdrail", "kitchen"): (Shift((0, 1, 2, 3, 4, 5), 10 * _HOUR, 16 * _HOUR),),
+    ("thirdrail", "weekend"): (Shift((5,), 7 * _HOUR, 18 * _HOUR),),
+}
+
+
+def shift_for(org: str, role: str, nth: int = 0) -> Shift:
+    """The hours the `nth` person in this role at this firm keeps."""
+
+    shifts = SHIFTS.get((org, role))
+    if not shifts:
+        return OFFICE_HOURS
+    return shifts[nth % len(shifts)]
+
+
 assert sum(sum(o.headcount.values()) for o in ORGS) == 104
 assert [sum(o.headcount.values()) for o in ORGS] == [44, 24, 20, 16]

@@ -22,7 +22,7 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve.core.hashing import content_hash
-from jeve.decide.questions import MOODS, ORG_WORDS
+from jeve.decide.questions import MOODS, ORG_WORDS, role_words
 from jeve.llm.protocol import ChatMessage
 
 KIND = "dialogue"
@@ -125,7 +125,7 @@ def load_encounter(conn: Connection[DictRow], seq: int) -> Encounter | None:
 
 
 def _who(name: str, role: str, org: str) -> str:
-    return f"{name}, a {role.replace('_', ' ')} at {ORG_WORDS.get(org, 'a local firm')}"
+    return f"{name}, {role_words(role)} at {ORG_WORDS.get(org, 'a local firm')}"
 
 
 def messages_for(encounter: Encounter) -> list[ChatMessage]:

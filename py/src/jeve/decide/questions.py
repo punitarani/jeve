@@ -505,16 +505,65 @@ MOODS: tuple[str, ...] = (
 )
 
 
-def slot(index: int) -> str:
-    """A neutral label for someone present. Names and ids are noise to Jev,
-    and would stop two identical rooms sharing a call."""
+ROLE_WORDS: dict[str, str] = {
+    "founder": "the founder",
+    "exec": "an executive",
+    "eng_lead": "an engineering lead",
+    "engineer": "an engineer",
+    "sre": "a site reliability engineer",
+    "support_lead": "a support team lead",
+    "support": "a support agent",
+    "account_manager": "an account manager",
+    "sales": "a salesperson",
+    "product": "a product manager",
+    "designer": "a designer",
+    "ops": "an operations manager",
+    "partner": "a partner",
+    "senior_associate": "a senior associate",
+    "junior_associate": "a junior associate",
+    "paralegal": "a paralegal",
+    "office_manager": "an office manager",
+    "receptionist": "a receptionist",
+    "principal": "a principal",
+    "senior_accountant": "a senior accountant",
+    "staff_accountant": "a staff accountant",
+    "bookkeeper": "a bookkeeper",
+    "payroll": "a payroll clerk",
+    "client_admin": "a client administrator",
+    "it": "an IT administrator",
+    "owner": "the owner",
+    "manager": "a manager",
+    "shift_lead": "a shift lead",
+    "barista": "a barista",
+    "baker": "a baker",
+    "kitchen": "a cook",
+    "weekend": "a weekend part-timer",
+    "subscriber": "a customer",
+    "client": "a client",
+    "customer": "a customer",
+}
+"""A role as a noun phrase, article included. The role column is an identifier,
+and pasting it into a sentence sent Jev "a engineer", "a sre", "a account
+manager" and "a weekend at the cafe" (field report, defect 5)."""
 
-    return f"person_{chr(ord('a') + index)}"
+
+def role_words(role: str) -> str:
+    known = ROLE_WORDS.get(role)
+    if known is not None:
+        return known
+    noun = role.replace("_", " ")
+    return f"{'an' if noun[:1] in 'aeiou' else 'a'} {noun}"
+
+
+def person_words(role: str, org: str) -> str:
+    return f"{role_words(role)} at {ORG_WORDS.get(org, 'a local firm')}"
 
 
 def describe(person: dict[str, object]) -> str:
-    role = str(person.get("role", "employee")).replace("_", " ")
-    return f"a {role} from {ORG_WORDS.get(str(person.get('org')), 'another firm')}"
+    return (
+        f"{role_words(str(person.get('role', 'employee')))} from "
+        f"{ORG_WORDS.get(str(person.get('org')), 'another firm')}"
+    )
 
 
 def _present(ctx: DecisionContext) -> list[dict[str, object]]:
@@ -524,13 +573,111 @@ def _present(ctx: DecisionContext) -> list[dict[str, object]]:
     )
 
 
-def _next_zone(org: str) -> Ask:
+# -- who is here, as groups (field report, recommendation 4) --------------------
+#
+# The roster was every person present, one line each, in load order. It made
+# `agent.tick` the bill: 615 distinct situations became 20,826 distinct
+# requests, because two rooms that differed only in which barista stood where
+# could never share a call. A room is now described as at most three groups,
+# one per firm, with a count in words; `with_whom` chooses a group and code
+# picks the person in it.
+
+GROUPS_SHOWN = 3
+
+_GROUP_KEYS: dict[str, str] = {
+    "tallybird": "the_software_company",
+    "halloran": "the_law_firm",
+    "ledgerline": "the_accounting_firm",
+    "thirdrail": "the_cafe",
+}
+
+_DEALING_WORDS: dict[str, str] = {
+    "owes_them": "; that firm owes their firm money",
+    "they_owe": "; their firm owes that firm money",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class Group:
+    key: str
+    words: str
+    members: tuple[dict[str, object], ...]
+
+
+def _count_words(n: int) -> tuple[str, str]:
+    """How many, and the verb that agrees with it. Two buckets, not three: how
+    many of a firm are in the room has never been what anybody decides on, and
+    every bucket multiplies the rooms that cannot share a call."""
+
+    return ("one person", "works") if n <= 1 else ("a few people", "work")
+
+
+def groups(ctx: DecisionContext) -> list[Group]:
+    """The people here as firms, most relevant first.
+
+    Relevance is what they could matter for: the vendor, to somebody whose
+    software is down; a firm with a live bill between it and theirs; then
+    whoever is most numerous. Ties break on the firm, so the order is a function
+    of the room and never of who arrived first.
+    """
+
+    own = str(ctx.facts.get("org", ""))
+    outage = bool(ctx.facts.get("outage"))
+    raw = ctx.facts.get("dealings")
+    dealing = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+    by_org: dict[str, list[dict[str, object]]] = {}
+    for person in _present(ctx):
+        by_org.setdefault(str(person.get("org", "")), []).append(person)
+
+    def rank(item: tuple[str, list[dict[str, object]]]) -> tuple[int, int, int, str]:
+        org, members = item
+        return (
+            0 if outage and org == "tallybird" and own != "tallybird" else 1,
+            0 if org in dealing else 1,
+            -len(members),
+            org,
+        )
+
+    shown: list[Group] = []
+    for org, members in sorted(by_org.items(), key=rank)[:GROUPS_SHOWN]:
+        count, verb = _count_words(len(members))
+        if org == own:
+            key, words = "colleagues", f"{count} from their own firm"
+        elif org == "thirdrail":
+            key, words = _GROUP_KEYS[org], f"{count} who {verb} at the cafe"
+        else:
+            key = _GROUP_KEYS.get(org, "another_firm")
+            words = f"{count} from {ORG_WORDS.get(org, 'another firm')}"
+        words += _DEALING_WORDS.get(dealing.get(org, ""), "")
+        ordered = tuple(sorted(members, key=lambda p: str(p.get("id", ""))))
+        shown.append(Group(key, words, ordered))
+    return shown
+
+
+def who_is_here(ctx: DecisionContext) -> dict[str, str] | str:
+    shown = groups(ctx)
+    if not shown:
+        return "Nobody they would stop to talk to."
+    return {group.key: group.words for group in shown}
+
+
+# -- agent.tick: where next, and whether to stop and talk (WORLD-0003) --------
+
+
+def _next_zone(org: str, horizon: str) -> Ask:
+    """Where next. Asked of somebody alone at their desk on the hour, or of
+    anyone else every quarter hour (WORLD-0008), and the question says which:
+    "the next fifteen minutes" put to someone asked once an hour would make
+    every coffee break four times rarer than the person would take it."""
+
+    span = "hour" if horizon == "hour" else "fifteen minutes"
     criteria: dict[str, str] = {
-        "stay": "Stay where they are for the next fifteen minutes.",
+        "stay": f"Stay where they are for the next {span}.",
         "own_workplace": "Go back to their own workplace and get on with work.",
-        "cafe": "Walk over to the cafe for a coffee or something to eat.",
-        "plaza": "Step out into the plaza for some air.",
     }
+    if org != "thirdrail":
+        criteria["cafe"] = "Walk over to the cafe for a coffee or something to eat."
+    criteria["plaza"] = "Step out into the plaza for some air."
     if org != "tallybird":
         criteria["software_office"] = (
             "Walk over to the software company's office to speak to them in person."
@@ -540,7 +687,7 @@ def _next_zone(org: str) -> Ask:
         "next_zone",
         "P",
         Choice(
-            instructions="Where does this person go in the next fifteen minutes?",
+            instructions=f"Where does this person go in the next {span}?",
             criteria=dict(criteria),
         ),
     )
@@ -571,7 +718,7 @@ _RAISE = Ask(
     Noul(
         instructions=(
             "Does this person bring up the broken software with the software "
-            "company's employee who is here, and press them to get it fixed?"
+            "company's people who are here, and press them to get it fixed?"
         ),
         criteria=_yes_no(
             "They raise the outage and push for it to be fixed.",
@@ -580,31 +727,52 @@ _RAISE = Ask(
     ),
 )
 
+MIND_WORDS: dict[str, str] = {
+    "nothing": "Nothing unusual; an ordinary working day.",
+    "unpaid": (
+        "This week's wages have not been paid, and nobody has said when they will be."
+    ),
+    "short": "Word around the office is that the firm is short of money.",
+    "let_down": "Someone who promised to pay the firm what they owe has not paid.",
+    "lost_customer": "The firm has just lost a customer.",
+    "swamped": "The support queue is overflowing with complaints.",
+    "rough_week": "It has been a rough week; things keep going wrong.",
+    "payday": "It is payday; the week's wages have just come in.",
+    "colleague_left": "A colleague has just quit.",
+}
+"""What is on somebody's mind, by the typed key `world.space.mind_of` picks. The
+report found four values, all about the outage: agents could not perceive
+money, and mood could not respond to it (field report, findings 4 and 7)."""
+
+
+def mind_words(mind: object, outage: object) -> str:
+    key = str(mind or "")
+    if key.startswith("outage:") or (not key and outage):
+        module = key.split(":", 1)[1] if ":" in key else str(outage)
+        return f"The {module} software has been down and it is disrupting the day."
+    return MIND_WORDS.get(key, MIND_WORDS["nothing"])
+
 
 def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
     org = str(ctx.facts.get("org", ""))
     here = str(ctx.facts.get("here", ""))
     at_own = here == ctx.facts.get("own_zone")
-    present = _present(ctx)
     outage = ctx.facts.get("outage")
+    shown = groups(ctx)
 
     state: dict[str, object] = {
-        "person": f"a {ctx.role.replace('_', ' ')} at {ORG_WORDS.get(org, 'a firm')}",
+        "person": person_words(ctx.role, org),
         "temperament": trait_words("sociability", ctx.traits.get("sociability")),
         "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
         "time": time_of_day_words(ctx.sim_time),
         "where": (
             "at their own workplace" if at_own else f"in {_PLACE_WORDS.get(here, here)}"
         ),
-        "on_their_mind": (
-            f"The {outage} software has been down and it is disrupting the day."
-            if outage
-            else "Nothing unusual; an ordinary working day."
-        ),
+        "on_their_mind": mind_words(ctx.facts.get("mind"), outage),
+        "who_is_here": who_is_here(ctx),
     }
-    asks: list[Ask] = [_next_zone(org), _MOOD]
-    if present:
-        state["who_is_here"] = {slot(i): describe(p) for i, p in enumerate(present)}
+    asks: list[Ask] = [_next_zone(org, str(ctx.facts.get("horizon", ""))), _MOOD]
+    if shown:
         topics: dict[str, str] = {
             "work": "Their own work and clients.",
             "money": "Bills and invoices; who owes whom.",
@@ -614,7 +782,8 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
             topics = {"the_outage": "The software outage.", **topics}
         topics["other"] = "Something else."
         people: dict[str, str] = {
-            slot(i): describe(p).capitalize() + "." for i, p in enumerate(present)
+            group.key: group.words[:1].upper() + group.words[1:] + "."
+            for group in shown
         }
         people["other"] = "Nobody in particular."
         asks += [
@@ -641,8 +810,6 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
         ]
         if ctx.facts.get("can_raise"):
             asks.append(_RAISE)
-    else:
-        state["who_is_here"] = "Nobody they would stop to talk to."
     return Prepared(ctx.kind, asks=tuple(asks), state=state)
 
 
@@ -654,13 +821,19 @@ def _interpret_agent_tick(
     choice = str(got["next_zone"].value)
     next_zone = {"stay": here, "other": here, "own_workplace": own}.get(choice, choice)
 
-    present = _present(ctx)
     with_id: str | None = None
+    extra: dict[str, float] = {}
     if "interact" in got and got["interact"].value:
         picked = str(got["with_whom"].value)
-        for index, person in enumerate(present):
-            if slot(index) == picked:
-                with_id = str(person["id"])
+        members = next((g.members for g in groups(ctx) if g.key == picked), ())
+        # The model chose the firm; which of its people is a draw, taken only
+        # when there is a choice, so a room of one costs no luck.
+        if len(members) == 1:
+            with_id = str(members[0]["id"])
+        elif members:
+            extra["who"] = draw()
+            index = min(len(members) - 1, int(extra["who"] * len(members)))
+            with_id = str(members[index]["id"])
     return Outcome(
         {
             "next_zone": next_zone,
@@ -672,7 +845,7 @@ def _interpret_agent_tick(
                 with_id and "raise_outage" in got and got["raise_outage"].value
             ),
         },
-        {},
+        extra,
     )
 
 
@@ -873,6 +1046,19 @@ def mood_words(average: object) -> str:
     return "The team has been in good spirits."
 
 
+def funds_words(runway_days: object) -> str:
+    """How the firm's account looks to the person spending from it, in weeks of
+    running costs. The first string is the one every catering question used to
+    carry whatever the balance (field report, defect 8)."""
+
+    days = _number(runway_days, 60.0)
+    if days >= 56:
+        return "There is comfortably enough in the account for it."
+    if days >= 21:
+        return "The account can cover it, but money is not plentiful."
+    return "Money is tight; the firm has only a few weeks of costs in the bank."
+
+
 def _prepare_catering(ctx: DecisionContext) -> Prepared:
     org = str(ctx.facts.get("org", ""))
     return Prepared(
@@ -885,7 +1071,7 @@ def _prepare_catering(ctx: DecisionContext) -> Prepared:
             ),
             "temperament": trait_words("sociability", ctx.traits.get("sociability")),
             "team": mood_words(ctx.facts.get("team_mood")),
-            "funds": "There is comfortably enough in the account for it.",
+            "funds": funds_words(ctx.facts.get("runway_days")),
         },
     )
 
@@ -1175,15 +1361,14 @@ def _prepare_episode_round(ctx: DecisionContext) -> Prepared:
     org = str(ctx.facts.get("org", ""))
     here = str(ctx.facts.get("here", ""))
     role = str(ctx.facts.get("role_in_stake", "bystander"))
-    present = _present(ctx)
 
     state: dict[str, object] = {
-        "person": f"a {ctx.role.replace('_', ' ')} at {ORG_WORDS.get(org, 'a firm')}",
+        "person": person_words(ctx.role, org),
         "temperament": trait_words("sociability", ctx.traits.get("sociability")),
         "speaks_up": trait_words("vocality", ctx.traits.get("vocality")),
         "where": _PLACE_WORDS.get(here, here),
         "time": time_of_day_words(ctx.sim_time),
-        "who_is_here": {slot(i): describe(p) for i, p in enumerate(present)},
+        "who_is_here": who_is_here(ctx),
         "what_this_is_about": stake_words(ctx),
         "their_part_in_it": _ROLE_WORDS[role],
         "so_far": so_far_words(ctx),

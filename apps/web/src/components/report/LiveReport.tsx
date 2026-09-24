@@ -73,6 +73,21 @@ const firstName = (name: string) => name.split(" ")[0] ?? name;
 
 type Loaded = { report: FieldReport; map: TownMap; town: TownData };
 
+// What was on somebody's mind, by the key the API reports (WORLD-0008). A
+// module id is an outage and is labelled from the outage list instead.
+const MIND_LABELS: Record<string, string> = {
+	ordinary: "ordinary working day",
+	other: "something else",
+	unpaid: "wages not paid",
+	short: "firm short of money",
+	let_down: "a promise to pay broken",
+	lost_customer: "a customer lost",
+	colleague_left: "a colleague quit",
+	swamped: "support queue overflowing",
+	rough_week: "a rough week",
+	payday: "payday",
+};
+
 export function LiveReport() {
 	const [data, setData] = useState<Loaded | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -197,12 +212,7 @@ function Report({ report: r, town, stale }: { report: FieldReport; town: TownDat
 	const pw = walk.indexOf(Math.max(0, ...walk));
 	const minds = r.mood_by_mind.map((m) => ({
 		...m,
-		label:
-			m.mind === "ordinary"
-				? "ordinary working day"
-				: m.mind === "other"
-					? "something else"
-					: `${r.outages.find((o) => o.module_id === m.mind)?.name ?? m.mind} down`,
+		label: MIND_LABELS[m.mind] ?? `${r.outages.find((o) => o.module_id === m.mind)?.name ?? m.mind} down`,
 	}));
 	const mindTotal = minds.reduce((a, m) => a + m.decisions, 0);
 	const people = r.people.map((p) => ({
@@ -693,7 +703,9 @@ function Report({ report: r, town, stale }: { report: FieldReport; town: TownDat
 						were passed on rather than seen first-hand.
 					</Callout>
 					<SiteFooter>
-						<span>jeve · run {r.clock.run_id} · live</span>
+						<span>
+							jeve · run {r.clock.run_id} · engine {r.clock.engine_sha.slice(0, 7)} · live
+						</span>
 						<span>as of {asOfText}</span>
 					</SiteFooter>
 				</section>
