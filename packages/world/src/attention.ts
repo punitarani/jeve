@@ -14,8 +14,9 @@
  *   tracks it as they go.
  * - A conversation that has just started, or an escalation that has just
  *   happened, interrupts politely and briefly.
- * - Between comparably interesting places it wanders: a held shot decays, an
- *   unvisited one gets a novelty bonus, so attention rotates without a script.
+ * - Between comparably interesting places it wanders: a shot is always cut
+ *   inside a 3–8 second band — stolen early by a clearly better scene, or
+ *   retired at eight seconds whatever the gap — so it never parks.
  *
  * GL-free like the model it reads: all inputs are plain numbers, so the whole
  * decision is unit-tested without a browser (`test/attention.test.ts`).
@@ -72,10 +73,15 @@ const ALERT = 14;
 // -- the rhythm --------------------------------------------------------------
 
 /** A shot gets this long before anything short of a clearly better one cuts it. */
-const MIN_DWELL_MS = 4_500;
-/** Then it is fair to wander to anything nearly as good. */
-const MAX_DWELL_MS = 16_000;
-/** A challenger must beat the held shot by this much: attention is sticky. */
+const MIN_DWELL_MS = 3_000;
+/**
+ * And it never gets more than this: at the cap the camera moves to the best
+ * alternative whatever the score gap, so a great scene is a scene, not a
+ * parking spot. When the held scene is still winning it wins the next frame
+ * too — the cut is a glance, not a verdict.
+ */
+const MAX_DWELL_MS = 8_000;
+/** Before the cap, a challenger must beat the held shot by this much. */
 const HYSTERESIS = 1.45;
 /** A place not looked at for this long earns this much on its next bid. */
 const NOVELTY_AFTER_MS = 40_000;
@@ -226,8 +232,11 @@ export class HeroCamera {
       next !== undefined &&
       challenger !== undefined &&
       held !== undefined &&
+      // A clearly better scene may steal early; at the cap it takes over by
+      // right. Either way the camera is never on one thing longer than
+      // MAX_DWELL_MS.
       ((heldFor > MIN_DWELL_MS && bid > held.score * HYSTERESIS) ||
-        (heldFor > MAX_DWELL_MS && bid > held.score * 0.7))
+        heldFor > MAX_DWELL_MS)
     ) {
       next = challenger;
     }

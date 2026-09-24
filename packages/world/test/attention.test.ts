@@ -253,6 +253,27 @@ test("the camera wanders between comparably busy rooms", () => {
   assert.ok(seen.has("room:tallybird") && seen.has("room:halloran"));
 });
 
+test("a dominant scene is still cut at the cap — a glance, not a verdict", () => {
+  const camera = new HeroCamera();
+  // Six at their desks in tallybird, one clerk at ledgerline: the room wins
+  // every score and nothing else is close, yet the camera still moves.
+  const w = world({
+    "a.b.1": body(5, 5),
+    "a.b.2": body(8, 5),
+    "a.b.3": body(11, 5),
+    "a.b.4": body(5, 7),
+    "a.b.5": body(8, 7),
+    "a.b.6": body(11, 7),
+    "c.d.1": body(8, 21),
+  });
+  assert.equal(run(camera, w, 0, 5), "room:tallybird");
+  // Eight seconds is the cap: it moves even though nothing outbid the room.
+  const away = run(camera, w, 9_000, 1);
+  assert.notEqual(away, "room:tallybird");
+  // And it is soon back where the people are — the room keeps winning bids.
+  assert.equal(run(camera, w, 11_000, 3), "room:tallybird");
+});
+
 test("the crowd counts, but only to where the crowd is", () => {
   const camera = new HeroCamera();
   // A queue at the cafe, one clerk at ledgerline, nobody else out.
