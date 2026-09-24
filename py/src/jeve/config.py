@@ -45,6 +45,8 @@ class Settings(BaseModel):
     # also lets the named sets act on it.
     escalation: Literal["off", "shadow", "live"] = "off"
     escalation_live: tuple[str, ...] = ()
+    # DECIDE-0006: sets tier 1 answers outright, for measuring one arm.
+    escalation_route: tuple[str, ...] = ()
 
     # LLM-0009: observability. The key is the only switch — absent,
     # `jeve.tracing` never imports the SDK and opens no socket, which is what
@@ -118,6 +120,11 @@ def load_settings(*, ops_dir: Path | None = None) -> Settings:
         escalation_live=tuple(
             name.strip()
             for name in os.environ.get("JEVE_ESCALATION_LIVE", "").split(",")
+            if name.strip()
+        ),
+        escalation_route=tuple(
+            name.strip()
+            for name in os.environ.get("JEVE_ESCALATION_ROUTE", "").split(",")
             if name.strip()
         ),
         braintrust_api_key=os.environ.get("BRAINTRUST_API_KEY") or None,

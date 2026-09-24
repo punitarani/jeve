@@ -398,7 +398,10 @@ class JevPolicy:
             for ask in item.asks:
                 if ask.key in opinion.answers:
                     used[ask.key] = escalation.applied(
-                        ask, jev[ask.key], opinion.answers[ask.key]
+                        ask,
+                        jev[ask.key],
+                        opinion.answers[ask.key],
+                        routed=opinion.routed,
                     )
         # The same path whichever tier answered: a live escalation changes what
         # is drawn from, never the draws themselves.
@@ -436,13 +439,27 @@ class JevPolicy:
         may, and its rows are measurement only.
         """
 
-        if self._tier1.mode == "off":
+        if self._tier1.mode == "off" and not self._tier1.route:
             return {}
         candidates: list[_Wanted] = []
+        routed: list[_Wanted] = []
         for index, (ctx, item, jev) in enumerate(
             zip(contexts, prepared, answers, strict=True)
         ):
-            if jev is None or escalation.stakes(ctx.kind) == "low":
+            if jev is not None and self._tier1.routes(ctx.kind):
+                # DECIDE-0006: every question, whatever Jev said, and outside
+                # the day's room — the set is answered by tier 1, not escalated.
+                keys = self._tier1.routed_asks(ctx.kind, item.asks)
+                if keys:
+                    routed.append(
+                        _Wanted(index, ctx, item, keys, (escalation.ROUTED,), True)
+                    )
+                continue
+            if (
+                jev is None
+                or self._tier1.mode == "off"
+                or escalation.stakes(ctx.kind) == "low"
+            ):
                 continue
             fired = escalation.triggers(ctx.kind, item.asks, jev)
             if fired:
@@ -459,14 +476,18 @@ class JevPolicy:
                 # is there to measure where Jev was sure, never to overrule it.
                 acts = self._tier1.applies(ctx.kind) and bool(fired)
                 candidates.append(_Wanted(index, ctx, item, keys, tuple(fired), acts))
-        if not candidates:
+        if not candidates and not routed:
             return {}
 
         # In the order asked, against what is left of today's room once this
         # tick's earlier batches are counted: one batch of five decides exactly
         # as five batches of one would (the Policy contract).
-        room = escalation.room(self._recorder.connection(), candidates[0].ctx.sim_time)
-        chosen: list[_Wanted] = []
+        chosen: list[_Wanted] = list(routed)
+        room = (
+            escalation.room(self._recorder.connection(), candidates[0].ctx.sim_time)
+            if candidates
+            else escalation.Room(any=0, acting=0)
+        )
         for want in candidates:
             if want.acts:
                 if room.acting - self._tick_acting <= 0:
@@ -516,6 +537,7 @@ class JevPolicy:
             opinions[want.index] = _Opinion(
                 answers=llm,
                 applied=want.acts,
+                routed=escalation.ROUTED in want.fired,
                 record=Escalated(
                     mode="live" if want.acts else "shadow",
                     sampled=not want.fired,
@@ -699,6 +721,7 @@ class _Opinion:
     answers: dict[str, Answer]
     applied: bool
     record: Escalated
+    routed: bool = False
 
 
 def _parsed(call: StoredCall, asks: Sequence[Ask]) -> dict[str, Answer] | None:

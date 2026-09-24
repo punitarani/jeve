@@ -128,13 +128,39 @@ _RANK: dict[Stakes, int] = {"low": 0, "medium": 1, "high": 2}
 @dataclass(frozen=True, slots=True)
 class Config:
     """Off unless asked for. `live` names the sets whose second opinion the
-    world acts on; every other escalated set stays in shadow."""
+    world acts on; every other escalated set stays in shadow.
+
+    `route` names sets tier 1 answers *outright* (DECIDE-0006): every question,
+    every time, whatever Jev's confidence, and the world samples the LLM's
+    distribution itself rather than a mixture. `set:ask` routes one question
+    of a set and leaves the others to Jev. Jev is still asked, so each
+    routed decision carries both answers — the cheapest way to measure whether
+    a general-purpose model answers a set's typed questions any better. Routed
+    rows are not escalations and do not use up the day's room."""
 
     mode: Mode = "off"
     live: frozenset[str] = frozenset()
+    route: frozenset[str] = frozenset()
 
     def applies(self, kind: str) -> bool:
         return self.mode == "live" and kind in self.live
+
+    def routes(self, kind: str) -> bool:
+        return kind in self.route or any(
+            entry.partition(":")[0] == kind for entry in self.route
+        )
+
+    def routed_asks(self, kind: str, asks: Sequence[Ask]) -> tuple[str, ...]:
+        """Which of a set's questions tier 1 answers: all of them when the set
+        is named, or only those named as `set:ask`. The rest stay Jev's."""
+
+        if kind in self.route:
+            return tuple(a.key for a in asks)
+        named = {
+            ask for entry in self.route
+            for set_, _, ask in [entry.partition(":")] if set_ == kind and ask
+        }  # fmt: skip
+        return tuple(a.key for a in asks if a.key in named)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +171,13 @@ class Trigger:
 
     def row(self) -> dict[str, object]:
         return {"ask": self.ask, "rule": self.rule, "value": round(self.value, 4)}
+
+
+ROUTED = Trigger("*", "routed", 1.0)
+"""The trigger a routed decision's row carries: asked because its set is
+routed, not because Jev was unsure."""
+ROUTED_ROW = json.dumps([{"rule": ROUTED.rule}])
+"""Containment pattern for a routed row, so the day's room skips it."""
 
 
 def stakes(kind: str) -> Stakes:
@@ -249,10 +282,10 @@ def room(conn: Connection[DictRow], now: int) -> Room:
     row = conn.execute(
         "SELECT (SELECT count(*) FROM decisions WHERE sim_time >= %s "
         "AND sim_time < %s) AS yesterday, (SELECT count(*) FROM escalations "
-        "WHERE sim_time >= %s AND sim_time < %s) AS used, (SELECT count(*) "
-        "FROM escalations WHERE applied AND sim_time >= %s AND sim_time < %s) "
-        "AS used_live",
-        (day - DAY, day, day, day + DAY, day, day + DAY),
+        "WHERE sim_time >= %s AND sim_time < %s AND NOT triggers @> %s) AS used, "
+        "(SELECT count(*) FROM escalations WHERE applied AND sim_time >= %s "
+        "AND sim_time < %s AND NOT triggers @> %s) AS used_live",
+        (day - DAY, day, day, day + DAY, ROUTED_ROW, day, day + DAY, ROUTED_ROW),
     ).fetchone()
     assert row is not None
     allowance = max(DAILY_FLOOR, math.ceil(DAILY_SHARE * int(row["yesterday"])))
@@ -381,11 +414,12 @@ def _answer(ask: Ask, probs: dict[str, float]) -> Answer:
     return ScoreAnswer(score=float(best), probabilities=probs)
 
 
-def applied(ask: Ask, jev: Answer, llm: Answer) -> Answer:
+def applied(ask: Ask, jev: Answer, llm: Answer, *, routed: bool = False) -> Answer:
     """What the world acts on when a set is live: the LLM's judgement, or an
-    even mixture for a propensity (design/005, "what the second opinion does")."""
+    even mixture for a propensity (design/005, "what the second opinion does").
+    A routed set takes the LLM's answer whole: that is the arm being measured."""
 
-    if ask.mode == "J":
+    if ask.mode == "J" or routed:
         return llm
     a, b = distribution(ask, jev), distribution(ask, llm)
     return _answer(ask, {o: (a[o] + b[o]) / 2 for o in ask.options})

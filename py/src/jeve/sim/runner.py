@@ -62,7 +62,9 @@ def build_policy(
     recorder = Recorder(mode=calls, cassette=cassette if calls == "record" else None)
     settings = load_settings()
     tier1 = escalation.Config(
-        mode=settings.escalation, live=frozenset(settings.escalation_live)
+        mode=settings.escalation,
+        live=frozenset(settings.escalation_live),
+        route=frozenset(settings.escalation_route),
     )
     return JevPolicy(root_seed, recorder, settings=settings, tier1=tier1)
 

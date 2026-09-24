@@ -19,14 +19,19 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parent.parent / "src" / "jeve"
 
 # package -> packages it must never import, directly or lazily.
+# `evals` (EVAL-0001) is outermost: it drives `sim`, reads `api`'s detectors and
+# calls models through `llm`, and nothing may import it — a number the harness
+# writes must never reach the world, the API or the prose it measures.
 FORBIDDEN: dict[str, set[str]] = {
-    "core": {"world", "decide", "memory", "sim", "gen", "api", "llm"},
-    "llm": {"world", "decide", "memory", "sim", "gen", "api"},
-    "decide": {"world", "sim", "gen", "api"},
-    "memory": {"sim", "gen", "api"},
-    "world": {"sim", "gen", "api", "llm"},
-    "sim": {"gen", "api"},
-    "gen": {"world", "sim", "api"},
+    "core": {"world", "decide", "memory", "sim", "gen", "api", "llm", "evals"},
+    "llm": {"world", "decide", "memory", "sim", "gen", "api", "evals"},
+    "decide": {"world", "sim", "gen", "api", "evals"},
+    "memory": {"sim", "gen", "api", "evals"},
+    "world": {"sim", "gen", "api", "llm", "evals"},
+    "sim": {"gen", "api", "evals"},
+    "gen": {"world", "sim", "api", "evals"},
+    "api": {"evals"},
+    "evals": set(),
 }
 
 
@@ -74,7 +79,7 @@ def test_every_package_is_covered() -> None:
     """A new top-level package must be placed in the layering, not left out."""
 
     packages = {p.name for p in SRC.iterdir() if p.is_dir() and p.name[0] != "_"}
-    assert packages - {"api"} == set(FORBIDDEN)
+    assert packages == set(FORBIDDEN)
 
 
 def test_the_walker_sees_a_lazy_import(tmp_path: Path) -> None:

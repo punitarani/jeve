@@ -161,6 +161,21 @@ def trait_level(name: str, value: object) -> int:
     return 2
 
 
+TRAIT_NAMES: tuple[str, ...] = tuple(_TRAIT_WORDS)
+TRAIT_LEVEL_WORDS: dict[str, tuple[str, str, str]] = dict(_TRAIT_WORDS)
+"""What each tertile of each trait says, lowest first: what Jev reads, and so
+what anything that *sets* a trait by level must mean by it."""
+
+
+def trait_value(name: str, level: int, within: float) -> float:
+    """A value in tertile `level` of the trait's seeded range, `within` of the
+    way through it — the inverse of `trait_level`, for setting a trait by level."""
+
+    low, high = _TRAIT_RANGE[name]
+    third = (high - low) / 3
+    return round(low + third * (level + min(max(within, 0.0), 1.0)), 3)
+
+
 def trait_fraction(name: str, value: object) -> float:
     """Where a trait sits in the range it was seeded from: 0 lowest, 1 highest."""
 

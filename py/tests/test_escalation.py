@@ -282,13 +282,14 @@ def _policy(
     *,
     mode: escalation.Mode,
     live: frozenset[str] = frozenset(),
+    route: frozenset[str] = frozenset(),
     calls: RecorderMode = "record",
     flash: _Flash | None = None,
 ) -> JevPolicy:
     policy = JevPolicy(
         ROOT_SEED,
         Recorder(mode=calls),
-        tier1=escalation.Config(mode=mode, live=live),
+        tier1=escalation.Config(mode=mode, live=live, route=route),
     )
     if flash is not None:
         monkeypatch.setattr(policy, "_live", lambda: flash)
@@ -522,6 +523,56 @@ def test_a_propensity_escalated_live_samples_the_mixture(
     made = policy.decide(ctx)
     assert made.source == "llm"
     assert made.distributions["renew"]["yes"] == pytest.approx(0.7)
+
+
+def test_a_routed_set_is_answered_whole_by_tier_1(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DECIDE-0006: routed, a propensity samples the LLM's own distribution —
+    not the mixture a live escalation uses — on a confident Jev answer, in a
+    low-stakes set, with tier 1 otherwise off, and with no room left today."""
+
+    flash = _Flash({FIRST: {"renew": {"yes": 0.9, "no": 0.1}}})
+    route = frozenset({"subscription.renew"})
+    policy = _policy(monkeypatch, mode="off", route=route, flash=flash)
+    monkeypatch.setattr(
+        escalation, "room", lambda conn, now: escalation.Room(any=0, acting=0)
+    )
+    ctx = _ctx("subscription.renew")
+    _teach_jev(conn, policy, ctx, renew={"type": "noul", "noul": 0.02})
+    made = policy.decide(ctx)
+    assert made.source == "llm"
+    assert made.distributions["renew"]["yes"] == pytest.approx(0.9)
+    second = made.escalation
+    assert second is not None and second.mode == "live"
+    assert second.triggers == [escalation.ROUTED.row()]
+    assert second.jev["renew"]["yes"] == pytest.approx(0.02)
+    assert flash.asked == [(FIRST, "gate")]
+
+    replayed = _policy(monkeypatch, mode="off", route=route, calls="replay")
+    assert replayed.decide(ctx).draws == made.draws
+
+
+def test_one_question_of_a_set_can_be_routed_and_the_rest_stay_jevs() -> None:
+    config = escalation.Config(route=frozenset({"episode.round:done"}))
+    asks = [_ask("act", "P", CHOICE), _ask("done", "J", NOUL)]
+    assert config.routes("episode.round") and not config.routes("agent.tick")
+    assert config.routed_asks("episode.round", asks) == ("done",)
+    whole = escalation.Config(route=frozenset({"episode.round"}))
+    assert whole.routed_asks("episode.round", asks) == ("act", "done")
+
+
+def test_a_routed_row_is_not_counted_against_the_days_room(
+    conn: Connection[DictRow],
+) -> None:
+    row = json.dumps([escalation.ROUTED.row()])
+    unsure = json.dumps([{"ask": "x", "rule": "choice.margin", "value": 0.1}])
+    found = conn.execute(
+        "SELECT %s::jsonb @> %s::jsonb AS routed, %s::jsonb @> %s::jsonb AS unsure",
+        (row, escalation.ROUTED_ROW, unsure, escalation.ROUTED_ROW),
+    ).fetchone()
+    assert found is not None
+    assert found["routed"] and not found["unsure"]
 
 
 def test_no_room_left_today_means_no_second_opinion(

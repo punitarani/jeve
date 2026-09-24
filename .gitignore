@@ -24,6 +24,11 @@
 !/ops/judge-panel.md
 !/ops/ontology-gaps.md
 !/ops/situation-probe.md
+# EVAL-0001: the eval report and the small per-world JSON it is rendered from.
+# The eval cassettes are tens of megabytes a sweep and stay local.
+!/ops/evals.md
+!/ops/evals/
+/ops/evals/cassettes/
 # A nested ops/ means something resolved it against the wrong cwd. Ignored so
 # it can never be committed; `ops/` at the root is the only real one. (A bare
 # `ops/` here would also re-ignore the root one — later patterns win.)
