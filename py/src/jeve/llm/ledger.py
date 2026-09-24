@@ -193,9 +193,14 @@ class SpendLedger:
             self._conn = db.connect_autocommit()
         if not self._reconciled:
             # Set first: `_reconcile` takes the lock, and the lock calls back
-            # here for the connection.
+            # here for the connection. Unset if it fails, or one dropped packet
+            # on open would leave the total unreconciled for the process's life.
             self._reconciled = True
-            self._reconcile()
+            try:
+                self._reconcile()
+            except BaseException:
+                self._reconciled = False
+                raise
         return self._conn
 
     def close(self) -> None:

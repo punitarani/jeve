@@ -64,12 +64,13 @@ def test_hot_queries_run_on_their_index(
     index: str | None,
 ) -> None:
     conn = spend_table
-    conn.execute("SET enable_seqscan = off")
+    # SET is transactional, so the rollback also undoes it — and clears an
+    # aborted transaction if the EXPLAIN itself failed.
     try:
+        conn.execute("SET enable_seqscan = off")
         rows = conn.execute(f"EXPLAIN (COSTS OFF) {sql}", params).fetchall()
     finally:
-        conn.execute("RESET enable_seqscan")
-        conn.commit()
+        conn.rollback()
     plan = "\n".join(str(row["QUERY PLAN"]) for row in rows)
     scanned = re.findall(r"Seq Scan on (\w+)", plan)
     assert not [t for t in scanned if t in GROWING], f"{name} scans a table:\n{plan}"
