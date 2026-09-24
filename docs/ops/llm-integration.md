@@ -156,5 +156,5 @@ counts other users of the key and so over-counts.
 | golden cassette re-record with routing on | 0.134 |
 | **total** | **2.24** |
 
-The key meter read $2.30 at the end: the difference is other traffic on the
-shared key. $7.70 of the $10 was left unspent.
+The key meter read $2.32 at the end: the difference is other traffic on the
+shared key. $7.68 of the $10 was left unspent.
