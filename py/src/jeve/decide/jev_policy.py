@@ -21,7 +21,7 @@ import asyncio
 import json
 import threading
 from collections.abc import Coroutine, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from jeve import tracing
 from jeve.config import Settings, load_settings
@@ -71,25 +71,24 @@ class _Bridge:
             raise
 
     async def _fetch(
-        self, requests: Sequence[DecisionRequest], parent: str | None
+        self, requests: Sequence[DecisionRequest]
     ) -> list[RawDecision | BaseException]:
         return await asyncio.gather(
-            *(self._gateway.decide_raw(request, parent=parent) for request in requests),
+            *(self._gateway.decide_raw(request) for request in requests),
             return_exceptions=True,
         )
 
     def fetch(
-        self, requests: Sequence[DecisionRequest], *, parent: str | None = None
+        self, requests: Sequence[DecisionRequest]
     ) -> list[RawDecision | BaseException]:
-        """`parent` is passed, not inherited.
+        """Fetch on the gateway's loop, from the engine's thread.
 
-        `run_coroutine_threadsafe` schedules onto this loop, which copies the
-        context on *this* thread — so the batch span open on the caller's
-        thread is not the current span here, and a call would otherwise land
-        at the root of its own trace (LLM-0008).
+        The calls' spans nest under the caller's batch with nothing passed:
+        `run_coroutine_threadsafe` runs in a copy of the caller's context, so
+        the span current here is current there (LLM-0009).
         """
 
-        return self.run(self._fetch(requests, parent), timeout=CALL_TIMEOUT_S)
+        return self.run(self._fetch(requests), timeout=CALL_TIMEOUT_S)
 
     @property
     def run_spent_usd(self) -> float:
@@ -153,13 +152,21 @@ class JevPolicy:
         return self.decide_many([ctx])[0]
 
     def decide_many(self, contexts: Sequence[DecisionContext]) -> list[Decision]:
-        # The batch is the root of the trace, not the call: identical
-        # situations in one tick share a request, and only here is the fan-in
-        # — and the cache hit rate, which is the whole cost story — visible
-        # (LLM-0008). A hit never reaches the gateway, so it is counted, not
-        # given a span of its own.
+        if not contexts:
+            # Nothing was asked: no lookup, no call, and no span to say so.
+            return []
+        # LLM-0009: the batch is the fan-in under the tick's span. Identical
+        # situations in one tick share a request, so only here are the cache
+        # hit rate — the whole cost story — and each decision's settling
+        # visible together. A hit never reaches the gateway, so it is a row of
+        # this span's output rather than a span of its own; the input is
+        # logged up front so a batch that fails still says what it was asked.
+        kinds = sorted({ctx.kind for ctx in contexts})
         with tracing.span(
-            "decide.batch", type="task", metadata={"mode": self._recorder.mode}
+            _batch_name(kinds),
+            type="task",
+            input=[_asked(ctx) for ctx in contexts],
+            metadata={"mode": self._recorder.mode},
         ) as span:
             prepared = [self._prepare(ctx) for ctx in contexts]
             requests: dict[str, tuple[Prepared, DecisionRequest]] = {}
@@ -187,7 +194,7 @@ class JevPolicy:
             missing = [digest for digest in requests if digest not in stored]
             span.log(
                 metadata={
-                    "kinds": sorted({item.kind for item in prepared}),
+                    "kinds": kinds,
                     "contexts": len(contexts),
                     "lookups": lookups,
                     "cache_hits": hits,
@@ -196,13 +203,22 @@ class JevPolicy:
                 }
             )
             if missing:
-                # Exported on this thread, because the gateway is not on it.
-                stored |= self._fill(missing, requests, parent=span.export() or None)
+                stored |= self._fill(missing, requests)
 
-            return [
+            decisions = [
                 self._decide_one(ctx, item, stored[maybe] if maybe else None)
                 for ctx, item, maybe in zip(contexts, prepared, hashes, strict=True)
             ]
+            live = set(missing)
+            span.log(
+                output=[
+                    _settled(ctx, decision, _settled_by(maybe, live))
+                    for ctx, decision, maybe in zip(
+                        contexts, decisions, hashes, strict=True
+                    )
+                ]
+            )
+            return decisions
 
     def _prepare(self, ctx: DecisionContext) -> Prepared:
         if ctx.kind not in QUESTION_SETS:
@@ -225,8 +241,6 @@ class JevPolicy:
         self,
         missing: list[str],
         requests: dict[str, tuple[Prepared, DecisionRequest]],
-        *,
-        parent: str | None = None,
     ) -> dict[str, StoredCall]:
         if self._recorder.mode == "replay":
             kinds = sorted({requests[digest][0].kind for digest in missing})
@@ -237,9 +251,7 @@ class JevPolicy:
                 "with `LIVE=1 make e2e`."
             )
 
-        results = self._live().fetch(
-            [requests[digest][1] for digest in missing], parent=parent
-        )
+        results = self._live().fetch([requests[digest][1] for digest in missing])
         failure: BaseException | None = None
         drifted: set[str] = set()
         for digest, result in zip(missing, results, strict=True):
@@ -325,6 +337,61 @@ class JevPolicy:
             prng_path=path,
             model_call=call.hash,
         )
+
+
+type SettledBy = Literal["gated", "cache", "live"]
+
+
+def _batch_name(kinds: Sequence[str]) -> str:
+    """`decide <kind>`, so a trace's children say what was being decided.
+
+    Every call site asks one kind at a time, so the names are bounded by the
+    question sets; a mixed batch keeps the generic name rather than minting
+    one per combination.
+    """
+
+    return f"decide {kinds[0]}" if len(kinds) == 1 else "decide.batch"
+
+
+def _asked(ctx: DecisionContext) -> dict[str, object]:
+    """One decision's input, as the world handed it over. Read, never copied:
+    the span serialises it, and nothing here may touch what is hashed."""
+
+    return {
+        "person_id": ctx.person_id,
+        "role": ctx.role,
+        "kind": ctx.kind,
+        "decision_seq": ctx.decision_seq,
+        "sim_time": ctx.sim_time,
+        "facts": ctx.facts,
+        "traits": ctx.traits,
+    }
+
+
+def _settled_by(digest: str | None, live: set[str]) -> SettledBy:
+    """How one decision was settled. Rows count decisions, not calls: two
+    people in the same situation share one live request, so both rows say
+    `live` with the same `model_call`, and `live_calls` counts it once."""
+
+    if digest is None:
+        return "gated"
+    return "live" if digest in live else "cache"
+
+
+def _settled(
+    ctx: DecisionContext, decision: Decision, settled_by: SettledBy
+) -> dict[str, object]:
+    """One decision's output: what was chosen and what it was chosen from."""
+
+    return {
+        "person_id": ctx.person_id,
+        "settled_by": settled_by,
+        "chosen": decision.chosen,
+        "distributions": decision.distributions,
+        "draws": decision.draws,
+        "prng_path": decision.prng_path,
+        "model_call": decision.model_call,
+    }
 
 
 def _provider(payload: dict[str, Any]) -> str | None:

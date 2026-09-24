@@ -82,7 +82,7 @@ def test_state_is_one_read_with_a_cursor(client: TestClient) -> None:
 def test_state_says_whether_this_deployment_traces(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """LLM-0008: the flag that would have answered this in a minute.
+    """LLM-0009: the flag that would have answered this in a minute.
 
     Tracing off is silent by design — no key, no import, no socket, no log
     line. The key sat in Doppler and never reached Fly, and nothing anywhere

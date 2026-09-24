@@ -1,4 +1,9 @@
-"""Braintrust spans for every model call. Off unless a key is set (LLM-0008).
+"""Braintrust traces, one per sim tick. Off unless a key is set (LLM-0009).
+
+A trace is a tick (`sim.tick`, from `Engine.tick`), and reads top down: each
+decision batch the tick asked for (`decide <kind>`, from `JevPolicy`) with
+every decision's facts and how it was settled, then the live model calls the
+cache could not answer (`jev.decide`), then each HTTP try.
 
 A module rather than a package, for the same reason `config.py` and `db.py`
 are: it cuts across the layering instead of sitting in it, and
@@ -37,10 +42,6 @@ class Span(Protocol):
 
     def log(self, **event: Any) -> None: ...
 
-    def export(self) -> str:
-        """An opaque parent handle, or `""` when tracing is off."""
-        ...
-
 
 class SpanContext(Protocol):
     """What a sink hands back: a span bound to a `with` block."""
@@ -59,7 +60,7 @@ class Sink(Protocol):
     """Where spans go. Braintrust in production, a recorder in tests."""
 
     def start_span(
-        self, name: str, *, type: str | None, parent: str | None, **event: Any
+        self, name: str, *, type: str | None, **event: Any
     ) -> SpanContext: ...
 
     def flush(self) -> None: ...
@@ -70,9 +71,6 @@ class _NullSpan:
 
     def log(self, **event: Any) -> None:
         return None
-
-    def export(self) -> str:
-        return ""
 
 
 _NULL: Span = _NullSpan()
@@ -91,13 +89,6 @@ class _Guarded:
             self._inner.log(**event)
         except Exception as error:
             _disable(error)
-
-    def export(self) -> str:
-        try:
-            return self._inner.export()
-        except Exception as error:
-            _disable(error)
-            return ""
 
 
 class _BraintrustSink:
@@ -130,12 +121,10 @@ class _BraintrustSink:
         else:
             braintrust.init_logger(project=self.DEFAULT_PROJECT, api_key=api_key)
 
-    def start_span(
-        self, name: str, *, type: str | None, parent: str | None, **event: Any
-    ) -> SpanContext:
+    def start_span(self, name: str, *, type: str | None, **event: Any) -> SpanContext:
         span_type = self._types(type) if type is not None else None
         started: SpanContext = self._braintrust.start_span(
-            name=name, type=span_type, parent=parent, **event
+            name=name, type=span_type, **event
         )
         return started
 
@@ -210,21 +199,17 @@ def flush() -> None:
 
 
 @contextmanager
-def span(
-    name: str,
-    *,
-    type: str | None = None,
-    parent: str | None = None,
-    **event: Any,
-) -> Iterator[Span]:
-    """Open a span. Yields a null span when tracing is off or has failed.
+def span(name: str, *, type: str | None = None, **event: Any) -> Iterator[Span]:
+    """Open a span under whichever span is current. Yields a null span when
+    tracing is off or has failed.
 
-    `parent` is a handle from `Span.export()`, and is needed in exactly one
-    place: `JevPolicy._Bridge` runs the gateway on its own event loop on its
-    own thread, and `asyncio.run_coroutine_threadsafe` copies the context on
-    *that* thread, so the batch span opened on the engine thread is invisible
-    there. Everywhere else the ambient parent is the right one and this stays
-    None.
+    The parent is always the ambient one, and that holds across
+    `JevPolicy._Bridge` too: `asyncio.run_coroutine_threadsafe` schedules
+    through `call_soon_threadsafe`, which runs the callback — and so the task
+    it starts — in a copy of the *caller's* context, so the batch span open on
+    the engine thread is the current span on the gateway's loop. LLM-0008
+    carried an exported handle across that hop on the belief that it was
+    needed; it was not (LLM-0009).
     """
 
     if not configure():
@@ -235,7 +220,7 @@ def span(
         yield _NULL
         return
     try:
-        context = sink.start_span(name, type=type, parent=parent, **event)
+        context = sink.start_span(name, type=type, **event)
         inner = context.__enter__()
     except Exception as error:
         _disable(error)

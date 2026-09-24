@@ -15,13 +15,14 @@ import json
 import math
 import os
 import signal
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-from jeve import db, memory
+from jeve import db, memory, tracing
 from jeve.core.clock import (
     DAY,
     HOUR,
@@ -121,6 +122,26 @@ class TickReport:
 
     def add(self, kind: str) -> None:
         self.events.append(kind)
+
+    def clock(self) -> dict[str, object]:
+        """When this tick is: the input of its trace (LLM-0009)."""
+
+        now = SimTime(self.sim_time)
+        return {
+            **now.describe(),
+            "tick_seq": self.tick_seq,
+            "cafe_open": now.cafe_open,
+        }
+
+    def summary(self) -> dict[str, object]:
+        """What this tick did: the output of its trace (LLM-0009)."""
+
+        return {
+            "decisions": self.decisions,
+            "event_count": len(self.events),
+            "events": dict(sorted(Counter(self.events).items())),
+            "in_episode": sorted(self.in_episode),
+        }
 
 
 class Engine:
@@ -416,22 +437,54 @@ class Engine:
         """
 
         self._conn.commit()
-        try:
-            with self._conn.transaction():
-                meta = self._meta()
-                report = TickReport(
-                    tick_seq=int(meta["tick_seq"]) + 1, sim_time=int(meta["sim_time"])
-                )
-                self._advance(report, SimTime(report.sim_time))
-        except BaseException:
-            # The rows are gone but the ids they drew are not. Put the counters
-            # back before anything retries, or the retry numbers its events
-            # differently from a run that never failed.
-            if not self._conn.closed:
-                db.resync_sequences(self._conn)
-                self._conn.commit()
-            raise
+        # LLM-0009: the tick is the root of its trace. Every decision batch it
+        # asks for nests under it, so one trace reads as fifteen minutes of the
+        # town. A tick that raises carries the error on this span, and its
+        # retry is a trace of its own.
+        with tracing.span("sim.tick", type="task", metadata=self._run()) as span:
+            try:
+                with self._conn.transaction():
+                    meta = self._meta()
+                    report = TickReport(
+                        tick_seq=int(meta["tick_seq"]) + 1,
+                        sim_time=int(meta["sim_time"]),
+                    )
+                    # Logged once known: the clock is read inside the
+                    # transaction, never before it.
+                    span.log(input=report.clock())
+                    self._advance(report, SimTime(report.sim_time))
+                    # Summarised inside the transaction, so nothing after the
+                    # commit can fail and reach the daemon as a tick that had
+                    # in fact advanced; logged after it, so a tick whose COMMIT
+                    # fails does not claim work that was rolled back.
+                    done = report.summary()
+            except BaseException:
+                # The rows are gone but the ids they drew are not. Put the
+                # counters back before anything retries, or the retry numbers
+                # its events differently from a run that never failed.
+                if not self._conn.closed:
+                    db.resync_sequences(self._conn)
+                    self._conn.commit()
+                raise
+            span.log(output=done)
         return report
+
+    def _run(self) -> dict[str, object]:
+        """Which world a tick belongs to, for its trace (LLM-0009).
+
+        A local key traces soak arms, episode studies and replays into the
+        same project as the daemon; these are what tell them apart. The
+        database is named, never located: no host, no credentials.
+        """
+
+        return {
+            "policy": type(self._policy).__name__,
+            "root_seed": self._root,
+            "database": self._conn.info.dbname,
+            "encounters": self.encounters,
+            "spatial": self.spatial,
+            "episodes": self.episodes,
+        }
 
     def _advance(self, report: TickReport, now: SimTime) -> None:
         """Everything one tick does. Runs inside the tick's transaction."""

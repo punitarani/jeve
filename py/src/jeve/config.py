@@ -41,7 +41,7 @@ class Settings(BaseModel):
     cors_origins: tuple[str, ...] = ()
     dialogue_generate: bool = True
 
-    # LLM-0008: observability. The key is the only switch — absent,
+    # LLM-0009: observability. The key is the only switch — absent,
     # `jeve.tracing` never imports the SDK and opens no socket, which is what
     # keeps CI and a clean clone offline.
     braintrust_api_key: str | None = None

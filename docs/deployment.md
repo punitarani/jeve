@@ -61,7 +61,7 @@ next deploy. Nothing in CI or in this repo sets them.
   `JEVE_DIALOGUE_GENERATE=on` would let the public API spend.
 * A secret change reaches a running machine only when it restarts: at once
   if the sync's restart option is on, otherwise at the next deploy.
-* Without `BRAINTRUST_API_KEY`, `jeve.tracing` is a silent no-op (LLM-0008);
+* Without `BRAINTRUST_API_KEY`, `jeve.tracing` is a silent no-op (LLM-0009);
   `/state`'s `health.tracing` says whether the app has the key.
 
 ## First deploy

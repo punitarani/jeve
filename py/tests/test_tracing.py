@@ -1,10 +1,14 @@
-"""LLM-0008: the three properties the tracing seam is allowed to have.
+"""LLM-0009: the three properties the tracing seam is allowed to have.
 
 Off by default, never fatal, and a pure side effect. Nothing here opens a
 socket or imports `braintrust`; the sink is the one in `conftest.py`.
 """
 
 from __future__ import annotations
+
+import asyncio
+import threading
+from collections.abc import Iterator
 
 import pytest
 
@@ -21,9 +25,6 @@ def test_no_key_means_no_tracing_and_no_sdk() -> None:
     assert tracing.enabled() is False
     with tracing.span("jev.decide", type="llm", input={"a": 1}) as span:
         span.log(output="anything")
-        # `""` is what tells a caller there is no parent to hand across a
-        # thread — `jev_policy` turns it back into None.
-        assert span.export() == ""
 
 
 def test_the_key_is_the_only_switch() -> None:
@@ -70,26 +71,48 @@ def test_fields_and_nesting_reach_the_sink(spans: RecordingSink) -> None:
     assert [child.name for child in batch.children] == ["jev.decide"]
 
 
-def test_an_exported_handle_parents_a_span_that_is_not_nested(
-    spans: RecordingSink,
-) -> None:
-    """What crossing `JevPolicy._Bridge` looks like: the parent is passed.
+@pytest.fixture
+def gateway_loop() -> Iterator[asyncio.AbstractEventLoop]:
+    """An event loop on a thread of its own: `JevPolicy._Bridge`'s shape."""
 
-    Contextvars do not survive `run_coroutine_threadsafe`, so the batch span
-    would otherwise be invisible to the gateway and every call would land at
-    the root of its own trace.
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        yield loop
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5.0)
+        loop.close()
+
+
+def test_the_batch_is_the_parent_on_the_gateway_loop_with_nothing_passed(
+    spans: RecordingSink, gateway_loop: asyncio.AbstractEventLoop
+) -> None:
+    """What crossing `JevPolicy._Bridge` looks like: nothing is carried.
+
+    `run_coroutine_threadsafe` runs in a copy of the caller's context, so the
+    span open on the engine thread is current on the loop, and concurrent
+    calls each nest under it rather than under one another (LLM-0009).
     """
 
-    with tracing.span("decide.batch", type="task") as batch:
-        handle = batch.export()
-    assert handle
+    async def call(name: str) -> None:
+        with tracing.span(name, type="llm"):
+            await asyncio.sleep(0)
+            with tracing.span("openrouter.attempt", type="function"):
+                await asyncio.sleep(0)
 
-    with tracing.span("jev.decide", type="llm", parent=handle):
-        pass
+    async def both() -> None:
+        await asyncio.gather(call("a"), call("b"))
 
-    assert [child.name for child in spans.only("decide.batch").children] == [
-        "jev.decide"
-    ]
+    with tracing.span("decide.batch", type="task"):
+        asyncio.run_coroutine_threadsafe(both(), gateway_loop).result(timeout=5.0)
+
+    batch = spans.only("decide.batch")
+    assert [child.name for child in batch.children] == ["a", "b"]
+    for call_span in batch.children:
+        assert [child.name for child in call_span.children] == ["openrouter.attempt"]
+    assert spans.roots == [batch]
 
 
 def test_a_failure_in_the_body_is_recorded_and_re_raised(
@@ -196,15 +219,23 @@ def test_no_id_sends_the_name_alone_so_the_sdk_creates_or_resolves_it(
 # -- against the real SDK, offline ----------------------------------------
 
 
-def test_the_real_sdk_produces_the_span_shape_we_meant() -> None:
+def test_the_real_sdk_produces_the_span_shape_we_meant(
+    gateway_loop: asyncio.AbstractEventLoop,
+) -> None:
     """The contract with a dependency we do not own.
 
     Spans here are hand-built — there is no LLM SDK to wrap, because the
-    gateway posts raw httpx (LLM-0008). That makes `start_span`'s keywords, the
+    gateway posts raw httpx (LLM-0009). That makes `start_span`'s keywords, the
     `llm` type and `metrics.estimated_cost` an API we are coupled to without a
     wrapper to absorb a change. This runs the real braintrust logger against
     its own in-memory backend, so an upgrade that moves any of them fails here
     rather than in production. No socket is opened.
+
+    The shape is the whole trace: a tick, a batch under it, and a call under
+    the batch from the gateway's loop on another thread — the
+    `JevPolicy._Bridge` hop, by ambient context alone. The root carries an
+    input and an output, because a root without them is exactly the empty
+    trace this shape replaced.
     """
 
     from braintrust import logger as bt
@@ -213,25 +244,55 @@ def test_the_real_sdk_produces_the_span_shape_we_meant() -> None:
     simulate_login()
     init_test_logger("jeve-span-shape")
     with bt._internal_with_memory_background_logger() as memory:
-        tracing.reset()
-        assert tracing.configure(settings=Settings(braintrust_api_key=bt.TEST_API_KEY))
-        with tracing.span("decide.batch", type="task", metadata={"mode": "record"}):
-            with tracing.span("jev.decide", type="llm", input={"state": "x"}) as call:
+
+        def use_memory(logger: object) -> None:
+            bt._state._override_bg_logger.logger = logger
+
+        async def call_jev() -> None:
+            with tracing.span("jev.decide", type="llm") as call:
                 call.log(
                     output={"urgent": 0.9},
                     metrics={"tokens": 430, "estimated_cost": 1.68e-05},
                 )
+
+        # The memory backend is thread-local; production's is not.
+        gateway_loop.call_soon_threadsafe(use_memory, memory)
+        tracing.reset()
+        assert tracing.configure(settings=Settings(braintrust_api_key=bt.TEST_API_KEY))
+        with tracing.span(
+            "sim.tick", type="task", input={"label": "d0 Mon 09:00"}
+        ) as tick_span:
+            with tracing.span(
+                "decide cafe.purchase",
+                type="task",
+                input=[{"person_id": "p1", "facts": {"queue_length": 2}}],
+            ) as batch:
+                asyncio.run_coroutine_threadsafe(call_jev(), gateway_loop).result(5.0)
+                batch.log(output=[{"person_id": "p1", "settled_by": "live"}])
+            # Logged last, as `Engine.tick` does once the tick has committed.
+            tick_span.log(output={"decisions": 1})
+        gateway_loop.call_soon_threadsafe(use_memory, None)
         rows = memory.pop()
 
-    batch, decide = rows
-    assert batch["span_attributes"]["name"] == "decide.batch"
-    assert batch["span_attributes"]["type"] == "task"
-    assert not batch["span_parents"]
+    by_name = {row["span_attributes"]["name"]: row for row in rows}
+    tick, batch, decide = (
+        by_name["sim.tick"],
+        by_name["decide cafe.purchase"],
+        by_name["jev.decide"],
+    )
+    assert tick["span_attributes"]["type"] == "task"
+    assert not tick["span_parents"]
+    assert tick["input"] == {"label": "d0 Mon 09:00"}
+    assert tick["output"] == {"decisions": 1}
+
+    assert batch["span_parents"] == [tick["span_id"]]
+    assert batch["input"] == [{"person_id": "p1", "facts": {"queue_length": 2}}]
+    assert batch["output"] == [{"person_id": "p1", "settled_by": "live"}]
 
     assert decide["span_attributes"]["type"] == "llm"
     assert decide["span_parents"] == [batch["span_id"]]
-    assert decide["input"] == {"state": "x"}
     assert decide["output"] == {"urgent": 0.9}
     # The field Braintrust prefers over its own registry estimate — the point
     # of logging it at all, since the registry has never heard of jev.
     assert decide["metrics"]["estimated_cost"] == 1.68e-05
+    assert {row["root_span_id"] for row in rows} == {tick["root_span_id"]}

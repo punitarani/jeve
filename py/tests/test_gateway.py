@@ -600,7 +600,7 @@ async def test_the_raw_response_is_available_before_it_is_parsed(
     await gateway.aclose()
 
 
-# -- spans (LLM-0008) ------------------------------------------------------
+# -- spans (LLM-0009) ------------------------------------------------------
 
 
 async def test_a_decision_call_is_one_llm_span_carrying_the_real_cost(

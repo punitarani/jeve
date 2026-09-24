@@ -558,7 +558,6 @@ class Gateway:
         request: DecisionRequest,
         *,
         purpose: Purpose = "gate",
-        parent: str | None = None,
     ) -> RawDecision:
         """Issue a decision request and return the response *unparsed*.
 
@@ -588,7 +587,6 @@ class Gateway:
         with tracing.span(
             "jev.decide",
             type="llm",
-            parent=parent,
             # Parsed from the bytes that go on the wire, never rebuilt from the
             # request: what is logged has to be what was asked (DECIDE-0004).
             input=json.loads(body),
@@ -622,11 +620,10 @@ class Gateway:
         request: DecisionRequest,
         *,
         purpose: Purpose = "gate",
-        parent: str | None = None,
     ) -> DecisionResponse:
         """Ask Jev a set of typed questions about one state."""
 
-        raw = await self.decide_raw(request, purpose=purpose, parent=parent)
+        raw = await self.decide_raw(request, purpose=purpose)
         return parse_decision(
             raw.payload,
             expected=set(request.questions),
@@ -640,7 +637,6 @@ class Gateway:
         request: ChatRequest,
         *,
         purpose: Purpose = "gate",
-        parent: str | None = None,
     ) -> ChatResponse:
         """Generate prose. The exception, not the default path."""
 
@@ -679,7 +675,6 @@ class Gateway:
         with tracing.span(
             "chat.completion",
             type="llm",
-            parent=parent,
             input=body["messages"],
             metadata={
                 "endpoint": "chat",

@@ -9,6 +9,7 @@ engine's bookkeeping — and that replaying a recording reproduces the run.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from psycopg.rows import DictRow
 from jeve import db, tracing
 from jeve.api.app import app
 from jeve.config import load_settings
-from jeve.core.clock import at
+from jeve.core.clock import SimTime, at
 from jeve.decide import jev_policy
 
 # Captured before `no_network` swaps the name out: these tests want the real
@@ -322,33 +323,196 @@ def test_the_committed_cassette_is_already_final() -> None:
         copy.unlink(missing_ok=True)
 
 
-# -- spans (LLM-0008) ------------------------------------------------------
+# -- spans (LLM-0009) ------------------------------------------------------
 
 
-def test_a_replayed_batch_is_one_span_that_counts_its_cache(
+def test_a_replayed_tick_is_one_trace_whose_batches_carry_their_decisions(
     conn: Connection[DictRow], spans: RecordingSink
 ) -> None:
-    """A cache hit never reaches the gateway, so it is counted, not spanned.
+    """Every trace says what it was asked and what it answered.
 
-    `live_calls` is the whole cost story for this project, and a replay's is
-    zero by definition — which is what makes this the cheap check that the
-    counters mean what they say.
+    The root is the tick; each batch under it lists every decision's facts
+    and how it was settled. A replay's live calls are zero by definition,
+    which makes this the cheap check that the counters and the rows agree —
+    with each other, and with the `decisions` table.
     """
 
     replay(conn, days=1).close()
 
-    batches = spans.named("decide.batch")
+    assert spans.roots
+    assert {root.name for root in spans.roots} == {"sim.tick"}
+    for tick in spans.roots:
+        clock = tick.fields["input"]
+        assert clock["label"] == SimTime(clock["sim_time"]).label()
+        assert tick.fields["metadata"]["policy"] == "JevPolicy"
+        assert tick.fields["metadata"]["root_seed"] == ROOT_SEED
+        assert all(child.name.startswith("decide ") for child in tick.children)
+
+    batches = [batch for tick in spans.roots for batch in tick.children]
     assert batches
+    assert len(batches) == len([s for s in spans.spans if s.name != "sim.tick"])
     assert not spans.named("jev.decide")
     for batch in batches:
         assert batch.type == "task"
         data = batch.fields["metadata"]
+        asked, settled = batch.fields["input"], batch.fields["output"]
         assert data["mode"] == "replay"
+        assert len(data["kinds"]) == 1
+        assert batch.name == f"decide {data['kinds'][0]}"
+        assert len(asked) == len(settled) == data["contexts"]
+        assert [row["person_id"] for row in asked] == [
+            row["person_id"] for row in settled
+        ]
+
+        by = Counter(row["settled_by"] for row in settled)
+        assert by["cache"] == data["cache_hits"] == data["lookups"]
+        assert by["gated"] == data["contexts"] - data["lookups"]
+        # Rows count decisions and `live_calls` counts requests; in a replay
+        # both are zero, and the shared-call test below pulls them apart.
+        assert by["live"] == data["lookups"] - data["cache_hits"] == 0
         assert data["live_calls"] == 0
-        assert data["cache_hits"] == data["lookups"]
         assert data["distinct_requests"] <= data["lookups"]
-    assert sum(b.fields["metadata"]["lookups"] for b in batches) > 0
-    assert any(b.fields["metadata"]["kinds"] for b in batches)
+        for row in settled:
+            if row["settled_by"] == "gated":
+                assert row["model_call"] is None
+                assert row["distributions"] == {}
+            else:
+                assert row["model_call"]
+                assert row["distributions"]
+
+    counted = conn.execute("SELECT count(*) AS n FROM decisions").fetchone()
+    assert counted is not None
+    assert sum(t.fields["output"]["decisions"] for t in spans.roots) == counted["n"]
+    assert sum(b.fields["metadata"]["contexts"] for b in batches) == counted["n"]
+
+    # And a row of the trace is the row in the table.
+    batch = next(b for b in batches if b.fields["metadata"]["cache_hits"])
+    index = next(i for i, row in enumerate(batch.fields["output"]) if row["model_call"])
+    asked, settled = batch.fields["input"][index], batch.fields["output"][index]
+    stored = conn.execute(
+        "SELECT chosen, model_call, prng_path FROM decisions "
+        "WHERE person_id = %s AND decision_seq = %s",
+        (asked["person_id"], asked["decision_seq"]),
+    ).fetchone()
+    assert stored is not None
+    assert stored["chosen"] == settled["chosen"]
+    assert stored["model_call"] == settled["model_call"]
+    assert stored["prng_path"] == settled["prng_path"]
+
+
+def test_a_gated_batch_says_so_without_asking_anyone(spans: RecordingSink) -> None:
+    """Settled by the world's own rules: no lookup, no call, and no database.
+
+    A batch is named for its kind, so a trace's children read as what was
+    being decided; a mixed batch keeps the generic name rather than minting
+    one per combination.
+    """
+
+    def ctx(kind: str, person: str, **facts: object) -> DecisionContext:
+        return DecisionContext(
+            person_id=person,
+            role="customer",
+            sim_time=at(0, 9),
+            kind=kind,
+            facts=facts,
+            traits={"patience": 0.4},
+            decision_seq=3,
+        )
+
+    served = ctx("cafe.purchase", "p1", queue_length=0, pos_down=False)
+    fine = ctx("file.ticket", "p2", module_down=False)
+    policy = JevPolicy(ROOT_SEED, Recorder(mode="replay"))
+    try:
+        # Nothing asked is nothing traced: not a batch named for no kind.
+        assert policy.decide_many([]) == []
+        policy.decide_many([served])
+        policy.decide_many([served, fine])
+    finally:
+        policy.close()
+
+    single, mixed = spans.roots
+    assert single.name == "decide cafe.purchase"
+    assert mixed.name == "decide.batch"
+    assert single.fields["input"] == [
+        {
+            "person_id": "p1",
+            "role": "customer",
+            "kind": "cafe.purchase",
+            "decision_seq": 3,
+            "sim_time": at(0, 9),
+            "facts": {"queue_length": 0, "pos_down": False},
+            "traits": {"patience": 0.4},
+        }
+    ]
+    assert [row["settled_by"] for row in mixed.fields["output"]] == [
+        "gated",
+        "gated",
+    ]
+    assert mixed.fields["output"][1]["chosen"] == {"file": False}
+    assert mixed.fields["metadata"]["lookups"] == 0
+
+
+def test_two_decisions_that_share_a_live_call_are_two_rows_and_one_call(
+    spend_table: Connection[DictRow],
+    spans: RecordingSink,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Rows count decisions; `live_calls` counts requests.
+
+    Two people in the same situation in one batch share one request, so both
+    rows say `live` and name the same call, the batch counts one live call,
+    and there is one `llm` span under it — the cost is on that span once.
+    """
+
+    subject = "tracing: two people, one question"
+    forget = (
+        "DELETE FROM model_calls WHERE kind = 'ticket.triage' "
+        "AND request->'state'->>'ticket_subject' = %s"
+    )
+
+    def gateway(**_: object) -> Gateway:
+        return Gateway(
+            settings=wire_settings(tmp_path),
+            transport=WireRecorder().transport(),
+            backoff_base_s=0.0,
+        )
+
+    def asked(person: str) -> DecisionContext:
+        return DecisionContext(
+            person_id=person,
+            role="customer",
+            sim_time=at(0, 9),
+            kind="ticket.triage",
+            facts={"subject": subject},
+            decision_seq=0,
+        )
+
+    monkeypatch.setattr(jev_policy, "Gateway", gateway)
+    monkeypatch.setattr(jev_policy, "_Bridge", Bridge)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    # `model_calls` outlives the test: a row left by an earlier run would make
+    # this a cache hit, and a row left by this one would do so for the next.
+    spend_table.execute(forget, (subject,))
+    spend_table.commit()
+    policy = JevPolicy(ROOT_SEED, Recorder(mode="record"))
+    try:
+        policy.decide_many([asked("p1"), asked("p2")])
+    finally:
+        policy.close()
+        spend_table.execute(forget, (subject,))
+        spend_table.commit()
+
+    batch = spans.only("decide ticket.triage")
+    data = batch.fields["metadata"]
+    assert data["lookups"] == 2
+    assert data["cache_hits"] == 0
+    assert data["distinct_requests"] == data["live_calls"] == 1
+
+    settled = batch.fields["output"]
+    assert [row["settled_by"] for row in settled] == ["live", "live"]
+    assert settled[0]["model_call"] == settled[1]["model_call"] is not None
+    assert [child.name for child in batch.children] == ["jev.decide"]
 
 
 def test_a_call_is_parented_by_its_batch_across_the_gateway_thread(
@@ -357,13 +521,12 @@ def test_a_call_is_parented_by_its_batch_across_the_gateway_thread(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The one place an ambient parent cannot reach (LLM-0008).
+    """The batch reaches the gateway's thread with nothing carried (LLM-0009).
 
-    `_Bridge` runs the gateway on its own loop on its own thread, and
-    `run_coroutine_threadsafe` copies the context over there — so the batch
-    span open on this thread is not the current span in the gateway. The
-    handle has to be carried. The second half of this test is the proof that
-    it is doing something: with no handle, the same call is a root.
+    `_Bridge` runs the gateway on its own loop on its own thread, but
+    `run_coroutine_threadsafe` runs in a copy of the *caller's* context, so
+    the batch span open on this thread is the current span over there. The
+    second call is the control: made with no batch open, it is a root.
     """
 
     wire = WireRecorder()
@@ -379,9 +542,8 @@ def test_a_call_is_parented_by_its_batch_across_the_gateway_thread(
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     bridge = Bridge(load_settings())
     try:
-        with tracing.span("decide.batch", type="task") as batch:
-            handle = batch.export()
-        carried = bridge.fetch([wire_request()], parent=handle)
+        with tracing.span("decide.batch", type="task"):
+            carried = bridge.fetch([wire_request()])
         orphaned = bridge.fetch([wire_request()])
     finally:
         bridge.close()
@@ -390,6 +552,7 @@ def test_a_call_is_parented_by_its_batch_across_the_gateway_thread(
     under_batch = spans.only("decide.batch").children
     assert [child.name for child in under_batch] == ["jev.decide"]
     assert under_batch[0].fields["metadata"]["endpoint"] == "decisions"
+    assert [child.name for child in under_batch[0].children] == ["openrouter.attempt"]
 
     roots = [root.name for root in spans.roots]
     assert roots == ["decide.batch", "jev.decide"]

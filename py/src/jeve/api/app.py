@@ -223,13 +223,8 @@ def state() -> dict[str, object]:
 
 
 def _clock(meta: dict[str, Any]) -> dict[str, object]:
-    now = SimTime(int(meta["sim_time"]))
     return {
-        "sim_time": now.seconds,
-        "label": now.label(),
-        "day": now.day,
-        "weekday": now.weekday,
-        "in_office_hours": now.in_office_hours,
+        **SimTime(int(meta["sim_time"])).describe(),
         "tick_seq": int(meta["tick_seq"]),
         "status": meta["status"],
         "speed": float(meta["speed"]),
@@ -267,7 +262,7 @@ def _health(meta: dict[str, Any]) -> dict[str, object]:
         # effect of a read endpoint. `api` and `sim` are one Fly app and share
         # its secrets, so this answers "does the deployment have the key"
         # honestly, which is the question that went unanswered for an hour
-        # when the key sat in Doppler and never reached Fly (LLM-0008).
+        # when the key sat in Doppler and never reached Fly (LLM-0009).
         "tracing": bool(load_settings().braintrust_api_key),
     }
 
@@ -1102,7 +1097,7 @@ async def encounter_dialogue(
     # asked for: a cached hit or a read-only deployment returns above, and
     # neither is worth a span. The per-model `chat.completion` spans nest
     # under it on their own — same task, same loop, so the ambient parent is
-    # already right (LLM-0008).
+    # already right (LLM-0009).
     with tracing.span(
         "dialogue", type="task", input={"seq": seq, "typed": encounter.typed()}
     ) as span:
@@ -1112,7 +1107,10 @@ async def encounter_dialogue(
             models = gateway.generative_models
         except JeveError as error:
             body["reason"] = f"the model gateway would not start: {error}"
-            span.log(metadata={"outcome": "gateway-unavailable"})
+            span.log(
+                output={"reason": body["reason"]},
+                metadata={"outcome": "gateway-unavailable"},
+            )
             return body
 
         for model in models:
@@ -1155,8 +1153,10 @@ async def encounter_dialogue(
                     )
 
             await asyncio.to_thread(keep)
+            # Always an object, so `output` has one shape whichever path the
+            # render took: `lines` when it worked, `reason` when it did not.
             span.log(
-                output=lines,
+                output={"lines": lines},
                 metadata={"model": model, "outcome": "ok", "skipped": failures},
             )
             body["prose"] = {
@@ -1170,7 +1170,10 @@ async def encounter_dialogue(
             return body
 
         body["reason"] = "no model produced usable dialogue: " + "; ".join(failures)
-        span.log(metadata={"outcome": "no-usable-reply", "skipped": failures})
+        span.log(
+            output={"reason": body["reason"]},
+            metadata={"outcome": "no-usable-reply", "skipped": failures},
+        )
         return body
 
 
