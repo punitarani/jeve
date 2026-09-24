@@ -21,10 +21,11 @@ low-stakes propensity: design/005's "single most consequential line", because
 an LLM would collapse a flat distribution and flatten persona. So nothing could
 ask whether a general-purpose model answers a whole set *better* — and the
 first eval sweep (EVAL-0001) found a set it might. Under Jev, conversations do
-not end: on three held-out seeds 0% of episodes settled and 43% went round in
-circles (the rules twin settles 94%), and a judge from another family preferred
-the rules twin's episodes 16 times in 20. Jev puts 0.28 on "I have had my say"
-and 0.05 on leaving, so the same acts repeat until the stall rule ends them.
+not end: on six held-out seeds 0% of episodes settled and 48% went round in
+circles (the rules twin settles 92%), and a judge from another family preferred
+the rules twin's episodes in 35.5 of 46 pairs. Jev puts 0.29 on "I have had my
+say" and little on leaving, so the same acts repeat until the stall rule ends
+them.
 
 ## Considered Options
 
@@ -47,27 +48,27 @@ the model on the same seeded path, the reply cached by the bytes sent
 is still asked; both answers land in `escalations` with the trigger `routed`,
 which the day's tier-1 room ignores. No generated text is read by the world.
 
-What overrides design/005 here (held-out, 222 decisions answered by both):
+What overrides design/005 here (six held-out seeds, 513 decisions answered
+by both):
 
 | | Jev | routed |
 |---|---:|---:|
-| normalised entropy of the act, per decision | 0.54 | 0.82 |
-| P(had their say) | 0.28 | 0.50 |
-| gap in P(press), outspoken minus quiet | +0.42 | +0.13 |
-| gap in P(small talk), sociable minus reserved | +0.32 | +0.24 |
-| gap in P(leave), sociable minus reserved | −0.16 | −0.21 |
+| normalised entropy of the act, per decision | 0.51 | 0.81 |
+| P(had their say) | 0.29 | 0.52 |
+| gap in P(press), outspoken minus quiet | +0.40 | +0.16 |
+| gap in P(small talk), sociable minus reserved | +0.39 | +0.29 |
 
 The LLM spread the distribution rather than collapsing it; persona survives in
-direction on every gradient and weakens on two, sharply on pressing.
+direction and weakens, sharply on pressing.
 
 ### Consequences
 
-- Good (held-out, paired by seed, `ops/evals.md`): settled +0.54 [+0.50,
-  +0.60]; stalled −0.33 [−0.50, −0.09]; knowledge heard second-hand +0.058
-  [+0.029, +0.089]; no banded plausibility fact, invariant or world-level
-  persona signal moved. The judge preferred routed episodes 17 times in 22,
-  and put them level with the rules twin's.
-- Bad: the decision bill goes from $0.0037 to $0.0148 a sim-day; talking ticks
+- Good (six held-out seeds, paired, `ops/evals.md`): settled +0.59 [+0.54,
+  +0.64]; stalled −0.40 [−0.53, −0.25]; no banded plausibility fact,
+  invariant or world-level persona signal moved. The judge preferred routed
+  episodes in 36 of 48 pairs and put them level with the rules twin's (0.48).
+  News heard second-hand rose on the first three seeds and not over six.
+- Bad: the decision bill goes from $0.0039 to $0.0176 a sim-day; talking ticks
   wait ~8 s per round call (CORE-0004: slow model, slow world); pressing
   flattens by persona. GLM 5.3 Flash answered 78% of routed decisions — 17% of
   its replies were reasoning text, not JSON, and fell through to Gemini at

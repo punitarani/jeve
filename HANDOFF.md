@@ -98,11 +98,11 @@ the research and the ranked candidates.
   Paired-by-seed effect sizes with intervals. `ops/evals/runs/*.json` are
   committed; the eval cassettes (~50 MB) are not.
 * **Kept: conversations are answered by tier 1 (DECIDE-0006).** Under Jev, 0%
-  of episodes ended settled and 43% stalled; with `episode.round` routed to
-  the flash LLM in Jev's typed shape, +0.54 settled and −0.33 stalled on
-  held-out seeds, news travels further, and the judge prefers the result 17
-  times in 22. It costs ~4× the decision bill ($0.0037 → $0.0148 a sim-day) and
-  weakens how differently outspoken and quiet people press. On by default;
+  of episodes ended settled and 48% stalled; with `episode.round` routed to
+  the flash LLM in Jev's typed shape, +0.59 settled and −0.40 stalled over six
+  held-out seeds, and the judge prefers the result in 36 of 48 pairs. It
+  costs ~4.5× the decision bill ($0.0039 → $0.0176 a sim-day) and weakens how
+  differently outspoken and quiet people press. On by default;
   `JEVE_ESCALATION_ROUTE=off` undoes it.
 * **Reverted: LLM-written staff (EVAL-0002)** — persona signal −0.050 for no
   judged gain. **Not adopted:** tier 1 live on every set it allows (nothing

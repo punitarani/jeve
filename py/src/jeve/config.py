@@ -23,8 +23,8 @@ HARD_CEILING_USD = 20.0
 # that re-issues the same call should cost a dollar, not the night.
 RUN_CAP_USD = 1.0
 # DECIDE-0006: what people do in a conversation is answered by tier 1, not Jev.
-# Jev's answers stall 43% of conversations on held-out seeds; routed, 10% stall
-# and the judge prefers the result 17 times in 22 (ops/evals.md).
+# Jev's answers stall 48% of conversations on held-out seeds; routed, 8% stall
+# and the judge prefers the result in 36 of 48 pairs (ops/evals.md).
 ESCALATION_ROUTE: tuple[str, ...] = ("episode.round",)
 
 

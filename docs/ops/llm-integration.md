@@ -24,7 +24,7 @@ digest, and cost per sim-day. `make evals ARMS=… SEEDS=…` reruns any of it.
 
 | check | result |
 |---|---|
-| judge on planted defects (wrong actor, loop, phantom effect, closed hours), 40 pairs, both orders | 0.98; 10/10 on three defects, 9.5/10 on phantom effects |
+| judge on planted defects (wrong actor, loop, phantom effect, closed hours), 40 pairs, both orders | 0.98; 10/10 on closed hours, loops and phantom effects, 9.25/10 on a wrong actor |
 | judge on identical pairs (position bias) | 0.50, all ties |
 | judge test–retest under another sampling seed, 50 pairs | 50/50 the same two verdicts |
 | same seed, same arm, twice (rules) | identical event-log digest |
@@ -37,10 +37,11 @@ account, not that it can rank two plausible ones finely.
 ## What the baseline said before any LLM was added
 
 Jev against the rules twin, held-out seeds: Jev is the deeper world by every
-persona measure (persona signal +0.136, identifiability +7.4, action entropy
-+0.167, all clear) and the worse conversationalist — **0% of its episodes end
-settled, 43% stall**, news reaches a fifth as many people second-hand (0.039 against 0.205), and
-the judge preferred the rules twin's episodes 16 times in 20.
+persona measure (first batch: persona signal +0.136, identifiability +7.4,
+action entropy +0.167, all clear) and the worse conversationalist — over six
+seeds **0% of its episodes end settled and 48% stall**, news reaches a quarter
+as many people second-hand (0.055 against 0.219), and the judge preferred the
+rules twin's episodes in 35.5 of 46 pairs.
 
 Neither world is plausible where it counts most: bills are paid about on time
 (mean 0.1–0.8 days late against a 4.5–20 band, because four fifths of clients
@@ -57,15 +58,18 @@ Both are rules, not decisions; no model was asked to fix them.
 - **Change.** `JEVE_ESCALATION_ROUTE=episode.round`: tier 1's existing request,
   schema, cache and replay, for every question of the set; the world samples
   the LLM's distribution; Jev is still asked and both are kept.
-- **Held-out (3 seeds).** Settled +0.54 [+0.50, +0.60]; stalled −0.33 [−0.50,
-  −0.09]; second-hand knowledge +0.058 [+0.029, +0.089]; judge 17/22 over Jev,
-  11.5/23 (level) against the rules twin; no banded fact, invariant or
-  world-level persona signal moved. Dev seeds agreed (settled +0.64, judge
-  22/28).
-- **Cost.** $0.0037 → $0.0148 a sim-day; ~8 s per round call.
-- **What it gives up.** Per decision, the act distribution is flatter (entropy
-  0.54 → 0.82 — spread, not collapsed), P(done) 0.28 → 0.50, and the gap
-  between outspoken and quiet people in pressing shrinks from +0.42 to +0.13.
+- **Held-out (6 seeds).** Settled +0.59 [+0.54, +0.64]; stalled −0.40 [−0.53,
+  −0.25]; rounds −0.54; action entropy +0.017 (clear, small); judge 36/48 over
+  Jev and 23.5/49 (level) against the rules twin; no banded fact, invariant or
+  world-level persona signal moved. Second-hand knowledge rose clearly on the
+  first three held-out seeds (+0.058) and not over all six (+0.023 [−0.037,
+  +0.068]): not claimed. Dev seeds agreed (settled +0.64, judge 22/28).
+- **Cost.** $0.0039 → $0.0176 a sim-day (held-out mean); ~8 s per round call.
+- **What it gives up.** Over 513 decisions answered by both models, the act
+  distribution is flatter (entropy 0.51 → 0.81 — spread, not collapsed),
+  P(done) 0.29 → 0.52, and the gap between outspoken and quiet people in
+  pressing shrinks from +0.40 to +0.16 (small talk by sociability: +0.39 →
+  +0.29).
 - **Verdict.** Kept, on by default; `JEVE_ESCALATION_ROUTE=off` restores Jev.
 
 ### 2. Tier 1 answers only `done` — rejected on dev
@@ -117,10 +121,10 @@ rather than the brief's GLM → DeepSeek V4.1 Flash → Luna. One order for ever
 tier-1 path, and LLM-0006 measured V4.1 Flash failing 8 of 12 billed dialogue
 attempts. The cost of keeping it: when GLM returns reasoning instead of JSON
 (17% of its replies), the next model is Gemini, at five times GLM's input price
-— 22% of held-out routed decisions. Whether V4.1 Flash does better at a strict
+— 110 of 513 held-out routed decisions (21%). Whether V4.1 Flash does better at a strict
 schema than at prose is unmeasured (open question 2). The judge is GPT-5.6
-Luna; one held-out routed decision was answered by Luna and its episode was
-excluded from judging.
+Luna; three held-out routed decisions were answered by Luna, and their
+episodes were excluded from judging.
 
 ## The typed thesis
 
