@@ -48,8 +48,15 @@ def _file_ticket(ctx: DecisionContext) -> Settled | None:
 def _payment_timing(ctx: DecisionContext) -> Settled | None:
     if not ctx.facts.get("can_afford", True):
         return {"pay": False, "reason": "insufficient_cash"}
-    if _number(ctx.facts.get("days_until_due")) > ASK_FROM_DAYS_BEFORE_DUE:
+    days_until_due = _number(ctx.facts.get("days_until_due"))
+    if days_until_due > ASK_FROM_DAYS_BEFORE_DUE:
         return {"pay": False, "reason": "not_due"}
+    if ctx.facts.get("autopay") and days_until_due <= 0:
+        # A standing instruction pays on the day. WORLD-0005 said so and the
+        # engine computed it, but nothing here read it: the four prompter
+        # fifths were asked every day once due and paid 0.5 to 2.2 days late
+        # (field report, golden-20260920, defect 1).
+        return {"pay": True, "reason": "standing_instruction"}
     return None
 
 

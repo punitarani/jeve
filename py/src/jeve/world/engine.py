@@ -30,6 +30,7 @@ from jeve.core.clock import (
     WORK_END,
     WORK_START,
     SimTime,
+    after_working_time,
     next_open,
 )
 from jeve.core.orgs import BY_ID, ORGS
@@ -47,10 +48,18 @@ from jeve.world import flows, scheduler, space
 HAZARD_PER_HOUR = 0.016
 DEBT_MULTIPLIER = 2.5
 
-# How quickly subscribers notice an outage: the old 12%-per-quarter-hour, as a
-# rate. Drawn once per person per incident (CORE-0009), not once per tick for
-# whoever happened to be among the first forty rows.
-NOTICE_RATE_PER_HOUR = -math.log(1 - 0.12) * 4
+USES_PER_HOUR: dict[str, float] = {"pos": 4.0, "timetrack": 1.0, "invoicing": 0.5}
+"""How often somebody touches each feature in an hour they are working, which is
+how soon they find out it is down. A till is rung up every few minutes;
+time is logged between tasks; invoices go out a few times a day.
+
+It replaces one rate for everything (a mean of 117 minutes, drawn against a
+90-minute outage), which put 61% of all notices after the fix: people
+"noticing" an outage of a feature they did not touch until it worked again
+(field report, defect 4). The delay is still drawn once per (person, incident)
+(CORE-0009), but in hours of *use*, so nobody notices overnight; and a notice
+that would have landed after the fix is withdrawn when the incident ends,
+because by the time they tried the feature it worked."""
 
 # Walk-ins per hour, by the hour. The same 192 across office hours as the flat
 # six-a-tick it replaces, shaped like a cafe: a rush before work, a bigger one
@@ -355,6 +364,23 @@ class Engine:
         ).fetchone()
         return int(row["cents"]) if row else 0
 
+    def weekly_outgoings(self, org_id: str) -> int:
+        """What a week costs this firm to keep open: its wage bill and its
+        fixed costs. The denominator of every runway in the world."""
+
+        return flows.weekly_outgoings(self, org_id)
+
+    def runway_days(self, org_id: str, cash: int | None = None) -> float:
+        """How many days the firm's cash lasts at its usual weekly outgoings.
+
+        It was `cash / this bill * 7`, a multiple of whatever was being paid,
+        so a firm with a month of payroll in the bank read as flush in front of
+        a small bill and broke in front of a large one (field report).
+        """
+
+        cash = self.cash_of(f"{org_id}.cash") if cash is None else cash
+        return cash / max(1, self.weekly_outgoings(org_id)) * 7
+
     def payer_of(self, org_id: str) -> DictRow | None:
         """Who pays this firm's bills and chases what it is owed."""
 
@@ -591,11 +617,14 @@ class Engine:
             (module_id, module_id, [r for o in ORGS for r in o.payer_roles[:1]]),
         ).fetchall()
         rows = []
+        rate = USES_PER_HOUR.get(module_id, 1.0)
         for user in users:
             person_id = str(user["id"])
             rng = derive_rng(self._root, "notice", person_id, incident_id)
-            delay = -math.log(1.0 - rng.random()) / NOTICE_RATE_PER_HOUR * HOUR
-            rows.append((incident_id, person_id, started + int(delay)))
+            use = -math.log(1.0 - rng.random()) / rate * HOUR
+            # People on a till keep the cafe's hours; everyone else an office's.
+            noticed = after_working_time(started, use, till=module_id == "pos")
+            rows.append((incident_id, person_id, noticed))
         db.executemany(
             self._conn,
             "INSERT INTO outage_notices (incident_id, person_id, notice_sim) "
@@ -620,6 +649,12 @@ class Engine:
         causes += _seq_of(row["escalation_event_seq"])
         self._conn.execute(
             "UPDATE modules SET status = 'up' WHERE id = %s", (module_id,)
+        )
+        # Whoever had not tried the feature by now never found it broken.
+        self._conn.execute(
+            "DELETE FROM outage_notices WHERE incident_id = %s AND notice_sim > %s "
+            "AND ticket_id IS NULL",
+            (incident_id, report.sim_time),
         )
         # An outage that is over is gossip, not news: it stops travelling, and
         # stops creating notices for an incident nobody can still be stuck on.
@@ -780,8 +815,11 @@ class Engine:
         ).fetchall()
         if not staff:
             return
+        # Work support can still do: an answered ticket is waiting on its
+        # reporter, not on the desk, and counting it made the queue look
+        # deepest just after support had cleared it.
         backlog_row = self._conn.execute(
-            "SELECT count(*) AS n FROM tickets WHERE status <> 'closed'"
+            "SELECT count(*) AS n FROM tickets WHERE status IN ('open','triaged')"
         ).fetchone()
         backlog = int(backlog_row["n"]) if backlog_row else 0
 
@@ -1221,6 +1259,7 @@ class Engine:
             if not bills:
                 continue
             cash = self.cash_of(f"{org.id}.cash")
+            runway = self.runway_days(org.id, cash)
             contexts = [
                 DecisionContext(
                     person_id=person_id,
@@ -1231,7 +1270,7 @@ class Engine:
                         "days_until_due": (int(bill["due_sim"]) - report.sim_time)
                         // DAY,
                         "can_afford": cash >= int(bill["amount_cents"]),
-                        "runway_days": cash / max(1, int(bill["amount_cents"])) * 7,
+                        "runway_days": runway,
                         "chased": bill["chased_sim"] is not None,
                         "promised": memory.open_commitment(self._conn, int(bill["id"]))
                         is not None,
@@ -1374,10 +1413,13 @@ class Engine:
                 "UPDATE invoices SET paid_sim = %s WHERE id = %s",
                 (report.sim_time, bill["id"]),
             )
+            # Who decided goes on the row as well as the event. It was left to
+            # the column default, so every payment in production read "rules"
+            # whatever had made it (field report, defect 2).
             self._conn.execute(
                 "INSERT INTO payments (invoice_id, paid_sim, amount_cents, txn_id, "
-                "days_late) VALUES (%s,%s,%s,%s,%s)",
-                (bill["id"], report.sim_time, amount, txn, days_late),
+                "days_late, decided_by) VALUES (%s,%s,%s,%s,%s,%s)",
+                (bill["id"], report.sim_time, amount, txn, days_late, made.source),
             )
             # Anyone who gave their word about this bill has now kept it.
             memory.close_commitments_for(
@@ -1429,7 +1471,7 @@ class Engine:
                         "org": issuer,
                         "days_late": (report.sim_time - int(bill["due_sim"])) // DAY,
                         "large": int(bill["amount_cents"]) >= 200_000,
-                        "runway_days": cash / max(1, int(bill["amount_cents"])) * 7,
+                        "runway_days": self.runway_days(issuer, cash),
                     },
                     traits=dict(chaser["traits"] or {}),
                 )

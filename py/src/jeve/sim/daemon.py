@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -256,11 +258,69 @@ def _prepare(
             f"seeded {summary.orgs} orgs, {summary.persons} persons "
             f"({summary.staff} staff + {summary.counterparties} counterparties)"
         )
+    if first:
+        _stamp_engine(conn)
     if first and args.policy == "jev" and args.cassette is not None:
         # In both modes: a recording run must not pay again for what it has.
         loaded = load_cassette(conn, args.cassette)
         conn.commit()
         print(f"cassette: {loaded} call(s) preloaded from {args.cassette.name}")
+
+
+def engine_sha() -> str:
+    """The commit this engine was built from, or `unknown`.
+
+    `JEVE_ENGINE_SHA` in an image (the build passes the commit in, because an
+    image holds no `.git`), else `git rev-parse` in a checkout. The column
+    existed from the first migration and nothing ever wrote it, so a
+    production world that had run 232 sim-days across several deploys could not
+    say which code had produced which of them (field report, defect 6).
+    """
+
+    explicit = os.environ.get("JEVE_ENGINE_SHA", "").strip()
+    if explicit and explicit != "unknown":
+        return explicit[:40]
+    try:
+        found = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parent,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        return "unknown"
+    sha = found.stdout.strip()
+    return sha if found.returncode == 0 and len(sha) >= 7 else "unknown"
+
+
+def _stamp_engine(conn: Connection[DictRow]) -> None:
+    """Write down which engine is running this world, and when it changed.
+
+    A change between two known builds is an event, at the sim time it happened:
+    the report can then split a long run at its deploys, the way the research
+    notes ask of any long-running simulation (00 §6.5). A world stamped for the
+    first time says nothing: there is no "before" to have changed from.
+    """
+
+    row = conn.execute("SELECT engine_sha, sim_time, tick_seq FROM sim_meta").fetchone()
+    sha = engine_sha()
+    if row is None or sha == "unknown" or str(row["engine_sha"]) == sha:
+        return
+    previous = str(row["engine_sha"])
+    if previous != "unknown":
+        conn.execute(
+            "INSERT INTO events (sim_time, tick_seq, kind, payload) "
+            "VALUES (%s, %s, 'engine.changed', %s)",
+            (
+                int(row["sim_time"]),
+                int(row["tick_seq"]),
+                json.dumps({"from": previous, "to": sha}),
+            ),
+        )
+    conn.execute("UPDATE sim_meta SET engine_sha = %s", (sha,))
+    conn.commit()
 
 
 def run(args: argparse.Namespace) -> int:

@@ -76,6 +76,11 @@ class Clock(BaseModel):
     )
     speed: float
     run_id: str
+    engine_sha: str = Field(
+        description="The commit the daemon running this world was built from, "
+        "or `unknown`. A change is also an `engine.changed` event, so a long "
+        "run can be split at its deploys."
+    )
 
 
 class Org(BaseModel):

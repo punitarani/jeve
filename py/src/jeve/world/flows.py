@@ -45,6 +45,21 @@ WEEKLY_WAGE_CENTS: dict[str, int] = {
 CREDIT_SHARE: dict[str, float] = {"none": 0.0, "partial": 0.25, "full_month": 1.0}
 
 
+def weekly_wages(engine: Engine, org_id: str) -> int:
+    """This week's wage bill: everyone on the payroll, at their role's rate."""
+
+    staff = engine.conn.execute(
+        "SELECT role FROM persons WHERE org_id = %s AND kind = 'staff'", (org_id,)
+    ).fetchall()
+    return sum(WEEKLY_WAGE_CENTS.get(str(row["role"]), 1_000_00) for row in staff)
+
+
+def weekly_outgoings(engine: Engine, org_id: str) -> int:
+    """What a week costs a firm to stay open."""
+
+    return weekly_wages(engine, org_id)
+
+
 def _person(engine: Engine, role: str, org: str) -> dict[str, Any] | None:
     row = engine.conn.execute(
         "SELECT id, traits FROM persons WHERE org_id = %s AND role = %s "

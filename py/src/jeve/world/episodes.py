@@ -152,6 +152,10 @@ class Local:
     moods: dict[str, int] = field(default_factory=dict)
     other_acts: int = 0
     """Mass that landed on `other`: the ontology-gap signal, per DECIDE-0001."""
+    rounds: int = 0
+    """How many rounds were actually run. The outcome used to carry the exit
+    reason under this name, so "how long did it last" could not be read back
+    (field report, defect 3)."""
 
     @property
     def promised(self) -> bool:
@@ -681,6 +685,7 @@ def _rounds(
             for seat in standing
         ]
         made = engine.decide_many(report, contexts)
+        local.rounds = index + 1
         settled = _fold(
             engine, report, episode_id, index, stake, standing, made, local, tellable
         )
@@ -866,7 +871,7 @@ def _close(
     outcome: dict[str, Any] = {
         "stake": stake.kind,
         "stake_ref": stake.ref,
-        "rounds": exit_reason,
+        "rounds": local.rounds,
         "pressed": local.pressed,
         "promised": local.promised,
         "refused": local.refused,

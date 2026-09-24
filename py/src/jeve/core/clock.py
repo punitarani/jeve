@@ -85,6 +85,35 @@ def at(day: int, hour: int = 0, minute: int = 0) -> int:
     return day * DAY + hour * HOUR + minute * MINUTE
 
 
+def after_working_time(start: int, seconds: float, *, till: bool = False) -> int:
+    """The moment `seconds` of *working* time have passed since `start`.
+
+    Office hours on weekdays, or the cafe's hours (Monday to Saturday) for
+    someone who works a till. Time nobody is at work does not count: a
+    subscriber cannot notice that a feature is down while they are asleep, and
+    the fifteen hours between an outage at 16:45 and the next morning are not
+    fifteen hours of anybody trying to use it.
+    """
+
+    opens, closes = (CAFE_OPEN, CAFE_CLOSE) if till else (WORK_START, WORK_END)
+    remaining = max(0.0, seconds)
+    moment = start
+    # Bounded: a year of days is far past any delay a rate could draw here.
+    for _ in range(366):
+        now = SimTime(moment)
+        works = now.weekday <= 5 if till else now.is_workday
+        midnight = now.day * DAY
+        if works:
+            begin = max(moment, midnight + opens)
+            end = midnight + closes
+            if begin < end:
+                if begin + remaining <= end:
+                    return int(begin + remaining)
+                remaining -= end - begin
+        moment = midnight + DAY
+    return moment
+
+
 def next_office_open(seconds: int) -> int:
     """The next moment the offices are open, or now if they already are."""
 
