@@ -276,14 +276,36 @@ _FILE = Ask(
 
 
 def _prepare_file_ticket(ctx: DecisionContext) -> Prepared:
-    return Prepared(
-        ctx.kind,
-        asks=(_FILE,),
-        state={
-            "person": "a customer who pays for small-business software",
-            "temperament": trait_words("vocality", ctx.traits.get("vocality")),
-            "situation": _outage_so_far(ctx.facts.get("hours_down")),
-        },
+    state: dict[str, object] = {
+        "person": "a customer who pays for small-business software",
+        "temperament": trait_words("vocality", ctx.traits.get("vocality")),
+        "situation": _outage_so_far(ctx.facts.get("hours_down")),
+    }
+    heard = hearsay_words(ctx.facts.get("heard_hops"))
+    if heard is not None:
+        state["how_they_know"] = heard
+    return Prepared(ctx.kind, asks=(_FILE,), state=state)
+
+
+def hearsay_words(hops: object) -> str | None:
+    """How they came to know, when it was not by hitting it themselves.
+
+    `knowledge.hops` was written for every fact that travelled and read by
+    nothing, so somebody told at seven removes reported an outage exactly as if
+    they had seen it (WORLD-0008). None for first-hand knowledge, which leaves
+    that question as it always was.
+    """
+
+    removes = int(_number(hops))
+    if removes <= 0:
+        return None
+    if removes == 1:
+        return (
+            "They have not hit it themselves yet: somebody who had seen it told them."
+        )
+    return (
+        "They have not hit it themselves; it is only something going around, "
+        "passed on by people who heard it from others."
     )
 
 
@@ -1079,7 +1101,11 @@ def stake_words(ctx: DecisionContext) -> str:
             if ctx.facts.get("large")
             else "a fairly modest amount"
         )
-        return f"A bill between their two firms is unpaid: {late}, and it is {size}."
+        record = _RECORD_WORDS.get(str(ctx.facts.get("track_record")), "")
+        return (
+            f"A bill between their two firms is unpaid: {late}, and it is {size}."
+            f"{record}"
+        )
     if stake == "outage":
         module = ctx.facts.get("module")
         if module:
@@ -1088,6 +1114,64 @@ def stake_words(ctx: DecisionContext) -> str:
                 "stopped responding, and the people here are affected by it."
             )
     return STAKE_WORDS.get(stake, STAKE_WORDS["news"])
+
+
+_RECORD_WORDS: dict[str, str] = {
+    "broken": (
+        " The last time the person who pays it gave their word about a bill to "
+        "this firm, they did not keep it."
+    ),
+    "kept": (
+        " The person who pays it has kept their word about a bill to this firm before."
+    ),
+}
+"""Appended only when there is a record. A pair who have never promised each
+other anything are asked exactly what they were asked before MEM-0002 was read
+back (WORLD-0008)."""
+
+_DID_WORDS: dict[str, str] = {
+    "press": "pushed for it to be dealt with now",
+    "promise": "gave their word to deal with it",
+    "explain": "set out their own side of it",
+    "decline": "said plainly it is not going to happen",
+    "ask": "asked what the others know or mean to do",
+    "small_talk": "talked about something else",
+    "leave": "broke off and left",
+    "other": "did something else",
+}
+
+
+def just_now_words(ctx: DecisionContext) -> dict[str, str] | None:
+    """What everybody did in the round just gone, by the same labels as
+    `who_is_here`. None in the first round, which therefore reads as it did
+    before rounds remembered each other.
+
+    This is what makes the next round a different question. Without it the
+    state of round two was the state of round one whenever the sticky flags had
+    not moved, and the answer was a second draw of the same propensity — in
+    production, 12 of the first 64 round questions were exact repeats.
+    """
+
+    if int(_number(ctx.facts.get("rounds_done"))) <= 0:
+        return None
+    said: dict[str, str] = {}
+    mine = ctx.facts.get("my_last_act")
+    if isinstance(mine, str) and mine in _DID_WORDS:
+        said["this_person"] = _DID_WORDS[mine]
+    for index, person in enumerate(_present(ctx)):
+        act = person.get("last_act")
+        if isinstance(act, str) and act in _DID_WORDS:
+            said[slot(index)] = _DID_WORDS[act]
+    return said or None
+
+
+def how_long_words(rounds_done: object) -> str | None:
+    done = int(_number(rounds_done))
+    if done <= 0:
+        return None
+    if done == 1:
+        return "They have been talking for a few minutes."
+    return "They have been at this for a while now."
 
 
 def so_far_words(ctx: DecisionContext) -> str:
@@ -1114,21 +1198,29 @@ def tension_words(level: object) -> str:
     return "Tense; somebody is annoyed."
 
 
-_SETTLED = Ask(
-    "settled",
+_DONE = Ask(
+    "done",
     "J",
     Noul(
         instructions=(
-            "Has the matter these people came together about now been dealt "
-            "with, so that there is nothing left to say about it today?"
+            "Has this person said what they came to say, so that they would "
+            "be content to let the conversation end here for now?"
         ),
         criteria=_yes_no(
-            "It is dealt with: someone has agreed to act, or it is plainly "
-            "going nowhere and both sides know it.",
-            "It is not dealt with; there is more to say.",
+            "They have had their say, whether or not the matter is solved, "
+            "and would let it end here.",
+            "They still have something to say, or something to get out of it.",
         ),
     ),
 )
+"""Whether this person is done talking, not whether the matter is solved.
+
+The question it replaced asked whether the matter had been dealt with. Jev read
+that literally, and an outage that is still down is never dealt with: across the
+first eight episodes in production the mean probability of yes was 0.13, no
+conversation ever ended because the people in it were finished, and seven of
+eight ended on the round cap (WORLD-0008). People stop talking when they have
+said their piece."""
 
 
 def _mention(topic: str) -> Ask:
@@ -1189,7 +1281,13 @@ def _prepare_episode_round(ctx: DecisionContext) -> Prepared:
         "so_far": so_far_words(ctx),
         "mood_of_the_room": tension_words(ctx.facts.get("tension")),
     }
-    asks: list[Ask] = [_act(role), _SETTLED, _MOOD]
+    just_now = just_now_words(ctx)
+    if just_now is not None:
+        state["just_now"] = just_now
+    how_long = how_long_words(ctx.facts.get("rounds_done"))
+    if how_long is not None:
+        state["how_long"] = how_long
+    asks: list[Ask] = [_act(role), _DONE, _MOOD]
     topic = ctx.facts.get("tellable_topic")
     if isinstance(topic, str) and topic:
         asks.append(_mention(topic))
@@ -1209,7 +1307,7 @@ def _interpret_episode_round(
     return Outcome(
         {
             "act": str(got["act"].value),
-            "settled": bool(got["settled"].value),
+            "done": bool(got["done"].value),
             "mood": int(str(got["mood"].value)),
             "mention": bool("mention" in got and got["mention"].value),
         },

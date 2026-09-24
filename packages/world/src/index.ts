@@ -18,10 +18,12 @@ import {
   TownMap,
   type Zone,
 } from "@jeve/contracts";
+
 import type { z } from "zod";
 
+import { HeroCamera } from "./attention";
 import { WorldModel, type Move } from "./model";
-import { WorldView, type ViewTarget } from "./render";
+import { WorldView } from "./render";
 
 export { WorldModel } from "./model";
 export type { Walker, Move } from "./model";
@@ -34,6 +36,10 @@ export type WorldStatus = ReturnType<WorldModel["snapshot"]> & {
   /** False while the canvas is off-screen or the tab is hidden: nothing drawn. */
   drawing: boolean;
   bubbles: number;
+  /** Hero only: the scene the camera is on ("street", "room:tallybird", "town"). */
+  scene: string;
+  /** Hero only: a few words about that scene for the caption, else "". */
+  watching: string;
 };
 
 export type MountOptions = {
@@ -107,9 +113,9 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
   let stream: EventSource | null = null;
   let frameTimer: ReturnType<typeof setTimeout> | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
-  let tour: ViewTarget[] = [];
-  let tourIndex = 0;
-  let tourNextAt = 0;
+  // The hero's camera is a director, not a clock: it watches people, and the
+  // explorer drives its own.
+  const hero = options.mode === "hero" ? new HeroCamera() : null;
   const bubbles: Bubble[] = [];
 
   async function getJson<T>(path: string, schema: z.ZodType<T>): Promise<T> {
@@ -159,14 +165,14 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
       const payload = event.payload as { a?: string; b?: string; topic?: string };
       const words = TOPIC_WORDS[payload.topic ?? ""] ?? payload.topic ?? "...";
       if (payload.a) say(payload.a, words, now);
+      if (payload.a && payload.b) hero?.encounter(payload.a, payload.b, now);
     } else if (event.kind === "ticket.escalated") {
       const payload = event.payload as { raised_by?: string; module_id?: string };
       if (payload.raised_by) say(payload.raised_by, `fix ${payload.module_id}!`, now);
       const where = model.walkers.get(payload.raised_by ?? "");
-      if (where && options.mode === "hero") {
+      if (where?.visible === true) {
         // Something happened: go and look at it.
-        view.lookAt({ x: where.x, z: where.y, span: 15 });
-        tourNextAt = now + 6500;
+        hero?.drama(where.x, where.y, now);
       }
     }
     if ((event.tick_seq ?? 0) > model.tick) scheduleRefresh();
@@ -190,12 +196,9 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
 
   function loop(now: number): void {
     if (disposed) return;
-    if (options.mode === "hero" && tour.length > 0 && now >= tourNextAt) {
-      const stop = tour[tourIndex % tour.length];
-      if (stop !== undefined) view.lookAt(stop);
-      tourIndex++;
-      tourNextAt = now + 7000;
-    }
+    // Every frame, not every seven seconds: a scene that is people moving is
+    // tracked as it moves, and its score moves with them.
+    if (hero !== null) view.lookAt(hero.frame(model, now));
     // Scrolled past, or in a background tab: keep the model honest, draw nothing.
     const drawing = onScreen && !document.hidden;
     view.frame(now, drawing);
@@ -272,6 +275,8 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
       software: view.software,
       drawing: onScreen && !document.hidden,
       bubbles: bubbles.length,
+      scene: hero?.key ?? "explore",
+      watching: hero?.watching ?? "",
     }),
     screenPositionOf(personId) {
       const walker = model.walkers.get(personId);
@@ -329,15 +334,8 @@ export function mountWorld(container: HTMLElement, options: MountOptions): World
       if (disposed) return;
       model.setMap(map);
       view.build(map);
-      tour = [
-        { x: map.width / 2, z: map.height / 2, span: 41 },
-        ...map.buildings.map((b) => ({
-          x: (b.x0 + b.x1) / 2,
-          z: (b.y0 + b.y1) / 2,
-          span: 19,
-        })),
-      ];
-      view.lookAt(tour[0] ?? { x: 20, z: 14, span: 41 });
+      // The frame eases from the town-wide default toward whatever the
+      // director judges worth a look: an establishing shot that lands itself.
 
       const [frame, history] = await Promise.all([
         getJson("/world/agents", AgentsFrame),

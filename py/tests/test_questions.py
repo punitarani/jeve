@@ -21,7 +21,8 @@ from jeve.llm.protocol import Choice, Score
 
 # One context per kind that gets past every code gate, so a question is asked.
 ASKING: dict[str, dict[str, object]] = {
-    "file.ticket": {"module_down": True, "already_open": False},
+    # Told by somebody who saw it, so the provenance words are in the request.
+    "file.ticket": {"module_down": True, "already_open": False, "heard_hops": 1},
     "ticket.triage": {"subject": "exports fail", "module_down": True, "backlog": 12},
     "ticket.answer": {"backlog": 12},
     "payment.timing": {"days_until_due": -4, "can_afford": True, "runway_days": 9},
@@ -44,8 +45,9 @@ ASKING: dict[str, dict[str, object]] = {
         "timesheets_available": False,
     },
     # The richest path through an episode round: somebody who can settle the
-    # matter, already pushed, with a piece of news in their pocket — so `act`,
-    # `settled`, `mood` and `mention` are all in the request.
+    # matter, already pushed, a round in, with a broken promise behind them and
+    # a piece of news in their pocket — so `act`, `done`, `mood` and `mention`
+    # are all in the request, and so is every word WORLD-0008 added.
     "episode.round": {
         "org": "halloran",
         "here": "cafe",
@@ -53,13 +55,17 @@ ASKING: dict[str, dict[str, object]] = {
         "role_in_stake": "holder",
         "days_late": 9,
         "large": True,
+        "track_record": "broken",
         "present": [
             {
                 "id": "ledgerline.client_admin.17",
                 "org": "ledgerline",
                 "role": "client_admin",
+                "last_act": "press",
             }
         ],
+        "my_last_act": "explain",
+        "rounds_done": 1,
         "raised": True,
         "pressed": True,
         "promised": False,
@@ -247,3 +253,82 @@ def test_alone_there_is_nobody_to_ask_about() -> None:
 def test_raising_the_outage_is_only_asked_of_someone_who_can() -> None:
     facts = {**ASKING["agent.tick"], "can_raise": False}
     assert "raise_outage" not in [a.key for a in _prepare("agent.tick", facts).asks]
+
+
+# -- WORLD-0008: what the words now carry ------------------------------------------
+
+
+def _round(**changes: object) -> dict[str, object]:
+    return {**ASKING["episode.round"], **changes}
+
+
+def _state(kind: str, facts: dict[str, object] | None = None) -> dict[str, object]:
+    prepared = _prepare(kind, facts)
+    assert prepared.state is not None, f"{kind} was gated, not asked"
+    return prepared.state
+
+
+def test_the_second_round_is_a_different_question() -> None:
+    """Round two used to be round one again whenever the sticky flags had not
+    moved, and the answer was a second draw of the same propensity."""
+
+    first = _state("episode.round", _round(rounds_done=0, my_last_act=None))
+    second = _state("episode.round", _round())
+    assert "just_now" not in first and "how_long" not in first
+    assert second["just_now"] == {
+        "this_person": "set out their own side of it",
+        "person_a": "pushed for it to be dealt with now",
+    }
+    assert first != second
+    longer = _state("episode.round", _round(rounds_done=2))
+    assert longer["how_long"] != second["how_long"]
+
+
+def test_the_question_that_ends_a_conversation_is_about_the_person() -> None:
+    """Whether they have had their say, not whether the matter is solved — an
+    outage that is still down is never solved, so the old question never let a
+    conversation end."""
+
+    asks = {ask.key: ask for ask in _prepare("episode.round").asks}
+    assert "done" in asks and "settled" not in asks
+    assert "said what they came to say" in asks["done"].question.instructions
+
+
+def test_a_payer_with_no_record_is_asked_what_they_always_were() -> None:
+    about = "what_this_is_about"
+    plain = str(_state("episode.round", _round(track_record=None))[about])
+    broken = str(_state("episode.round", _round())[about])
+    kept = str(_state("episode.round", _round(track_record="kept"))[about])
+    assert broken.startswith(plain) and "did not keep it" in broken
+    assert "kept their word" in kept
+
+
+def test_first_hand_is_worded_as_it_always_was_and_hearsay_is_not() -> None:
+    seen = _state("file.ticket", {**ASKING["file.ticket"], "heard_hops": 0})
+    told = _state("file.ticket")
+    rumour = _state("file.ticket", {**ASKING["file.ticket"], "heard_hops": 4})
+    assert "how_they_know" not in seen
+    assert told["how_they_know"] != rumour["how_they_know"]
+    assert {k: v for k, v in told.items() if k != "how_they_know"} == seen
+
+
+def test_the_rules_twin_acts_on_hearsay_less_than_on_what_it_saw() -> None:
+    class Fixed:
+        def random(self) -> float:
+            return 0.5
+
+    policy = RulesPolicy(1)
+
+    def files(hops: int) -> bool:
+        ctx = DecisionContext(
+            person_id="p",
+            role="subscriber",
+            decision_seq=0,
+            sim_time=0,
+            kind="file.ticket",
+            facts={**ASKING["file.ticket"], "heard_hops": hops},
+            traits={"vocality": 0.6},
+        )
+        return bool(policy._file_ticket(ctx, Fixed())[0]["file"])
+
+    assert files(0) and not files(1) and not files(3)

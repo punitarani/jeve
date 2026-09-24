@@ -454,7 +454,7 @@ class Episode(BaseModel):
     closed_sim: int | None
     closed_seq: int | None
     rounds: int
-    exit_reason: Literal["settled", "emptied", "rounds"] | None
+    exit_reason: Literal["settled", "emptied", "rounds", "stalled"] | None
     outcome: EpisodeOutcome
     participants: list[EpisodeParticipant]
     round_log: list[EpisodeRound]
