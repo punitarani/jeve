@@ -10,6 +10,13 @@ issued and *settles* at the real cost afterwards. Effective spend counts
 settled costs plus every reservation that never settled. A crashed process
 therefore leaves its reservation standing, which over-counts rather than
 under-counts. That is the right direction for a ceiling.
+
+What a spend check reads is `spend_totals` (LLM-0010): one row, moved by every
+append under the ledger lock by exactly what folding the whole ledger would.
+Folding the ledger on every read was 80% of the production database's time
+at 86k rows — four folds per model call, on an eighth of a vCPU — and grew
+with every call made. The fold survives as `rebuild()`: the seed, the repair,
+and the check that the total is what the ledger says.
 """
 
 from __future__ import annotations
@@ -18,10 +25,11 @@ import json
 import os
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from psycopg import Connection
 from psycopg.rows import DictRow
@@ -76,25 +84,85 @@ class Spend:
         return abs(remote - self.local_usd) / self.local_usd
 
 
-_READ_SQL = """
+_FOLD_SQL = """
 SELECT
-  COALESCE(sum(amount_usd) FILTER (WHERE kind = 'settle'), 0) AS settled,
+  COALESCE(max(seq), 0) AS as_of_seq,
+  COALESCE(sum(amount_usd) FILTER (WHERE kind = 'settle'), 0) AS settled_usd,
   count(*) FILTER (WHERE kind = 'settle') AS calls,
   count(*) FILTER (WHERE kind = 'settle'
-                    AND (detail->>'estimated')::boolean) AS estimated,
+                    AND (detail->>'estimated')::boolean) AS estimated_calls,
   (SELECT COALESCE(sum(r.amount_usd), 0) FROM spend_entries r
     WHERE r.kind = 'reserve' AND NOT EXISTS (
       SELECT 1 FROM spend_entries s
       WHERE s.call_id = r.call_id AND s.kind IN ('settle', 'release'))
-  ) AS reserved,
+  ) AS reserved_usd,
   (SELECT amount_usd FROM spend_entries
-    WHERE kind = 'baseline' ORDER BY seq LIMIT 1) AS baseline,
+    WHERE kind = 'baseline' ORDER BY seq LIMIT 1) AS baseline_usd,
   (SELECT amount_usd FROM spend_entries
-    WHERE kind = 'remote' ORDER BY seq DESC LIMIT 1) AS remote,
-  (SELECT EXTRACT(EPOCH FROM ts) FROM spend_entries
+    WHERE kind = 'remote' ORDER BY seq DESC LIMIT 1) AS remote_usd,
+  (SELECT ts FROM spend_entries
     WHERE kind = 'remote' ORDER BY seq DESC LIMIT 1) AS remote_at
 FROM spend_entries
 """
+
+_REPLACE_TOTAL_SQL = """
+INSERT INTO spend_totals (one, as_of_seq, settled_usd, calls, estimated_calls,
+                          reserved_usd, baseline_usd, remote_usd, remote_at)
+VALUES (true, %(as_of_seq)s, %(settled_usd)s, %(calls)s, %(estimated_calls)s,
+        %(reserved_usd)s, %(baseline_usd)s, %(remote_usd)s, %(remote_at)s)
+ON CONFLICT (one) DO UPDATE SET
+  as_of_seq = EXCLUDED.as_of_seq, settled_usd = EXCLUDED.settled_usd,
+  calls = EXCLUDED.calls, estimated_calls = EXCLUDED.estimated_calls,
+  reserved_usd = EXCLUDED.reserved_usd, baseline_usd = EXCLUDED.baseline_usd,
+  remote_usd = EXCLUDED.remote_usd, remote_at = EXCLUDED.remote_at
+RETURNING *
+"""
+
+# One statement per append, whatever the kind: a delta of zero leaves a column
+# where it was, and NULL leaves the baseline/remote columns alone. The first
+# baseline wins and the last remote wins, exactly as the fold reads them.
+_MOVE_TOTAL_SQL = """
+UPDATE spend_totals SET
+  as_of_seq       = %(seq)s,
+  settled_usd     = settled_usd + %(settled)s,
+  calls           = calls + %(calls)s,
+  estimated_calls = estimated_calls + %(estimated)s,
+  reserved_usd    = reserved_usd + %(reserved)s,
+  baseline_usd    = COALESCE(baseline_usd, %(baseline)s),
+  remote_usd      = COALESCE(%(remote)s, remote_usd),
+  remote_at       = COALESCE(%(remote_at)s, remote_at)
+RETURNING *
+"""
+
+# What a settle or release gives back: the reservation it closes, if it is
+# still open. Two index probes on `spend_entries_call`.
+_OPEN_RESERVE_SQL = """
+SELECT COALESCE(sum(r.amount_usd), 0) AS usd FROM spend_entries r
+WHERE r.call_id = %s AND r.kind = 'reserve' AND NOT EXISTS (
+  SELECT 1 FROM spend_entries s
+  WHERE s.call_id = r.call_id AND s.kind IN ('settle', 'release'))
+"""
+
+_HEAD_SQL = """
+SELECT (SELECT as_of_seq FROM spend_totals) AS seen,
+       COALESCE((SELECT max(seq) FROM spend_entries), 0) AS head
+"""
+
+
+def _spend_from(row: Mapping[str, Any]) -> Spend:
+    remote_at = row["remote_at"]
+    return Spend(
+        settled_usd=float(row["settled_usd"]),
+        reserved_usd=float(row["reserved_usd"]),
+        calls=int(row["calls"]),
+        estimated_calls=int(row["estimated_calls"]),
+        baseline_usd=(
+            None if row["baseline_usd"] is None else float(row["baseline_usd"])
+        ),
+        remote_usd=None if row["remote_usd"] is None else float(row["remote_usd"]),
+        remote_checked_at=None if remote_at is None else remote_at.timestamp(),
+    )
+
 
 # "jevl" — distinct from the writer lock, so ledger serialisation never
 # contends with who is allowed to tick.
@@ -118,16 +186,23 @@ class SpendLedger:
     ) -> None:
         self._conn = conn
         self._checkpoint = checkpoint
+        self._reconciled = False
 
     def _c(self) -> Connection[DictRow]:
         if self._conn is None:
             self._conn = db.connect_autocommit()
+        if not self._reconciled:
+            # Set first: `_reconcile` takes the lock, and the lock calls back
+            # here for the connection.
+            self._reconciled = True
+            self._reconcile()
         return self._conn
 
     def close(self) -> None:
         if self._conn is not None:
             self._conn.close()
             self._conn = None
+            self._reconciled = False
 
     @contextmanager
     def locked(self) -> Iterator[None]:
@@ -143,33 +218,97 @@ class SpendLedger:
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (LEDGER_LOCK_KEY,))
             yield
 
+    def _reconcile(self) -> None:
+        """Fold in whatever the total has not seen, once, when a ledger opens.
+
+        The total is behind the ledger's head exactly when something appended
+        without moving it: the previous version of this code, still running
+        between migration 0011 and its own restart, or a hand-run INSERT.
+        Either way the fold is right and the total is not.
+        """
+
+        with self.locked():
+            row = self._c().execute(_HEAD_SQL).fetchone()
+            assert row is not None  # a scalar subquery always yields a row
+            if row["seen"] is None or int(row["seen"]) != int(row["head"]):
+                self.rebuild()
+
     def _append(
         self,
         kind: str,
         call_id: str | None = None,
         amount_usd: float | None = None,
         **detail: object,
-    ) -> None:
-        self._c().execute(
+    ) -> Spend:
+        """Append one row and move the total by exactly what the fold would.
+
+        Only ever called under `locked()`: the open-reservation lookup, the
+        insert and the update are one read-modify-write.
+        """
+
+        conn = self._c()
+        closing = 0.0
+        if kind in ("settle", "release"):
+            assert call_id is not None  # both kinds name the reservation
+            open_reserve = conn.execute(_OPEN_RESERVE_SQL, (call_id,)).fetchone()
+            closing = float(open_reserve["usd"]) if open_reserve else 0.0
+        entry = conn.execute(
             "INSERT INTO spend_entries (pid, kind, call_id, amount_usd, detail) "
-            "VALUES (%s, %s, %s, %s, %s)",
+            "VALUES (%s, %s, %s, %s, %s) RETURNING seq, ts",
             (os.getpid(), kind, call_id, amount_usd, json.dumps(detail)),
-        )
+        ).fetchone()
+        assert entry is not None  # RETURNING on a single-row insert
+
+        amount = 0.0 if amount_usd is None else amount_usd
+        delta: dict[str, object] = {
+            "seq": entry["seq"],
+            "settled": 0.0,
+            "calls": 0,
+            "estimated": 0,
+            "reserved": 0.0,
+            "baseline": None,
+            "remote": None,
+            "remote_at": None,
+        }
+        if kind == "reserve":
+            delta["reserved"] = amount
+        elif kind == "settle":
+            delta["settled"] = amount
+            delta["calls"] = 1
+            delta["estimated"] = int(bool(detail.get("estimated")))
+            delta["reserved"] = -closing
+        elif kind == "release":
+            delta["reserved"] = -closing
+        elif kind == "baseline":
+            delta["baseline"] = amount
+        elif kind == "remote":
+            delta["remote"] = amount
+            delta["remote_at"] = entry["ts"]
+        total = conn.execute(_MOVE_TOTAL_SQL, delta).fetchone()
+        assert total is not None  # the row exists from migration 0011 on
+        return _spend_from(total)
 
     def read(self) -> Spend:
-        row = self._c().execute(_READ_SQL).fetchone()
-        assert row is not None  # aggregates always produce a row
-        return Spend(
-            settled_usd=float(row["settled"]),
-            reserved_usd=float(row["reserved"]),
-            calls=int(row["calls"]),
-            estimated_calls=int(row["estimated"]),
-            baseline_usd=(None if row["baseline"] is None else float(row["baseline"])),
-            remote_usd=None if row["remote"] is None else float(row["remote"]),
-            remote_checked_at=(
-                None if row["remote_at"] is None else float(row["remote_at"])
-            ),
-        )
+        row = self._c().execute("SELECT * FROM spend_totals").fetchone()
+        if row is None:
+            raise RuntimeError("spend_totals is empty: migration 0011 has not run")
+        return _spend_from(row)
+
+    def rebuild(self) -> Spend:
+        """Fold the whole ledger and replace the total with the result.
+
+        The one O(n) path. Run when a ledger opens against a total behind
+        the ledger's head, and by hand if the two are ever suspected to
+        disagree; the fold is the definition of what the total must say.
+        """
+
+        with self.locked():
+            conn = self._c()
+            fold = conn.execute(_FOLD_SQL).fetchone()
+            assert fold is not None  # aggregates always produce a row
+            row = conn.execute(_REPLACE_TOTAL_SQL, fold).fetchone()
+            assert row is not None  # RETURNING on an upsert
+        return _spend_from(row)
 
     def reserve(
         self, call_id: str, amount_usd: float, *, purpose: str, model: str
@@ -177,14 +316,13 @@ class SpendLedger:
         """Book worst-case cost and return spend *including* this reservation."""
 
         with self.locked():
-            self._append(
+            spend = self._append(
                 "reserve",
                 call_id,
                 round(amount_usd, 8),
                 purpose=purpose,
                 model=model,
             )
-            spend = self.read()
         self._write_checkpoint(spend)
         return spend
 
@@ -202,7 +340,7 @@ class SpendLedger:
         provider: str | None = None,
     ) -> Spend:
         with self.locked():
-            self._append(
+            spend = self._append(
                 "settle",
                 call_id,
                 round(amount_usd, 8),
@@ -214,7 +352,6 @@ class SpendLedger:
                 latency_s=round(latency_s, 4),
                 provider=provider,
             )
-            spend = self.read()
         self._write_checkpoint(spend)
         return spend
 
@@ -222,8 +359,7 @@ class SpendLedger:
         """Give a reservation back. Only for requests that were never billed."""
 
         with self.locked():
-            self._append("release", call_id, reason=reason)
-            spend = self.read()
+            spend = self._append("release", call_id, reason=reason)
         self._write_checkpoint(spend)
         return spend
 
@@ -231,15 +367,13 @@ class SpendLedger:
         with self.locked():
             spend = self.read()
             if spend.baseline_usd is None:
-                self._append("baseline", amount_usd=round(remote_usage_usd, 8))
-                spend = self.read()
+                spend = self._append("baseline", amount_usd=round(remote_usage_usd, 8))
         self._write_checkpoint(spend)
         return spend
 
     def record_remote(self, remote_usage_usd: float) -> Spend:
         with self.locked():
-            self._append("remote", amount_usd=round(remote_usage_usd, 8))
-            spend = self.read()
+            spend = self._append("remote", amount_usd=round(remote_usage_usd, 8))
         self._write_checkpoint(spend)
         return spend
 

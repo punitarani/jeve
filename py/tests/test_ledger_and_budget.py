@@ -306,3 +306,92 @@ def test_two_ledger_objects_on_one_table_agree(
         assert view.settled_usd == pytest.approx(0.3)
         assert view.reserved_usd == 0.0
         assert view.calls == 2
+
+
+# -- the running total (LLM-0010) -------------------------------------------
+
+
+def test_read_is_the_totals_row_not_the_ledger(
+    spend_table: Connection[DictRow], tmp_path: Path
+) -> None:
+    """A spend check reads one row; it does not fold the ledger.
+
+    The fold cost 80% of the production database's time at 86k rows and grew
+    with every call. If this test fails because `read()` recomputes from
+    `spend_entries`, the fold is back.
+    """
+
+    ledger = _ledger(spend_table, tmp_path)
+    ledger.reserve("a", 1.0, purpose="gate", model="m")
+    ledger.settle("a", 0.5, estimated=False, model="m", outcome="ok")
+
+    spend_table.execute("UPDATE spend_totals SET settled_usd = 99.0")
+    spend_table.commit()
+
+    assert ledger.read().settled_usd == pytest.approx(99.0)
+
+
+def test_totals_agree_with_the_ledger_after_a_mixed_history(
+    spend_table: Connection[DictRow], tmp_path: Path
+) -> None:
+    """Every kind of entry moves the total exactly as the fold would."""
+
+    ledger = _ledger(spend_table, tmp_path)
+    guard = _guard(tmp_path, ledger)
+    guard.apply_remote(3.0)  # baseline
+    ledger.reserve("a", 1.0, purpose="gate", model="m")
+    ledger.settle("a", 0.25, estimated=False, model="m", outcome="ok")
+    ledger.reserve("b", 2.0, purpose="gate", model="m")
+    ledger.settle("b", 0.75, estimated=True, model="m", outcome="ok")
+    ledger.reserve("c", 1.5, purpose="gate", model="m")
+    ledger.release("c", reason="http-401-unbilled")
+    ledger.reserve("orphan", 4.0, purpose="gate", model="m")
+    guard.apply_remote(3.5)  # remote
+
+    running = ledger.read()
+    folded = ledger.rebuild()
+
+    assert running.settled_usd == pytest.approx(1.0)
+    assert running.reserved_usd == pytest.approx(4.0)
+    assert running.calls == 2
+    assert running.estimated_calls == 1
+    assert running.baseline_usd == pytest.approx(3.0)
+    assert running.remote_usd == pytest.approx(3.5)
+    assert running.remote_checked_at is not None
+    for field in (
+        "settled_usd",
+        "reserved_usd",
+        "calls",
+        "estimated_calls",
+        "baseline_usd",
+        "remote_usd",
+        "remote_checked_at",
+    ):
+        assert getattr(running, field) == pytest.approx(getattr(folded, field))
+
+
+def test_a_new_ledger_reconciles_a_stale_total(
+    spend_table: Connection[DictRow], tmp_path: Path
+) -> None:
+    """Rows the total has not seen are folded in when a ledger opens.
+
+    During a deploy the old daemon keeps appending after the migration seeded
+    the total; the new daemon's first open must not start from a stale row.
+    """
+
+    writer = _ledger(spend_table, tmp_path)
+    writer.reserve("a", 1.0, purpose="gate", model="m")
+    writer.settle("a", 2.0, estimated=False, model="m", outcome="ok")
+    writer.reserve("open", 0.5, purpose="gate", model="m")
+    writer.close()
+
+    spend_table.execute(
+        "UPDATE spend_totals SET as_of_seq = 0, settled_usd = 0, reserved_usd = 0, "
+        "calls = 0"
+    )
+    spend_table.commit()
+
+    spend = _ledger(spend_table, tmp_path).read()
+    assert spend.settled_usd == pytest.approx(2.0)
+    assert spend.reserved_usd == pytest.approx(0.5)
+    assert spend.calls == 1

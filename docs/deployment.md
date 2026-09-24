@@ -185,9 +185,19 @@ and `JEVE_DATABASE_POOLED_URL` if set — so the daemon, the api and the next
 migration all see the same cluster. A `DATABASE_URL` on the app is read only
 when `JEVE_DATABASE_URL` is absent.
 
-**Spend**: `make spend` reads the `spend_entries` table directly (the
-`ops/spend.json` checkpoint is a local convenience). The same table backs
-`/economics`, so the daemon and the API never disagree.
+**Spend**: `make spend` reads the ledger's running total, `spend_totals`
+(LLM-0010); the `spend_entries` table behind it is the append-only record and
+`ops/spend.json` is a local convenience. `SpendLedger().rebuild()` folds the
+record back into the total if the two are ever suspected to disagree.
+
+## Watching load
+
+The primary is a PS-10 (1/8 vCPU, 1 GB): a query costing a millisecond per
+model call is visible on its CPU graph. PlanetScale Insights on `jeve/main`
+sorted by CPU time names the query; `EXPLAIN (ANALYZE, BUFFERS)` through the
+read-only role shows why. On 2026-09-24 that pair found the spend fold at 80%
+of database time (LLM-0010). Memory sits near 60%: that is the page cache
+holding the working set, and it is meant to.
 
 ## Data growth (measured)
 
