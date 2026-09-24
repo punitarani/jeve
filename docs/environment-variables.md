@@ -100,7 +100,7 @@ the codebase reads them; they authenticate the deploy jobs.
 
 ## Doppler layout
 
-Three projects, matching the `.env.*.example` files:
+Three projects matching the `.env.*.example` files, and one for agents:
 
 * **app** — `NEXT_PUBLIC_JEVE_API` (build-time only). CI does not read it
   from here: `deploy-web` builds with the GitHub repository variable
@@ -111,8 +111,27 @@ Three projects, matching the `.env.*.example` files:
   name, so `prd` holds only what production needs beyond `fly.toml` (the list
   is in `docs/deployment.md`) — never the knobs `fly.toml` sets
 * **infra** — the CI/CD credentials; CI reads them from `infra/ci`
+* **agent** — what a cloud agent may read of production (see below)
 
 ```bash
 doppler run --project worker --config dev -- make api
 doppler run --project infra  --config ci  -- make deploy
+```
+
+## Cloud agents (OPS-0004)
+
+A Claude Code cloud environment is set up by `.claude/setup-cloud.sh`, whose
+header lists the environment variables it expects. It reads production only
+through the Doppler project `agent`, config `prd`: production's knobs, an
+OpenRouter key of its own, and database URLs for a role that inherits only
+`pg_read_all_data`. The session gets it as `DOPPLER_TOKEN_AGENT`, never as a
+bare `DOPPLER_TOKEN`.
+
+`scripts/provision-agents.sh` stores the read-only URLs there once it has
+proven they cannot write, and then mints the token.
+`scripts/provision-agents.sh --audit` checks that `agent/prd` holds no value
+from `worker` or `infra`. Re-run it after any hand copy between them.
+
+```bash
+DOPPLER_TOKEN="$DOPPLER_TOKEN_AGENT" doppler run -p agent -c prd -- make api
 ```
