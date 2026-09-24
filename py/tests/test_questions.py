@@ -69,6 +69,23 @@ ASKING: dict[str, dict[str, object]] = {
         "tension": 1,
         "tellable_topic": "price_rise",
     },
+    "leave.consider": {"org": "tallybird", "weeks_behind": 2},
+    "founder.review": {
+        "org": "tallybird",
+        "runway_days": 10,
+        "money_in": 100,
+        "money_out": 250,
+        "overdue_to_them": 50,
+        "weekly_outgoings": 100,
+        "payroll_held": True,
+        "raised_recently": True,
+        "has_loan": True,
+    },
+    "hire.decision": {
+        "org": "ledgerline",
+        "vacancy": "staff_accountant",
+        "runway_days": 60,
+    },
     "agent.tick": {
         "org": "halloran",
         "here": "cafe",

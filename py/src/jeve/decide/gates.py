@@ -82,12 +82,35 @@ def _catering_order(ctx: DecisionContext) -> Settled | None:
 def _cafe_purchase(ctx: DecisionContext) -> Settled | None:
     if not ctx.facts.get("can_afford", True):
         return {"buy": False, "reason": "no_money"}
+    if ctx.facts.get("sold_out"):
+        # The cafe could not pay for its stock this week (WORLD-0009).
+        return {"buy": False, "reason": "sold_out"}
     if _number(ctx.facts.get("queue_length")) <= 0 and not ctx.facts.get("pos_down"):
         # Nobody ahead of them and the till works: someone who walked into a
         # cafe and was served at once has bought a coffee. Asking a model to
         # confirm that was the most-asked, least-informative question in the
         # world (audit B5: max-p above 0.95).
         return {"buy": True, "reason": "no_line"}
+    return None
+
+
+HEAD_ROLES = frozenset({"founder", "partner", "principal", "owner"})
+"""Whoever runs a firm does not quit it (WORLD-0009): the firm fails instead."""
+
+
+def _leave_consider(ctx: DecisionContext) -> Settled | None:
+    if ctx.role in HEAD_ROLES:
+        return {"leave": False, "reason": "runs_the_firm"}
+    return None
+
+
+def _hire_decision(ctx: DecisionContext) -> Settled | None:
+    if ctx.facts.get("frugal") or ctx.facts.get("payroll_held"):
+        # A firm that cannot pay the people it has, or has decided to cut
+        # costs, does not take on another.
+        return {"hire": False}
+    if _number(ctx.facts.get("runway_days"), 60.0) < 21:
+        return {"hire": False}
     return None
 
 
@@ -98,6 +121,8 @@ GATES: dict[str, Gate] = {
     "payroll.release": _payroll_release,
     "catering.order": _catering_order,
     "cafe.purchase": _cafe_purchase,
+    "leave.consider": _leave_consider,
+    "hire.decision": _hire_decision,
 }
 
 

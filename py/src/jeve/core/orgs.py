@@ -87,7 +87,7 @@ ORGS: tuple[OrgSpec, ...] = (
         counterparty_role="client",
         bills_clients_monthly=True,
         payer_roles=("client_admin", "principal"),
-        opening_cash_cents=41_000_00,
+        opening_cash_cents=50_000_00,
         headcount={
             "principal": 3,
             "senior_accountant": 3,
@@ -106,7 +106,7 @@ ORGS: tuple[OrgSpec, ...] = (
         zone="cafe",
         counterparty_role="customer",
         payer_roles=("owner", "manager"),
-        opening_cash_cents=9_400_00,
+        opening_cash_cents=18_000_00,
         headcount={
             "owner": 1,
             "manager": 2,

@@ -38,7 +38,7 @@ from jeve.core.seed import derive_rng
 from jeve.decide.gates import ASK_FROM_DAYS_BEFORE_DUE
 from jeve.decide.policy import Decision, DecisionContext, Policy
 from jeve.decide.questions import trait_fraction
-from jeve.world import flows, scheduler, space
+from jeve.world import economy, flows, scheduler, space
 
 # Every rate in here is per *hour*, and turned into a chance for one tick where
 # it is used: nothing in the world may depend on how long a tick is.
@@ -78,7 +78,12 @@ month, keyed by (firm, client, month)."""
 TICKET_TIMEOUT = 2 * DAY
 REOPEN_WINDOW = 3 * DAY
 CHASE_AFTER = 7 * DAY
+CHASE_HARDER_AFTER = 3 * DAY
 WRITE_OFF_AFTER = 60 * DAY
+SOLD_OUT_SHARE = 0.25
+"""While the cafe is short of stock, a quarter of its customers find nothing they
+want (WORLD-0009): the till's view of a supplier it could not pay."""
+
 AUTOPAY_ABOVE = 0.2
 """Clients in the four prompter fifths pay by standing instruction on the day a
 bill falls due: a gate, not a question. The slowest fifth decide, daily."""
@@ -162,6 +167,9 @@ class Engine:
         # Whatever ran before us may have died mid-tick (WORLD-0002).
         db.resync_sequences(self._conn)
         self._remember_outages_from_before_memory()
+        # A world seeded before WORLD-0009 gets its accounts, prices and
+        # recurring jobs here, under the writer lock, once.
+        economy.install(self._conn, root_seed=root_seed)
         self._conn.commit()
 
     def _remember_outages_from_before_memory(self) -> None:
@@ -364,6 +372,12 @@ class Engine:
         ).fetchone()
         return int(row["cents"]) if row else 0
 
+    def weekly_wages(self, org_id: str) -> int:
+        return flows.weekly_wages(self, org_id)
+
+    def payroll_held(self, org_id: str) -> bool:
+        return flows.payroll_held(self, org_id)
+
     def weekly_outgoings(self, org_id: str) -> int:
         """What a week costs this firm to keep open: its wage bill and its
         fixed costs. The denominator of every runway in the world."""
@@ -385,11 +399,13 @@ class Engine:
         """Who pays this firm's bills and chases what it is owed."""
 
         roles = list(BY_ID[org_id].payer_roles)
+        # Whoever is left, if the people whose job it is have gone: somebody
+        # still has to open the post (WORLD-0009).
         return self._conn.execute(
             "SELECT id, org_id, role, traits FROM persons WHERE org_id = %s "
-            "AND kind = 'staff' AND role = ANY(%s) "
-            "ORDER BY array_position(%s::text[], role), id LIMIT 1",
-            (org_id, roles, roles),
+            "AND kind = 'staff' AND status <> 'left' "
+            "ORDER BY COALESCE(array_position(%s::text[], role), 99), id LIMIT 1",
+            (org_id, roles),
         ).fetchone()
 
     # What the rest of `jeve.world` needs of the engine, by its public name.
@@ -476,7 +492,7 @@ class Engine:
             self._payments(report, now)
             self._client_payments(report, now)
             self._chase(report, now)
-        if now.cafe_open:
+        if now.cafe_open and not economy.failed(self, "thirdrail"):
             self._cafe(report, now)
 
         self._conn.execute(
@@ -537,6 +553,8 @@ class Engine:
     # -- flow 1: incidents -------------------------------------------------
 
     def _maybe_incident(self, report: TickReport, now: SimTime) -> None:
+        if economy.failed(self, "tallybird"):
+            return  # its customers have moved to another vendor (WORLD-0009)
         chance = per_tick(HAZARD_PER_HOUR * (1 + self._debt * (DEBT_MULTIPLIER - 1)))
         for module_id in ("timetrack", "invoicing", "pos"):
             if self._module_down(module_id):
@@ -1011,7 +1029,7 @@ class Engine:
         )
         # Run in this same tick; a blocked run reschedules itself.
         for org in ORGS:
-            if org.bills_clients_monthly:
+            if org.bills_clients_monthly and not economy.failed(self, org.id):
                 self._issue_invoices(report, org.id, cause=seq, month=month)
         # And the month after. It fired once, and the world ran down (audit B1).
         self._schedule(
@@ -1080,12 +1098,15 @@ class Engine:
                 "AND payload->>'module_id' = 'invoicing' ORDER BY seq DESC LIMIT 1"
             ).fetchone()
             causes += _seq_of(ended["seq"]) if ended else []
+        # The work is drawn about the client and the month (CORE-0009); what
+        # the firm charges for it is its price list, which it may have raised.
+        index = economy.price_index(self, org_id)
         for client_id, amount in self.engaged_clients(org_id, month):
             self.bill(
                 report,
                 from_org=org_id,
                 to_person=client_id,
-                amount=amount,
+                amount=round(amount * index),
                 terms_days=30,
                 kind="services",
                 causes=causes,
@@ -1440,8 +1461,20 @@ class Engine:
             "FROM invoices i WHERE i.paid_sim IS NULL AND i.written_off_sim IS NULL "
             "  AND i.due_sim <= %s AND (i.chased_sim IS NULL OR i.due_sim <= %s) "
             "ORDER BY i.from_org_id, i.due_sim, i.id",
-            (report.sim_time - CHASE_AFTER, report.sim_time - WRITE_OFF_AFTER),
+            (report.sim_time - CHASE_HARDER_AFTER, report.sim_time - WRITE_OFF_AFTER),
         ).fetchall()
+        # A week late, or three days while the firm has decided to chase
+        # harder (WORLD-0009).
+        after = {
+            org.id: economy.chase_after_days(self, org.id, report.sim_time) * DAY
+            for org in ORGS
+        }
+        late = [
+            bill
+            for bill in late
+            if int(bill["due_sim"]) <= report.sim_time - after[str(bill["from_org_id"])]
+            or int(bill["due_sim"]) <= report.sim_time - WRITE_OFF_AFTER
+        ]
         asked: list[DictRow] = []
         contexts: list[DecisionContext] = []
         chasers: dict[str, DictRow | None] = {}
@@ -1453,7 +1486,11 @@ class Engine:
             if issuer not in chasers:
                 chasers[issuer] = self.payer_of(issuer)
             chaser = chasers[issuer]
-            if chaser is None or str(chaser["id"]) in report.in_episode:
+            if (
+                chaser is None
+                or str(chaser["id"]) in report.in_episode
+                or economy.failed(self, issuer)
+            ):
                 continue
             if not self.gets_to_it(
                 str(chaser["id"]), now, "chasing", bill["chase_asked_day"]
@@ -1506,6 +1543,9 @@ class Engine:
                 (report.sim_time, bill["id"]),
             )
 
+    def write_off(self, report: TickReport, bill: DictRow) -> None:
+        self._write_off(report, bill)
+
     def _write_off(self, report: TickReport, bill: DictRow) -> None:
         issuer = str(bill["from_org_id"])
         amount = int(bill["amount_cents"])
@@ -1556,12 +1596,20 @@ class Engine:
         # else. Their coffee is paid for out of their wages (households), which
         # is how a payroll held by an outage reaches the cafe's till.
         staff = self._conn.execute(
-            "SELECT p.id, p.traits FROM positions pos JOIN persons p "
+            "SELECT p.id, p.org_id, p.traits FROM positions pos JOIN persons p "
             "ON p.id = pos.person_id WHERE pos.zone = 'cafe' AND pos.moved_tick = %s "
             "AND p.org_id <> 'thirdrail' ORDER BY p.id",
             (report.tick_seq,),
         ).fetchall()
-        household_cash = self.cash_of("households.cash") if staff else 0
+        # Each from their own employer's households (WORLD-0009): an unpaid
+        # engineer's coffee used to come out of the lawyers' wages.
+        purse = {
+            org: self.cash_of(economy.household(org))
+            for org in sorted({str(row["org_id"]) for row in staff})
+        }
+        index = economy.price_index(self, "thirdrail")
+        stock = economy.policy(self, "thirdrail").get("stock_short_until")
+        short = stock is not None and report.sim_time < int(stock)
 
         servers = 1.0 if pos_down else 2.0
         # Who walks in, and what they find, is settled before anyone decides:
@@ -1570,16 +1618,19 @@ class Engine:
         # whole tick's customers be asked at once.
         contexts: list[DecisionContext] = []
         baskets: list[int] = []
-        employed: list[bool] = []
+        employers: list[str | None] = []
         for arrival, row in enumerate([*walk_ins, *staff]):
             person_id = str(row["id"])
-            is_staff = arrival >= len(walk_ins)
+            employer = str(row["org_id"]) if arrival >= len(walk_ins) else None
             basket_rng = derive_rng(
                 self._root, "basket", person_id, now.day, minute, arrival
             )
-            basket = 350 + int(basket_rng.random() * 600)
+            basket = round((350 + int(basket_rng.random() * 600)) * index)
+            # Short of stock, some find nothing they want. A rule, drawn about
+            # the visit, as the basket is.
+            sold_out = short and basket_rng.random() < SOLD_OUT_SHARE
             baskets.append(basket)
-            employed.append(is_staff)
+            employers.append(employer)
             contexts.append(
                 DecisionContext(
                     person_id=person_id,
@@ -1589,7 +1640,9 @@ class Engine:
                     facts={
                         "pos_down": pos_down,
                         "queue_length": max(0, int(arrival - servers)),
-                        "can_afford": (not is_staff) or household_cash >= basket,
+                        "can_afford": employer is None or purse[employer] >= basket,
+                        "sold_out": sold_out,
+                        "prices_up": index > 1.0,
                     },
                     traits=dict(row["traits"] or {}),
                 )
@@ -1597,10 +1650,10 @@ class Engine:
         if not contexts:
             return
 
-        for ctx, amount, is_staff, made in zip(
+        for ctx, amount, employer, made in zip(
             contexts,
             baskets,
-            employed,
+            employers,
             self._decide_many(report, contexts),
             strict=True,
         ):
@@ -1619,7 +1672,7 @@ class Engine:
                     },
                 )
                 continue
-            if is_staff and household_cash < amount:
+            if employer is not None and purse[employer] < amount:
                 continue  # the referee: someone ahead of them spent the last of it
             seq = self._emit(
                 report,
@@ -1635,9 +1688,12 @@ class Engine:
                 },
             )
             legs = [("thirdrail.cash", amount), ("thirdrail.revenue", -amount)]
-            if is_staff:
-                legs += [("households.cash", -amount), ("households.spending", amount)]
-                household_cash -= amount
+            if employer is not None:
+                legs += [
+                    (economy.household(employer), -amount),
+                    (economy.household(employer, "spending"), amount),
+                ]
+                purse[employer] -= amount
             txn = self._post(report.sim_time, "cafe sale", legs, seq)
             self._conn.execute(
                 "INSERT INTO cafe_sales (sim_time, person_id, amount_cents, txn_id, "

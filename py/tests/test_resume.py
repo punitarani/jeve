@@ -56,6 +56,9 @@ TABLES = {
     "persons": "id",
     "modules": "id",
     "outage_notices": "incident_id, person_id",
+    # What each firm has decided, and every account it has opened (WORLD-0009).
+    "orgs": "id",
+    "accounts": "id",
 }
 
 

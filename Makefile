@@ -93,6 +93,14 @@ fixture: ## Run the golden fixture. POLICY=jev|rules CALLS=replay|record
 soak: ## 35 sim-days on rules, on its own database; checks invariants, writes ops/soak.md. POLICY= CALLS= DAYS= COUNTERFACTUAL=1
 	$(UV) python scripts/soak.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS)) $(if $(COUNTERFACTUAL),--counterfactual)
 
+.PHONY: census
+census: ## What would a run cost Jev? Distinct requests per question set, on rules, free. DAYS=
+	$(UV) python scripts/call_census.py $(if $(DAYS),--days $(DAYS))
+
+.PHONY: calibrate
+calibrate: ## Where does the money go? Cash by week and every consequence, on rules, free. DAYS= SEED=
+	$(UV) python scripts/calibrate.py $(if $(DAYS),--days $(DAYS)) $(if $(SEED),--seed $(SEED))
+
 .PHONY: episodes
 episodes: ## Does giving a meeting rounds change anything? Two arms, one seed, free. DAYS= SEEDS=
 	$(UV) python scripts/episodes_report.py $(if $(DAYS),--days $(DAYS)) $(if $(SEEDS),--seeds $(SEEDS))

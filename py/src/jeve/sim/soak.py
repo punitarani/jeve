@@ -139,23 +139,65 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
         )
     )
 
-    # Wages arrive somewhere and come back as demand.
+    # Wages arrive somewhere and come back as demand. Households are accounts
+    # without an org, one set per employer (WORLD-0009).
     wages = -_one(
         conn,
-        "SELECT COALESCE(sum(amount_cents),0) FROM ledger_entries "
-        "WHERE account_id = 'households.income'",
+        "SELECT COALESCE(sum(e.amount_cents),0) FROM ledger_entries e "
+        "JOIN accounts a ON a.id = e.account_id "
+        "WHERE a.org_id IS NULL AND a.kind = 'revenue'",
     )
     spent = _one(
         conn,
-        "SELECT COALESCE(sum(amount_cents),0) FROM ledger_entries "
-        "WHERE account_id = 'households.spending'",
+        "SELECT COALESCE(sum(e.amount_cents),0) FROM ledger_entries e "
+        "JOIN accounts a ON a.id = e.account_id "
+        "WHERE a.org_id IS NULL AND a.kind = 'expense'",
     )
+    # The field report's households took in $759k and spent $10.6k: a sink.
     out.append(
         Check(
             "wages come back as demand",
-            days < 5 or (wages > 0 and spent > 0),
-            f"households were paid ${wages / 100:,.0f} and spent ${spent / 100:,.0f} "
-            "at the cafe",
+            days < 14 or (wages > 0 and spent >= wages // 2),
+            f"households were paid ${wages / 100:,.0f} and spent ${spent / 100:,.0f}",
+        )
+    )
+
+    # Nobody spends money they do not have: every cash account, firm or
+    # household, stays at or above zero at every moment of the run.
+    overdrawn = [
+        str(r["account_id"])
+        for r in conn.execute(
+            "SELECT account_id FROM (SELECT e.account_id, sum(e.amount_cents) OVER "
+            "(PARTITION BY e.account_id ORDER BY t.sim_time, e.id) AS running "
+            "FROM ledger_entries e JOIN ledger_txns t ON t.id = e.txn_id "
+            "JOIN accounts a ON a.id = e.account_id WHERE a.kind = 'cash') s "
+            "GROUP BY account_id HAVING min(running) < 0 ORDER BY 1"
+        ).fetchall()
+    ]
+    out.append(
+        Check(
+            "no cash account is ever overdrawn",
+            not overdrawn,
+            "overdrawn: " + ", ".join(overdrawn) if overdrawn else "none",
+        )
+    )
+
+    # A warning is read (WORLD-0009). It used to be emitted every week and read
+    # by nothing (field report, finding 2): the head of the firm looks within
+    # a week, or had just looked.
+    unread = _one(
+        conn,
+        "SELECT count(*) FROM events w WHERE w.kind = 'insolvency.warning' "
+        "AND w.sim_time < %s AND NOT EXISTS (SELECT 1 FROM events r "
+        "  WHERE r.kind = 'firm.reviewed' AND r.org_id = w.org_id "
+        "  AND r.sim_time BETWEEN w.sim_time - %s AND w.sim_time + %s)",
+        (end - 7 * DAY, 7 * DAY, 7 * DAY),
+    )
+    out.append(
+        Check(
+            "an insolvency warning is answered by the head of the firm",
+            unread == 0,
+            f"{unread} warning(s) with no review within a week",
         )
     )
 
@@ -237,7 +279,7 @@ def _cash_by_week(conn: Connection[DictRow], days: int) -> list[str]:
         "|---|" + "---:|" * len(weeks),
     ]
     for account, label in [(f"{o.id}.cash", o.id) for o in ORGS] + [
-        ("households.cash", "households")
+        ("households.%.cash", "households")
     ]:
         cells = []
         for day in weeks:
@@ -245,7 +287,7 @@ def _cash_by_week(conn: Connection[DictRow], days: int) -> list[str]:
                 conn,
                 "SELECT COALESCE(sum(e.amount_cents),0) FROM ledger_entries e "
                 "JOIN ledger_txns t ON t.id = e.txn_id "
-                "WHERE e.account_id = %s AND t.sim_time <= %s",
+                "WHERE e.account_id LIKE %s AND t.sim_time <= %s",
                 (account, day * DAY),
             )
             cells.append(f"${cents / 100:,.0f}")

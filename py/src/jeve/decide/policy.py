@@ -176,8 +176,11 @@ class RulesPolicy:
 
         # Cash-only service is slower per customer, so the same queue costs more.
         impatience = (1.0 - patience) * (0.20 if pos_down else 0.10)
-        # A flat slice of goodwill for the inconvenience itself, queue aside.
-        friction = 0.06 if pos_down else 0.0
+        # A flat slice of goodwill for the inconvenience itself, queue aside,
+        # and a smaller one for a price rise.
+        friction = (0.06 if pos_down else 0.0) + (
+            0.03 if ctx.facts.get("prices_up") else 0.0
+        )
         probability = max(0.05, min(0.99, 0.97 - impatience * queue_length - friction))
 
         draw = _uniform(rng)
@@ -369,6 +372,53 @@ class RulesPolicy:
             },
             {"move": move, "tell": tell, "stop": stop},
         )
+
+    def _leave_consider(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """Quit for want of wages: likelier the longer it has gone on, for the
+        impatient, and for whoever is happy to take a chance."""
+
+        weeks = _num(ctx.facts.get("weeks_behind"), 1.0)
+        patience = _num(ctx.traits.get("patience"), 0.6)
+        risk = _num(ctx.traits.get("risk_appetite"), 0.45)
+        draw = _uniform(rng)
+        chance = max(0.0, min(0.6, 0.1 * weeks * (1.2 - patience) + 0.15 * risk))
+        leave = draw < chance
+        return {"leave": leave, "reason": "unpaid" if leave else "stays"}, {
+            "leave": draw
+        }
+
+    def _founder_review(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """A policy table for the head of a firm, crude on purpose: borrow when
+        wages cannot be paid and there is no loan yet, raise prices when the
+        month runs at a loss, chase when a lot is owed, otherwise carry on."""
+
+        runway = _num(ctx.facts.get("runway_days"), 60.0)
+        money_in = _num(ctx.facts.get("money_in"), 0.0)
+        money_out = _num(ctx.facts.get("money_out"), 0.0)
+        overdue = _num(ctx.facts.get("overdue_to_them"), 0.0)
+        weekly = max(1.0, _num(ctx.facts.get("weekly_outgoings"), 1.0))
+        if ctx.facts.get("payroll_held") and not ctx.facts.get("has_loan"):
+            choice = "borrow"
+        elif money_out > money_in * 1.1 and not ctx.facts.get("raised_recently"):
+            choice = "raise_prices"
+        elif overdue >= weekly:
+            choice = "chase_debts"
+        elif runway < 21:
+            choice = "cut_costs"
+        else:
+            choice = "hold_course"
+        return {"choice": choice}, {}
+
+    def _hire_decision(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """Fill the desk if a month of costs is in the bank."""
+
+        return {"hire": _num(ctx.facts.get("runway_days"), 0.0) >= 28}, {}
 
     def _catering_order(
         self, ctx: DecisionContext, rng: object

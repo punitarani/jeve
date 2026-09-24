@@ -138,6 +138,13 @@ _TRAIT_WORDS: dict[str, tuple[str, str, str]] = {
         "friendly enough; chats when there is a reason to",
         "talkative; stops to chat with anyone nearby",
     ),
+    # Seeded for everyone from the start and rendered nowhere until the
+    # decisions it belongs to existed (field report, defect 9).
+    "risk_appetite": (
+        "cautious; prefers what is safe and known",
+        "weighs a risk before taking it",
+        "happy to take a chance on something new",
+    ),
 }
 
 
@@ -452,21 +459,22 @@ _BUY = Ask(
 
 
 def _prepare_cafe(ctx: DecisionContext) -> Prepared:
-    return Prepared(
-        ctx.kind,
-        asks=(_BUY,),
-        state={
-            "person": "someone who has just walked into a neighbourhood cafe",
-            "temperament": trait_words("patience", ctx.traits.get("patience")),
-            "line": queue_words(ctx.facts.get("queue_length")),
-            "till": (
-                "The card reader is broken; the cafe is taking cash only and "
-                "service is slow."
-                if ctx.facts.get("pos_down")
-                else "The cafe is running normally and taking cards."
-            ),
-        },
-    )
+    state: dict[str, object] = {
+        "person": "someone who has just walked into a neighbourhood cafe",
+        "temperament": trait_words("patience", ctx.traits.get("patience")),
+        "line": queue_words(ctx.facts.get("queue_length")),
+        "till": (
+            "The card reader is broken; the cafe is taking cash only and "
+            "service is slow."
+            if ctx.facts.get("pos_down")
+            else "The cafe is running normally and taking cards."
+        ),
+    }
+    if ctx.facts.get("prices_up"):
+        # Additive, so every cafe that has never raised a price still sends
+        # the bytes it always sent.
+        state["prices"] = "The cafe has recently put its prices up."
+    return Prepared(ctx.kind, asks=(_BUY,), state=state)
 
 
 def _interpret_cafe(
@@ -1402,6 +1410,171 @@ def _interpret_episode_round(
     )
 
 
+# -- the economy has consequences (WORLD-0009) ---------------------------------
+
+
+def arrears_words(weeks_behind: object) -> str:
+    weeks = int(_number(weeks_behind))
+    if weeks <= 1:
+        return "Their wages are a week late."
+    if weeks == 2:
+        return "They have not been paid for two weeks."
+    return "They have not been paid for three weeks or more."
+
+
+_LEAVE = Ask(
+    "leave",
+    "P",
+    Noul(
+        instructions=(
+            "This week, does this person hand in their notice and go to work "
+            "somewhere else?"
+        ),
+        criteria=_yes_no(
+            "They quit and take their chances elsewhere.",
+            "They stay for now and hope it is sorted out.",
+        ),
+    ),
+)
+
+
+def _prepare_leave(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_LEAVE,),
+        state={
+            "person": person_words(ctx.role, org),
+            "wages": arrears_words(ctx.facts.get("weeks_behind")),
+            "firm": "Everyone at work knows the firm is short of money.",
+            "temperament": trait_words("patience", ctx.traits.get("patience")),
+            "attitude_to_risk": trait_words(
+                "risk_appetite", ctx.traits.get("risk_appetite")
+            ),
+        },
+    )
+
+
+def _interpret_leave(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    leave = bool(got["leave"].value)
+    return Outcome({"leave": leave, "reason": "unpaid" if leave else "stays"}, {})
+
+
+_REVIEW = Ask(
+    "choice",
+    "J",
+    Choice(
+        instructions=(
+            "Looking at the firm's money, what does this person decide to do "
+            "about it now?"
+        ),
+        criteria={
+            "raise_prices": "Put the firm's prices up by about a tenth.",
+            "cut_costs": (
+                "Cut spending: no extras, no lunches, no new hires, until "
+                "things improve."
+            ),
+            "chase_debts": "Chase everyone who owes the firm money, sooner and harder.",
+            "borrow": "Take a short-term loan from the bank to cover the gap.",
+            "hold_course": "Carry on as they are; nothing needs to change.",
+            "other": "Something else.",
+        },
+    ),
+)
+
+
+def trend_words(money_in: object, money_out: object) -> str:
+    received, spent = _number(money_in), _number(money_out)
+    if received <= 0 and spent <= 0:
+        return "Almost nothing has come in or gone out this month."
+    if received >= spent * 1.1:
+        return "More money has come in this month than has gone out."
+    if received >= spent * 0.9:
+        return "About as much has gone out this month as has come in."
+    return "Far more has gone out this month than has come in."
+
+
+def owed_words(overdue: object, weekly: object) -> str:
+    owed, week = _number(overdue), max(1.0, _number(weekly, 1.0))
+    if owed <= 0:
+        return "Nobody owes the firm anything overdue."
+    if owed < week:
+        return "A little is owed to the firm and overdue."
+    return "Customers owe the firm a lot of overdue money."
+
+
+def _prepare_review(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    state: dict[str, object] = {
+        "person": person_words(ctx.role, org),
+        "attitude_to_risk": trait_words(
+            "risk_appetite", ctx.traits.get("risk_appetite")
+        ),
+        "cash": funds_words(ctx.facts.get("runway_days")),
+        "this_month": trend_words(
+            ctx.facts.get("money_in"), ctx.facts.get("money_out")
+        ),
+        "owed_to_the_firm": owed_words(
+            ctx.facts.get("overdue_to_them"), ctx.facts.get("weekly_outgoings")
+        ),
+        "wages": (
+            "This week's wages could not be paid."
+            if ctx.facts.get("payroll_held")
+            else "Wages are being paid on time."
+        ),
+    }
+    if ctx.facts.get("raised_recently"):
+        state["prices"] = "The firm put its prices up recently."
+    if ctx.facts.get("has_loan"):
+        state["borrowing"] = "The firm already owes the bank a loan."
+    return Prepared(ctx.kind, asks=(_REVIEW,), state=state)
+
+
+def _interpret_review(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    choice = str(got["choice"].value)
+    return Outcome({"choice": choice if choice != "other" else "hold_course"}, {})
+
+
+_HIRE = Ask(
+    "hire",
+    "J",
+    Noul(
+        instructions="Should the firm hire someone to fill this empty job now?",
+        criteria=_yes_no(
+            "Hire: the work needs doing and the firm can pay for it.",
+            "Leave it empty for now.",
+        ),
+    ),
+)
+
+
+def _prepare_hire(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_HIRE,),
+        state={
+            "person": person_words(ctx.role, org),
+            "vacancy": "The firm is without "
+            f"{role_words(str(ctx.facts.get('vacancy', '')))}.",
+            "cash": funds_words(ctx.facts.get("runway_days")),
+            "attitude_to_risk": trait_words(
+                "risk_appetite", ctx.traits.get("risk_appetite")
+            ),
+        },
+    )
+
+
+def _interpret_hire(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"hire": bool(got["hire"].value)}, {})
+
+
 QUESTION_SETS: dict[str, QuestionSet] = {
     s.kind: s
     for s in (
@@ -1418,5 +1591,8 @@ QUESTION_SETS: dict[str, QuestionSet] = {
         QuestionSet("ticket.confirm", _prepare_confirm, _interpret_confirm),
         QuestionSet("chase.invoice", _prepare_chase, _interpret_chase),
         QuestionSet("episode.round", _prepare_episode_round, _interpret_episode_round),
+        QuestionSet("leave.consider", _prepare_leave, _interpret_leave),
+        QuestionSet("founder.review", _prepare_review, _interpret_review),
+        QuestionSet("hire.decision", _prepare_hire, _interpret_hire),
     )
 }

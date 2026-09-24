@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from jeve.core.clock import DAY, TICK, SimTime, next_office_open
 from jeve.decide.policy import DecisionContext
-from jeve.world import scheduler
+from jeve.world import economy, scheduler
 
 if TYPE_CHECKING:
     from jeve.world.engine import Engine, TickReport
@@ -49,7 +49,9 @@ def weekly_wages(engine: Engine, org_id: str) -> int:
     """This week's wage bill: everyone on the payroll, at their role's rate."""
 
     staff = engine.conn.execute(
-        "SELECT role FROM persons WHERE org_id = %s AND kind = 'staff'", (org_id,)
+        "SELECT role FROM persons WHERE org_id = %s AND kind = 'staff' "
+        "AND status <> 'left'",
+        (org_id,),
     ).fetchall()
     return sum(WEEKLY_WAGE_CENTS.get(str(row["role"]), 1_000_00) for row in staff)
 
@@ -66,18 +68,34 @@ def payroll_held(engine: Engine, org_id: str) -> bool:
 
 
 def weekly_outgoings(engine: Engine, org_id: str) -> int:
-    """What a week costs a firm to stay open."""
+    """What a week costs a firm to stay open: wages, and rent, stock and
+    interest (WORLD-0009)."""
 
-    return weekly_wages(engine, org_id)
+    return weekly_wages(engine, org_id) + economy.weekly_fixed(engine, org_id)
 
 
 def _person(engine: Engine, role: str, org: str) -> dict[str, Any] | None:
+    """Whoever does this job at this firm, or whoever covers it now that they
+    have gone (WORLD-0009). A job with nobody in it used to stop its flow for
+    ever without a word: no payroll clerk, no payroll, for the whole town."""
+
+    roles = [role, *COVER.get(role, ())]
     row = engine.conn.execute(
-        "SELECT id, traits FROM persons WHERE org_id = %s AND role = %s "
-        "ORDER BY id LIMIT 1",
-        (org, role),
+        "SELECT id, role, traits FROM persons WHERE org_id = %s AND kind = 'staff' "
+        "AND status <> 'left' AND role = ANY(%s) "
+        "ORDER BY array_position(%s::text[], role), id LIMIT 1",
+        (org, roles, roles),
     ).fetchone()
     return dict(row) if row else None
+
+
+COVER: dict[str, tuple[str, ...]] = {
+    "payroll": ("client_admin", "staff_accountant", "principal"),
+    "senior_accountant": ("staff_accountant", "principal"),
+    "staff_accountant": ("senior_accountant", "principal"),
+    "account_manager": ("support_lead", "founder"),
+}
+"""Who covers a job whose holder has left."""
 
 
 # -- flow 7: service credits after an outage ---------------------------------
@@ -201,17 +219,35 @@ def payroll(
 ) -> None:
     """Friday's wages. Ledgerline runs payroll for every firm in town."""
 
-    clerk = _person(engine, "payroll", "ledgerline")
+    if economy.failed(engine, org_id):
+        return
+    # Ledgerline runs everybody's payroll; if Ledgerline cannot, the firm runs
+    # its own rather than nobody being paid again.
+    clerk = (
+        None
+        if economy.failed(engine, "ledgerline")
+        else _person(engine, "payroll", "ledgerline")
+    )
+    if clerk is None:
+        payer = engine.payer_of(org_id)
+        clerk = dict(payer) if payer is not None else None
     staff = engine.conn.execute(
-        "SELECT role FROM persons WHERE org_id = %s AND kind = 'staff'", (org_id,)
+        "SELECT role FROM persons WHERE org_id = %s AND kind = 'staff' "
+        "AND status <> 'left'",
+        (org_id,),
     ).fetchall()
-    total = sum(WEEKLY_WAGE_CENTS.get(str(row["role"]), 1_000_00) for row in staff)
+    total = weekly_wages(engine, org_id)
     if clerk is None or total <= 0:
         return
 
     cash = engine.cash_of(f"{org_id}.cash")
-    if cash < 2 * total:
-        _warn_of_insolvency(engine, report, org_id, cash=cash, weekly_wages=total)
+    if cash < 2 * total and not payload.get("held"):
+        # Once per payday, not per retry. The warning used to be read by
+        # nothing (field report, finding 2); now the head of the firm looks.
+        warning = _warn_of_insolvency(
+            engine, report, org_id, cash=cash, weekly_wages=total
+        )
+        economy.request_review(engine, report, org_id, warning)
 
     # Timesheets come out of TimeTrack, for the firms that use it.
     uses_timetrack = engine.conn.execute(
@@ -268,6 +304,21 @@ def payroll(
                     "decided_by": made.source,
                 },
             )
+        missed = int(payload.get("missed", 0))
+        if reason == "insufficient_cash":
+            # Paydays gone by unpaid, counted from this payday — or from when
+            # the world came under WORLD-0009, for one that predates it.
+            since = max(
+                due, int(economy.policy(engine, org_id).get("economy_since", due))
+            )
+            behind = max(0, report.sim_time - since) // economy.WEEK + 1
+            if behind > missed:
+                missed = behind
+                economy.missed_payday(
+                    engine, report, org_id, weeks_behind=behind, held_seq=int(held_seq)
+                )
+                if economy.failed(engine, org_id):
+                    return
         # Hours come back when the software does, so look again next tick. Cash
         # does not appear in fifteen minutes; look again tomorrow.
         retry = DAY if reason == "insufficient_cash" else TICK
@@ -275,7 +326,7 @@ def payroll(
             report.sim_time + retry,
             "payroll.run",
             org_id,
-            {"held": int(held_seq), "due": due},
+            {"held": int(held_seq), "due": due, "missed": missed},
         )
         return
 
@@ -311,8 +362,8 @@ def payroll(
         [
             (f"{org_id}.cash", -total),
             (f"{org_id}.expense", total),
-            ("households.cash", total),
-            ("households.income", -total),
+            (economy.household(org_id), total),
+            (economy.household(org_id, "income"), -total),
         ],
         seq,
     )
@@ -321,7 +372,7 @@ def payroll(
 
 def _warn_of_insolvency(
     engine: Engine, report: TickReport, org_id: str, *, cash: int, weekly_wages: int
-) -> None:
+) -> int:
     """Less than two paydays in the bank: say so, and say why.
 
     The soak does not require a firm to survive — that would be tuning. It
@@ -353,7 +404,7 @@ def _warn_of_insolvency(
         cause = "spending_exceeds_income"
     else:
         cause = "thin_reserves"
-    engine.emit(
+    return engine.emit(
         report,
         "insolvency.warning",
         org_id=org_id,
@@ -391,10 +442,13 @@ def close_books(
     accountant's sign-off at a third firm, and the accountant's own fee with it.
     """
 
+    if economy.failed(engine, org_id) or economy.failed(engine, "ledgerline"):
+        return
     role = "senior_accountant" if org_id != "thirdrail" else "staff_accountant"
     accountant = _person(engine, role, "ledgerline")
     if accountant is None:
         return
+    role = str(accountant["role"])
     # Stuck means: a month-end run was blocked and nothing has gone out since.
     # Read from the event log rather than the scheduler's queue, because the
     # scheduler has already taken this tick's due rows off the queue by the
@@ -500,7 +554,10 @@ def close_books(
         report,
         from_org="ledgerline",
         to_org=org_id,
-        amount=CLOSE_FEE_CENTS.get(org_id, 600_00),
+        amount=round(
+            CLOSE_FEE_CENTS.get(org_id, 600_00)
+            * economy.price_index(engine, "ledgerline")
+        ),
         terms_days=14,
         kind="services",
         causes=[closed],
@@ -522,9 +579,20 @@ def consider_catering(
 ) -> None:
     """Does the firm order lunch in from the cafe for tomorrow?"""
 
+    if economy.failed(engine, org_id):
+        return
+    # Considered twice a week, whatever is decided this time.
+    engine.schedule(
+        report.sim_time + (2 if SimTime(report.sim_time).weekday == 1 else 5) * DAY,
+        "catering.consider",
+        org_id,
+        {},
+    )
+    if economy.failed(engine, "thirdrail"):
+        return
     buyer = engine.conn.execute(
         "SELECT id, role, traits FROM persons WHERE org_id = %s AND role = ANY(%s) "
-        "ORDER BY id LIMIT 1",
+        "AND status <> 'left' ORDER BY id LIMIT 1",
         (org_id, list(CATERING_BUYERS)),
     ).fetchone()
     if buyer is None:
@@ -544,7 +612,9 @@ def consider_catering(
             kind="catering.order",
             facts={
                 "org": org_id,
-                "can_afford": cash >= 10 * CATERING_CENTS["large"],
+                "can_afford": cash >= 10 * CATERING_CENTS["large"]
+                # A firm that has decided to cut costs orders no lunch.
+                and not economy.frugal(engine, org_id, report.sim_time),
                 # A firm that cannot pay its staff does not buy them lunch. The
                 # founder of an insolvent Tallybird ordered $420 of catering
                 # (field report, finding 3): the question said funds were
@@ -555,13 +625,6 @@ def consider_catering(
             },
             traits=dict(buyer["traits"] or {}),
         ),
-    )
-    # Considered twice a week, whatever was decided this time.
-    engine.schedule(
-        report.sim_time + (2 if SimTime(report.sim_time).weekday == 1 else 5) * DAY,
-        "catering.consider",
-        org_id,
-        {},
     )
     size = str(made.chosen.get("order", "none"))
     if size not in CATERING_CENTS:
@@ -575,7 +638,9 @@ def consider_catering(
         payload={
             "org_id": org_id,
             "size": size,
-            "amount_cents": CATERING_CENTS[size],
+            "amount_cents": round(
+                CATERING_CENTS[size] * economy.price_index(engine, "thirdrail")
+            ),
             "decided_by": made.source,
         },
     )
@@ -598,8 +663,13 @@ def deliver_catering(
     from jeve.world import space
     from jeve.world.map import ORG_ZONE
 
+    if economy.failed(engine, "thirdrail"):
+        return
     size = str(payload.get("size", "small"))
-    amount = CATERING_CENTS.get(size, CATERING_CENTS["small"])
+    amount = round(
+        CATERING_CENTS.get(size, CATERING_CENTS["small"])
+        * economy.price_index(engine, "thirdrail")
+    )
     carrier = space.send(
         engine,
         report,

@@ -567,3 +567,15 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### WORLD-0009: Give the economy sinks and consequences
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/world/economy.py`, `py/src/jeve/world/flows.py`, `py/src/jeve/world/seed_world.py`, `py/src/jeve/sim/soak.py`, `py/tests/test_consequences.py`  
+**Tags**: economy, insolvency, households, calibration, agent-decided
+
+Rent, stock, quarterly tax on profit and household spending are rules; staff two paydays unpaid decide whether to leave (`leave.consider`), a firm's head reviews its position monthly and on every warning (`founder.review`: raise prices, cut costs, chase debts, borrow, carry on), vacancies are refilled by decision (`hire.decision`), and a firm four paydays behind has failed.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
