@@ -270,7 +270,8 @@ def test_a_conversation_in_the_cafe_reaches_an_invoice(
     """The cascade query from the definition of done: start at a conversation,
     follow `causes` forward, arrive at money. A meeting with a stake is an
     episode (WORLD-0007) and one without is an encounter, so the conversation is
-    whichever the meeting was."""
+    whichever the meeting was. A complaint to someone who cannot fix it
+    reaches the engineers through their relay (WORLD-0012), one step later."""
 
     run(conn, days=5)
     reached = conn.execute(
@@ -279,7 +280,7 @@ def test_a_conversation_in_the_cafe_reaches_an_invoice(
             SELECT seq, kind, 0 AS depth FROM events
             WHERE kind IN ('encounter', 'episode.closed') AND seq IN (
                 SELECT unnest(causes) FROM events
-                WHERE kind = 'ticket.escalated'
+                WHERE kind IN ('ticket.escalated', 'escalation.relayed')
                   AND payload->>'module_id' = 'invoicing')
             UNION
             SELECT e.seq, e.kind, d.depth + 1
@@ -290,9 +291,9 @@ def test_a_conversation_in_the_cafe_reaches_an_invoice(
     ).fetchall()
     depth = {str(r["kind"]): int(r["depth"]) for r in reached}
     assert 0 in (depth.get("encounter"), depth.get("episode.closed"))
-    assert depth["ticket.escalated"] == 1
-    assert depth["incident.ended"] == 2
-    assert depth["invoice.issued"] == 3
+    assert depth["ticket.escalated"] in (1, 2)
+    assert depth["incident.ended"] == depth["ticket.escalated"] + 1
+    assert depth["invoice.issued"] == depth["incident.ended"] + 1
 
 
 def test_an_outage_is_escalated_at_most_once(conn: Connection[DictRow]) -> None:

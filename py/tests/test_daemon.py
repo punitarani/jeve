@@ -10,12 +10,13 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve import db
-from jeve.core.clock import DAY, TICK, at
+from jeve.core.clock import DAY, TICK, SimTime, at
 from jeve.decide.policy import RulesPolicy
 from jeve.sim import daemon
 from jeve.sim.daemon import Pace
 from jeve.world.engine import Engine
 from jeve.world.seed_world import ROOT_SEED, seed
+from tests.conftest import RecordingSink
 from tests.test_world import event_log_hash
 
 pytestmark = pytest.mark.timeout(300)
@@ -149,6 +150,67 @@ def test_a_failed_tick_leaves_no_gap_either(
         "FROM events) s WHERE step > 1"
     ).fetchone()
     assert gaps is not None and int(gaps["n"]) == 0
+
+
+def test_a_tick_is_a_trace_and_a_failed_one_carries_its_error(
+    conn: Connection[DictRow],
+    monkeypatch: pytest.MonkeyPatch,
+    spans: RecordingSink,
+) -> None:
+    """LLM-0009: the tick is the root, and says when it was and what it did.
+
+    The failed attempt keeps its error and has no output — it did nothing —
+    and the retry that follows is a trace of its own.
+    """
+
+    seed(conn, root_seed=ROOT_SEED)
+    engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED)
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("the cafe caught fire")
+
+    with monkeypatch.context() as fire:
+        fire.setattr(engine, "_cafe", explode)
+        with pytest.raises(RuntimeError, match="caught fire"):
+            engine.tick()
+    report = engine.tick()
+
+    failed, retried = spans.roots
+    assert [failed.name, retried.name] == ["sim.tick", "sim.tick"]
+    assert failed.error == "RuntimeError: the cafe caught fire"
+    assert "output" not in failed.fields
+    # The same tick, both times: the rollback put the clock back.
+    assert failed.fields["input"] == retried.fields["input"]
+
+    clock = retried.fields["input"]
+    assert clock["tick_seq"] == report.tick_seq
+    assert clock["sim_time"] == report.sim_time
+    assert clock["label"] == SimTime(report.sim_time).label()
+    assert retried.fields["metadata"] == {
+        "policy": "RulesPolicy",
+        "root_seed": ROOT_SEED,
+        "database": conn.info.dbname,
+        "encounters": True,
+        "spatial": True,
+        "episodes": True,
+    }
+    summary = retried.fields["output"]
+    assert summary["decisions"] == report.decisions
+    assert summary["event_count"] == len(report.events)
+    assert sum(summary["events"].values()) == len(report.events)
+    assert retried.error is None
+
+
+def test_a_run_flushes_its_traces_on_the_way_out(
+    conn: Connection[DictRow], spans: RecordingSink
+) -> None:
+    """A rules run never opens a gateway, whose close is the other flush."""
+
+    assert daemon.main(["--seed-world", "--until", str(at(0, 10)), *FLAT_OUT]) == 0
+
+    assert spans.flushes >= 1
+    assert spans.roots
+    assert {root.name for root in spans.roots} == {"sim.tick"}
 
 
 def test_the_governor_stops_the_clock_when_the_days_budget_is_spent(

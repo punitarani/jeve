@@ -32,9 +32,10 @@ from psycopg.rows import DictRow, dict_row
 
 from jeve import db
 from jeve.config import find_repo_root
-from jeve.core.clock import DAY, SimTime
+from jeve.core.clock import DAY, HOUR, SimTime
 from jeve.core.orgs import ORGS
 from jeve.sim import daemon
+from jeve.world.engine import FRICTION
 from jeve.world.seed_world import ROOT_SEED, seed
 
 REPORTS = {
@@ -264,7 +265,78 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
             ),
         )
     )
+
+    # Somebody, somewhere, falls out with somebody every week. The golden field
+    # report counted no dispute, write-off or refusal in a month (WORLD-0011).
+    quiet = [
+        week + 1
+        for week in range(1, days // 7)
+        if _one(
+            conn,
+            "SELECT count(*) FROM events WHERE kind = ANY(%s) "
+            "AND sim_time >= %s AND sim_time < %s",
+            (list(FRICTION), week * 7 * DAY, (week + 1) * 7 * DAY),
+        )
+        == 0
+    ]
+    out.append(
+        Check(
+            "every week has friction in it",
+            not quiet,
+            "weeks with none: " + ", ".join(map(str, quiet)) if quiet else "every week",
+        )
+    )
+
+    # A complaint passed to support or the account manager is decided on, not
+    # parked: a handoff still queued an hour after it was due is one lost
+    # (WORLD-0012).
+    parked = _one(
+        conn,
+        "SELECT count(*) FROM scheduled WHERE kind = 'escalation.handoff' "
+        "AND due_sim_time < %s",
+        (end - HOUR,),
+    )
+    handed = _one(
+        conn,
+        "SELECT count(*) FROM decisions WHERE question_set = 'escalation.handoff'",
+    )
+    out.append(
+        Check(
+            "an escalation handed on is decided within the hour",
+            parked == 0,
+            f"{handed} handoff(s) decided, {parked} still queued past due",
+        )
+    )
+
+    # The loops that run on a calendar decide something every time they are
+    # due. A job that never reaches its question is a loop that is not there.
+    silent = [
+        kind
+        for kind in SCHEDULED_KINDS
+        if _one(conn, "SELECT count(*) FROM decisions WHERE question_set = %s", (kind,))
+        == 0
+    ]
+    out.append(
+        Check(
+            "every loop on a calendar decides something",
+            days < 14 or not silent,
+            "silent: " + ", ".join(silent) if silent else ", ".join(SCHEDULED_KINDS),
+        )
+    )
     return out
+
+
+SCHEDULED_KINDS: tuple[str, ...] = (
+    # Asked on their own calendar, whatever else happens (WORLD-0010, WORLD-0011).
+    "eng.allocation",
+    "deploy.decision",
+    "time.log",
+    "supplier.order",
+    "founder.review",
+    "invoice.dispute",
+    "payment.timing",
+    "payroll.release",
+)
 
 
 # -- measures: reported, never asserted ------------------------------------------

@@ -27,13 +27,13 @@ from psycopg.rows import DictRow
 
 from jeve.core.clock import DAY, HOUR, SimTime
 from jeve.decide.questions import trait_level
+from jeve.world.engine import FRICTION, SUPPORT_ROLES
 from jeve.world.map import ORG_ZONE, Zone
 
 WINDOW = 7 * DAY
 MIN_DECISIONS = 50
 """Below this, a share is noise, and the detector says it cannot tell."""
 
-SUPPORT_ROLES = ("support", "support_lead")
 BACKLOG = 8
 IDLE_SHARE = 0.30
 
@@ -58,29 +58,6 @@ ACTIONS: tuple[tuple[str, str], ...] = (
 )
 ROLE_INFORMATION = 0.05
 
-NEGATIVE_EVENTS: tuple[str, ...] = (
-    # Friction between people and firms. Outages are weather, not conflict,
-    # and are left out: a world where the software breaks and nobody minds is
-    # exactly the degenerate one.
-    "cafe.walkout",
-    "catering.declined",
-    "close.deferred",
-    "close.rework",
-    "escalation.dropped",
-    "firm.failed",
-    "insolvency.warning",
-    "invoice.blocked",
-    "invoice.disputed",
-    "invoice.written_off",
-    "payroll.held",
-    "payroll.missed",
-    "promise.broken",
-    "rent.late",
-    "staff.left",
-    "subscription.cancelled",
-    "supplier.unpaid",
-    "time.lost",
-)
 
 MONEY_VELOCITY = 0.05
 """Share of the cash in the town that changes hands in a week."""
@@ -282,7 +259,7 @@ def negative_events(conn: Connection[DictRow], since: int, days: float) -> Readi
     rows = conn.execute(
         "SELECT kind, count(*) AS n FROM events WHERE sim_time >= %s "
         "AND kind = ANY(%s) GROUP BY 1 ORDER BY 2 DESC",
-        (since, list(NEGATIVE_EVENTS)),
+        (since, list(FRICTION)),
     ).fetchall()
     total = sum(int(r["n"]) for r in rows)
     per_week = total / days * 7 if days else 0.0

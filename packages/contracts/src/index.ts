@@ -54,7 +54,7 @@ export const Health = z.object({
   last_error: z.string().nullable(),
   /** The status says a process should be alive and the heartbeat says none is. */
   stale: z.boolean(),
-  /** Whether this deployment carries a BRAINTRUST_API_KEY (LLM-0008). False means nothing is traced, silently and by design. True means the key is present, not that Braintrust is accepting the spans — the SDK reports a rejected key or project only on the daemon's stderr. */
+  /** Whether this deployment carries a BRAINTRUST_API_KEY (LLM-0009). False means nothing is traced, silently and by design. True means the key is present, not that Braintrust is accepting the spans — the SDK reports a rejected key or project only on the daemon's stderr. */
   tracing: z.boolean(),
 });
 export type Health = z.infer<typeof Health>;
@@ -389,7 +389,7 @@ export const Episode = z.object({
   closed_sim: z.number().int().nullable(),
   closed_seq: z.number().int().nullable(),
   rounds: z.number().int(),
-  exit_reason: z.enum(["settled", "emptied", "rounds"]).nullable(),
+  exit_reason: z.enum(["settled", "emptied", "rounds", "stalled"]).nullable(),
   outcome: EpisodeOutcome,
   participants: z.array(EpisodeParticipant),
   round_log: z.array(EpisodeRound),

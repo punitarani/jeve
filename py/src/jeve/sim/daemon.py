@@ -34,7 +34,7 @@ import psycopg
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-from jeve import db
+from jeve import db, tracing
 from jeve.core.clock import DAY, TICK, SimTime
 from jeve.decide.jev_policy import JevPolicy
 from jeve.decide.policy import Policy
@@ -346,10 +346,16 @@ def run(args: argparse.Namespace) -> int:
         summarise = False
         raise
     finally:
-        if summarise:
-            _report(policy, args, totals)
-        elif isinstance(policy, JevPolicy):
-            policy.close()
+        try:
+            if summarise:
+                _report(policy, args, totals)
+            elif isinstance(policy, JevPolicy):
+                policy.close()
+        finally:
+            # Every tick is a trace (LLM-0009), including a rules run's and one
+            # that never opened a gateway, whose own flush would not happen —
+            # and the last of them explain a run whose summary failed.
+            tracing.flush()
 
 
 def _supervise(

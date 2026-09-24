@@ -3,6 +3,8 @@
     make census                 # 5 sim-days on rules, on its own database
     make census DAYS=10
 
+    make census LEVELS=5        # sociability and promptness in quintiles
+
 The field report's headline was that the roster *is* the bill: `agent.tick` was
 99.3% of calls, and listing everyone present by name blew 615 distinct contexts
 up to 20,826. Whether a change to wording or to *when* a question is asked
@@ -15,6 +17,12 @@ differs — but which situations arise, how often, and how many of them are
 byte-identical is a property of the question sets and the engine, which is
 what this measures. The distinct-request count is the cold-cache bill; the
 decisions count is how often somebody was asked at all.
+
+`--levels` answers the trait-resolution question (outline 3.3): tertiles
+flatten persona within a bucket (DECIDE-0003), so what would it cost the cache
+to render the two traits that carry most in finer steps? The extra levels are
+placeholders, distinct words per level: enough to count distinct requests,
+never sent anywhere.
 """
 
 from __future__ import annotations
@@ -69,6 +77,33 @@ class Census(RulesPolicy):
         return super().decide_many(contexts)
 
 
+FINER = ("sociability", "promptness")
+
+
+def _resolve_traits(levels: int) -> None:
+    """Render `FINER` in `levels` steps instead of three, for this process."""
+
+    from jeve.decide import questions
+
+    coarse = questions.trait_level
+    for name in FINER:
+        words = questions._TRAIT_WORDS[name]
+        questions._TRAIT_WORDS[name] = tuple(  # type: ignore[assignment]
+            f"{words[min(2, k * 3 // levels)]} (step {k + 1} of {levels})"
+            for k in range(levels)
+        )
+
+    def finer(name: str, value: object) -> int:
+        if name not in FINER:
+            return coarse(name, value)
+        low, high = questions._TRAIT_RANGE[name]
+        number = float(value) if isinstance(value, int | float) else (low + high) / 2
+        step = (high - low) / levels
+        return max(0, min(levels - 1, int((number - low) / step)))
+
+    questions.trait_level = finer  # type: ignore[assignment]
+
+
 def _dsn_for(name: str) -> str:
     parts = urlsplit(db.dsn())
     return urlunsplit(parts._replace(path=f"/{name}"))
@@ -78,7 +113,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="make census", description=__doc__)
     parser.add_argument("--days", type=int, default=5)
     parser.add_argument("--database", default="jeve_census")
+    parser.add_argument("--levels", type=int, default=3)
     args = parser.parse_args(argv)
+    if args.levels != 3:
+        _resolve_traits(args.levels)
 
     with psycopg.connect(_dsn_for("postgres"), autocommit=True) as admin:
         if not admin.execute(
@@ -100,7 +138,8 @@ def main(argv: list[str] | None = None) -> int:
     kinds = sorted(set(census.asked) | set(census.gated))
     asked = sum(census.asked.values())
     distinct = sum(len(v) for v in census.distinct.values())
-    print(f"# Call census: {args.days} sim-days on rules\n")
+    finer = f", {', '.join(FINER)} in {args.levels} steps" if args.levels != 3 else ""
+    print(f"# Call census: {args.days} sim-days on rules{finer}\n")
     print("| question set | settled by a gate | asked | distinct requests |")
     print("|---|---:|---:|---:|")
     for kind in kinds:

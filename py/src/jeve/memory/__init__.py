@@ -12,6 +12,7 @@ from __future__ import annotations
 from jeve.memory.store import (
     Commitment,
     Fact,
+    Record,
     Tellable,
     close_commitments_for,
     facts_known_by,
@@ -24,11 +25,13 @@ from jeve.memory.store import (
     reach_of,
     record_fact,
     revive,
+    track_record,
 )
 
 __all__ = [
     "Commitment",
     "Fact",
+    "Record",
     "Tellable",
     "close_commitments_for",
     "facts_known_by",
@@ -41,4 +44,5 @@ __all__ = [
     "reach_of",
     "record_fact",
     "revive",
+    "track_record",
 ]

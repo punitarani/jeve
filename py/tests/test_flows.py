@@ -129,7 +129,9 @@ def test_a_credit_is_never_more_than_is_still_owed(conn: Connection[DictRow]) ->
 
 def test_a_conversation_in_the_cafe_reaches_money(conn: Connection[DictRow]) -> None:
     """The longest chain in the world, end to end: two people meet, one presses
-    the other, the outage ends sooner, and a credit moves on the ledger."""
+    the other, the outage ends sooner, and a credit moves on the ledger. The
+    meeting is whichever kind it was — an episode when they had a stake between
+    them, an encounter when not (WORLD-0007)."""
 
     run(conn, days=5)
     # Straight to an engineer, or through whoever was cornered deciding to pass
@@ -376,13 +378,25 @@ def test_lunch_ordered_is_lunch_delivered_billed_and_carried(
     ).fetchall()
     assert orders, "nobody ordered lunch in a whole week"
 
+    delivered = 0
     for order in orders:
+        # The cafe may turn an order down (WORLD-0011): then the refusal, and
+        # nothing else, is what the order caused.
+        declined = conn.execute(
+            "SELECT 1 FROM events WHERE kind = 'catering.declined' "
+            "AND %s = ANY(causes)",
+            (order["seq"],),
+        ).fetchone()
         delivery = conn.execute(
             "SELECT seq, sim_time, actor_id, payload FROM events "
             "WHERE kind = 'catering.delivered' AND %s = ANY(causes)",
             (order["seq"],),
         ).fetchone()
+        if declined is not None:
+            assert delivery is None, order["org_id"]
+            continue
         assert delivery is not None, order["org_id"]
+        delivered += 1
         when = SimTime(int(delivery["sim_time"]))
         assert when.day == SimTime(int(order["sim_time"])).day + 1
         assert when.time_of_day == 12 * 3600
@@ -409,6 +423,7 @@ def test_lunch_ordered_is_lunch_delivered_billed_and_carried(
         ).fetchone()
         assert carried is not None, (order["org_id"], delivery["actor_id"])
 
+    assert delivered, "every order was declined, so no delivery was checked"
     # Nobody carries two lunches to two offices in the same fifteen minutes.
     doubled = conn.execute(
         "SELECT actor_id, sim_time, count(*) AS n FROM events "

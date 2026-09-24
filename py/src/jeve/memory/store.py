@@ -29,6 +29,7 @@ type Topic = Literal[
     "outage", "price_rise", "payroll_late", "insolvency", "churned", "promise_broken"
 ]
 type CommitmentKind = Literal["pay_invoice"]
+type Record = Literal["kept", "broken"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,3 +381,25 @@ def close_commitments_for(
         (sim_time, kept, invoice_id),
     ).fetchall()
     return [int(row["id"]) for row in rows]
+
+
+def track_record(
+    conn: Connection[DictRow], from_person_id: str, to_org_id: str
+) -> Record | None:
+    """Did this person keep the last promise they made to anyone at that firm?
+
+    The last settled one, not a tally: people remember how it went last time,
+    and a count would turn a reputation into arithmetic the question then has to
+    undo. None when they have never promised that firm anything, which is most
+    of the time, and which leaves the words of the question as they were.
+    """
+
+    row = conn.execute(
+        "SELECT c.kept FROM commitments c JOIN persons p ON p.id = c.to_person_id "
+        "WHERE c.from_person_id = %s AND p.org_id = %s AND c.kept IS NOT NULL "
+        "ORDER BY c.settled_sim DESC, c.id DESC LIMIT 1",
+        (from_person_id, to_org_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return "kept" if row["kept"] else "broken"

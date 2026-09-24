@@ -128,13 +128,20 @@ rather than broadcasting to the zone — which would make the group cap
 meaningless and diffusion instantaneous.
 
 A side conversation is an episode with a parent and `depth = 1`: same rounds,
-same gates, same fold-back, no children of its own. Over 21 sim-days, 10 of 64
-episodes were side conversations, and the seeded fact reached seven removes.
+same gates, same fold-back. Over 21 sim-days, 10 of 64 episodes were side
+conversations, and the seeded fact reached seven removes.
 
-This is deliberately the *only* recursion. PADAWAN and Swarm permit arbitrary
-nesting and no published run demonstrates it being useful; inventing a second
-trigger to show off depth would be the speculative generality the house rules
-forbid.
+This was first shipped as the *only* recursion, on the grounds that inventing a
+second trigger to show off depth would be speculative generality. WORLD-0008
+adds exactly one more, and only the one the research pre-registered: a child
+opens where the parent leaves a subset of its people with a stake of their own.
+After an episode closes, a pair who have a *different* outage or bill between
+them take it aside — the customer who has just cornered the vendor about an
+outage and also owes the vendor's firm a bill. It opens after the close, so it
+reads the world its parent wrote, and it is never about a matter an ancestor was
+already about. News may now ripple one table further. Depth is capped at two, in
+code and in the schema (migration 0010), and every child counts against the
+daily ceiling.
 
 ## 7. What the first measurement says
 
@@ -178,12 +185,58 @@ run in every world, and the gap is a base-rate change the default world carries.
 - **On everywhere (WORLD-0007).** Strict replay needs `episode.round` answers in
   the golden cassette; recording them is `make fixture CALLS=record`, and it
   spends money.
-- **The caps are judgements.** Three rounds, four participants, twelve a day, two
-  sim-hours of cooldown. Chosen mean so that a binding cap shows up in
-  `exit_reason` rather than hiding.
+- **The caps are judgements.** Three rounds, four participants, twelve a day
+  (children included), depth two, two sim-hours of cooldown. Chosen mean so
+  that a binding cap shows up in `exit_reason` rather than hiding; since
+  WORLD-0008 the round cap ends 7% of episodes on rules and the daily ceiling
+  binds on 7% of sim-days.
 - **MEM-0002 is a third of MEM-0001.** No importance, retrieval, compaction or
-  belief revision, and no retention policy.
+  belief revision, and no retention policy. What it does record is now read:
+  hearsay distance and promise records reach decisions (WORLD-0008). Mood is
+  still written and not read by the next `agent.tick`.
 - **Two fact topics.** A closed vocabulary cannot carry unanticipated news, which
   is the typed thesis' standing cost, measured as the ontology-gap rate rather
   than hidden.
 - **No shadow arm**, which is what §7 needs.
+
+## 9. What the live episodes showed, and what changed (WORLD-0008)
+
+The first eight episodes in production, answered by live Jev, showed that three
+rounds were mostly one round asked three times:
+
+| measure (production, first eight episodes) | value |
+|---|---:|
+| round questions that were exact repeats | 12 of 64 |
+| mean P(settled) | 0.13 |
+| episodes ending settled | 0 of 8 |
+| episodes ending on the round cap | 7 of 8 |
+| escalation rate, episodes vs one-shot | 0.67 vs 0.08 |
+
+A round's state carried only sticky flags, so whenever they had not moved the
+next round was the same question, and its answer was a second draw of the same
+propensity — a customer 62% likely to press became about 95% likely over three
+rounds. And "has the matter been dealt with?" is never true of an outage that is
+still down, so nobody ever finished.
+
+WORLD-0008 makes four changes:
+
+1. **Rounds remember.** Each round is told what everyone did in the round just
+   gone and how long they have been at it.
+2. **People end conversations.** Each person is asked whether they have had
+   their say. A round in which everybody repeats their last act ends the episode
+   as `stalled`.
+3. **Two deep, by dependency** (§6).
+4. **Memory is read back.** How someone heard of an outage reaches their first
+   decision to report it; a payer's last kept or broken promise to a firm reaches
+   the next conversation about a bill. Each is appended to the question only
+   when there is something to say, so first-hand and first-time questions keep
+   their bytes.
+
+On the rules twin, over five seeds, 79% of episodes now end with everyone done,
+8% stall, 6% empty and 7% hit the cap; 71 of 382 episodes are at depth one and
+36 at depth two; outage minutes fall 24% against episodes off. The docking gap
+barely moved on rules (+0.51 to +0.47), because most of it is structural — an
+asker in an episode is offered `press` at a high base rate. The live gap is the
+one round memory was built for, and it has to be re-measured once the cassette
+is re-recorded and the change is deployed.
+

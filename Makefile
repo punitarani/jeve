@@ -94,8 +94,8 @@ soak: ## 35 sim-days on rules, on its own database; checks invariants, writes op
 	$(UV) python scripts/soak.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS)) $(if $(COUNTERFACTUAL),--counterfactual)
 
 .PHONY: census
-census: ## What would a run cost Jev? Distinct requests per question set, on rules, free. DAYS=
-	$(UV) python scripts/call_census.py $(if $(DAYS),--days $(DAYS))
+census: ## What would a run cost Jev? Distinct requests per question set, on rules, free. DAYS= LEVELS=
+	$(UV) python scripts/call_census.py $(if $(DAYS),--days $(DAYS)) $(if $(LEVELS),--levels $(LEVELS))
 
 .PHONY: calibrate
 calibrate: ## Where does the money go? Cash by week and every consequence, on rules, free. DAYS= SEED=

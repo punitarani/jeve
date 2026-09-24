@@ -28,6 +28,11 @@ test("the live report draws the running world and links what was published", asy
 	expect(economy).toBeLessThanOrEqual(all);
 	await page.getByRole("button", { name: /^all/ }).click();
 
+	// Every degeneracy detector, each with its reading and its line (API-0004).
+	const detectors = page.getByTestId("detectors");
+	await expect(detectors.locator("tbody tr")).toHaveCount(8);
+	await expect(detectors).toContainText("Friction per week");
+
 	// All staff, sortable.
 	const people = page.getByTestId("people");
 	await expect(people.locator("tbody tr")).toHaveCount(24);

@@ -591,6 +591,23 @@ def _encounters(
         incident = (
             episodes.open_incident(engine, down) if topic == "the_outage" else None
         )
+        payload: dict[str, object] = {
+            "a": agent.id,
+            "b": other.id,
+            "zone": agent.zone.value,
+            "topic": topic,
+            "mood": int(decision.chosen.get("mood", 2)),
+            "decided_by": decision.source,
+        }
+        if not engine.episodes:
+            # The shadow of an episode: what one would have been about, had
+            # episodes been on. Only in that arm, so every other world's log is
+            # unchanged; it is what lets `make episodes` split its docking gap
+            # into which meetings get rounds and what rounds do with them.
+            stake = episodes.stake_of(
+                engine, [agent, other], down, SimTime(report.sim_time)
+            )
+            payload["stake"] = stake.kind if stake is not None else None
         seq = engine.emit(
             report,
             "encounter",
@@ -598,14 +615,7 @@ def _encounters(
             org_id=agent.org,
             decision_id=decision.id,
             causes=[incident["cause"]] if incident and incident["cause"] else [],
-            payload={
-                "a": agent.id,
-                "b": other.id,
-                "zone": agent.zone.value,
-                "topic": topic,
-                "mood": int(decision.chosen.get("mood", 2)),
-                "decided_by": decision.source,
-            },
+            payload=payload,
         )
         if decision.chosen.get("raise_outage") and other.org == "tallybird":
             episodes.escalate(

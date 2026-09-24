@@ -21,7 +21,7 @@ from jeve.api import detectors
 from jeve.core.clock import DAY, SimTime, at
 from jeve.decide.policy import RulesPolicy
 from jeve.sim import advance
-from jeve.world.engine import Engine
+from jeve.world.engine import FRICTION, SUPPORT_ROLES, Engine
 from jeve.world.map import ORG_ZONE
 from jeve.world.seed_world import ROOT_SEED, seed
 from tests.worldcache import build_once
@@ -102,7 +102,7 @@ def test_support_in_the_cafe_with_a_backlog(broken: Connection[DictRow]) -> None
         "UPDATE events SET payload = jsonb_set(payload, '{to_zone}', '\"cafe\"') "
         "WHERE kind = 'agent.moved' AND sim_time >= %s AND payload->>'to_zone' = %s "
         "AND payload->>'person_id' IN (SELECT id FROM persons WHERE role = ANY(%s))",
-        (since, ORG_ZONE["tallybird"].value, list(detectors.SUPPORT_ROLES)),
+        (since, ORG_ZONE["tallybird"].value, list(SUPPORT_ROLES)),
     )
     assert readings(broken)["idle_with_backlog"]["fires"]
 
@@ -129,7 +129,7 @@ def test_roles_that_all_go_to_the_same_place(broken: Connection[DictRow]) -> Non
 def test_an_economy_without_friction(broken: Connection[DictRow]) -> None:
     broken.execute(
         "UPDATE events SET kind = 'calm.' || kind WHERE kind = ANY(%s)",
-        (list(detectors.NEGATIVE_EVENTS),),
+        (list(FRICTION),),
     )
     reading = readings(broken)["negative_events"]
     assert reading["fires"] and reading["value"] == 0

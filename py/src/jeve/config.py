@@ -46,7 +46,7 @@ class Settings(BaseModel):
     escalation: Literal["off", "shadow", "live"] = "off"
     escalation_live: tuple[str, ...] = ()
 
-    # LLM-0008: observability. The key is the only switch — absent,
+    # LLM-0009: observability. The key is the only switch — absent,
     # `jeve.tracing` never imports the SDK and opens no socket, which is what
     # keeps CI and a clean clone offline.
     braintrust_api_key: str | None = None

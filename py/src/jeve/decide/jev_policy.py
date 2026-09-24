@@ -23,7 +23,7 @@ import threading
 import time
 from collections.abc import Coroutine, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from jeve import tracing
 from jeve.config import Settings, load_settings
@@ -81,34 +81,31 @@ class _Bridge:
             raise
 
     async def _fetch(
-        self, requests: Sequence[DecisionRequest], parent: str | None
+        self, requests: Sequence[DecisionRequest]
     ) -> list[RawDecision | BaseException]:
         return await asyncio.gather(
-            *(self._gateway.decide_raw(request, parent=parent) for request in requests),
+            *(self._gateway.decide_raw(request) for request in requests),
             return_exceptions=True,
         )
 
     def fetch(
-        self, requests: Sequence[DecisionRequest], *, parent: str | None = None
+        self, requests: Sequence[DecisionRequest]
     ) -> list[RawDecision | BaseException]:
-        """`parent` is passed, not inherited.
+        """Fetch on the gateway's loop, from the engine's thread.
 
-        `run_coroutine_threadsafe` schedules onto this loop, which copies the
-        context on *this* thread — so the batch span open on the caller's
-        thread is not the current span here, and a call would otherwise land
-        at the root of its own trace (LLM-0008).
+        The calls' spans nest under the caller's batch with nothing passed:
+        `run_coroutine_threadsafe` runs in a copy of the caller's context, so
+        the span current here is current there (LLM-0009).
         """
 
-        return self.run(self._fetch(requests, parent), timeout=CALL_TIMEOUT_S)
+        return self.run(self._fetch(requests), timeout=CALL_TIMEOUT_S)
 
     async def _complete(
-        self,
-        requests: Sequence[tuple[ChatRequest, Purpose]],
-        parent: str | None,
+        self, requests: Sequence[tuple[ChatRequest, Purpose]]
     ) -> list[ChatResponse | BaseException]:
         return await asyncio.gather(
             *(
-                self._gateway.complete(request, purpose=purpose, parent=parent)
+                self._gateway.complete(request, purpose=purpose)
                 for request, purpose in requests
             ),
             return_exceptions=True,
@@ -118,14 +115,13 @@ class _Bridge:
         self,
         requests: Sequence[tuple[ChatRequest, Purpose]],
         *,
-        parent: str | None = None,
         timeout: float = CALL_TIMEOUT_S,
     ) -> list[ChatResponse | BaseException]:
         """Tier-1 second opinions (DECIDE-0005), concurrently, each under its
         own purpose: shadow work is `explore`, and the first thing the budget
-        ladder refuses."""
+        ladder refuses. Their spans nest under the batch as `fetch`'s do."""
 
-        return self.run(self._complete(requests, parent), timeout=timeout)
+        return self.run(self._complete(requests), timeout=timeout)
 
     @property
     def generative_models(self) -> tuple[str, ...]:
@@ -195,13 +191,21 @@ class JevPolicy:
         return self.decide_many([ctx])[0]
 
     def decide_many(self, contexts: Sequence[DecisionContext]) -> list[Decision]:
-        # The batch is the root of the trace, not the call: identical
-        # situations in one tick share a request, and only here is the fan-in
-        # — and the cache hit rate, which is the whole cost story — visible
-        # (LLM-0008). A hit never reaches the gateway, so it is counted, not
-        # given a span of its own.
+        if not contexts:
+            # Nothing was asked: no lookup, no call, and no span to say so.
+            return []
+        # LLM-0009: the batch is the fan-in under the tick's span. Identical
+        # situations in one tick share a request, so only here are the cache
+        # hit rate — the whole cost story — and each decision's settling
+        # visible together. A hit never reaches the gateway, so it is a row of
+        # this span's output rather than a span of its own; the input is
+        # logged up front so a batch that fails still says what it was asked.
+        kinds = sorted({ctx.kind for ctx in contexts})
         with tracing.span(
-            "decide.batch", type="task", metadata={"mode": self._recorder.mode}
+            _batch_name(kinds),
+            type="task",
+            input=[_asked(ctx) for ctx in contexts],
+            metadata={"mode": self._recorder.mode},
         ) as span:
             prepared = [self._prepare(ctx) for ctx in contexts]
             requests: dict[str, tuple[Prepared, DecisionRequest]] = {}
@@ -229,7 +233,7 @@ class JevPolicy:
             missing = [digest for digest in requests if digest not in stored]
             span.log(
                 metadata={
-                    "kinds": sorted({item.kind for item in prepared}),
+                    "kinds": kinds,
                     "contexts": len(contexts),
                     "lookups": lookups,
                     "cache_hits": hits,
@@ -238,23 +242,30 @@ class JevPolicy:
                 }
             )
             if missing:
-                # Exported on this thread, because the gateway is not on it.
-                stored |= self._fill(missing, requests, parent=span.export() or None)
+                stored |= self._fill(missing, requests)
 
             calls = [stored[maybe] if maybe else None for maybe in hashes]
             answers = [
                 self._answers(item, call) if call is not None else None
                 for item, call in zip(prepared, calls, strict=True)
             ]
-            opinions = self._second_opinions(
-                contexts, prepared, answers, parent=span.export() or None
-            )
-            return [
+            opinions = self._second_opinions(contexts, prepared, answers)
+            decisions = [
                 self._decide_one(ctx, item, call, jev, opinions.get(index))
                 for index, (ctx, item, call, jev) in enumerate(
                     zip(contexts, prepared, calls, answers, strict=True)
                 )
             ]
+            live = set(missing)
+            span.log(
+                output=[
+                    _settled(ctx, decision, _settled_by(maybe, live))
+                    for ctx, decision, maybe in zip(
+                        contexts, decisions, hashes, strict=True
+                    )
+                ]
+            )
+            return decisions
 
     def _prepare(self, ctx: DecisionContext) -> Prepared:
         if ctx.kind not in QUESTION_SETS:
@@ -277,8 +288,6 @@ class JevPolicy:
         self,
         missing: list[str],
         requests: dict[str, tuple[Prepared, DecisionRequest]],
-        *,
-        parent: str | None = None,
     ) -> dict[str, StoredCall]:
         if self._recorder.mode == "replay":
             kinds = sorted({requests[digest][0].kind for digest in missing})
@@ -289,9 +298,7 @@ class JevPolicy:
                 "with `LIVE=1 make e2e`."
             )
 
-        results = self._live().fetch(
-            [requests[digest][1] for digest in missing], parent=parent
-        )
+        results = self._live().fetch([requests[digest][1] for digest in missing])
         failure: BaseException | None = None
         drifted: set[str] = set()
         for digest, result in zip(missing, results, strict=True):
@@ -402,8 +409,6 @@ class JevPolicy:
         contexts: Sequence[DecisionContext],
         prepared: Sequence[Prepared],
         answers: Sequence[dict[str, Answer] | None],
-        *,
-        parent: str | None,
     ) -> dict[int, _Opinion]:
         """Ask tier 1 about the answers Jev was unsure of, within today's room.
 
@@ -444,7 +449,7 @@ class JevPolicy:
         unanswered = [w for w in chosen if w.index not in found]
         if unanswered and self._recorder.mode == "record":
             try:
-                found |= self._ask_tier1(unanswered, parent=parent)
+                found |= self._ask_tier1(unanswered)
             except JeveError, TimeoutError:
                 # Shadow is measurement: no gateway, no budget or no model is
                 # a missing row, never a stopped world. A live set is a
@@ -510,7 +515,7 @@ class JevPolicy:
         return found
 
     def _ask_tier1(
-        self, wanted: Sequence[_Wanted], *, parent: str | None
+        self, wanted: Sequence[_Wanted]
     ) -> dict[int, tuple[str, str, dict[str, Answer]]]:
         """Walk the generative order, a round per model, until each question
         has a usable answer or the models run out. Every reply is stored before
@@ -535,7 +540,6 @@ class JevPolicy:
             ]
             replies = bridge.complete(
                 list(zip(requests, purposes, strict=True)),
-                parent=parent,
                 timeout=CALL_TIMEOUT_S if live else left,
             )
             for request, reply in zip(requests, replies, strict=True):
@@ -596,6 +600,73 @@ def _parsed(call: StoredCall, asks: Sequence[Ask]) -> dict[str, Answer] | None:
         return escalation.parse(str(call.response.get("text", "")), asks)
     except ValueError:
         return None
+
+
+type SettledBy = Literal["gated", "cache", "live"]
+
+
+def _batch_name(kinds: Sequence[str]) -> str:
+    """`decide <kind>`, so a trace's children say what was being decided.
+
+    Every call site asks one kind at a time, so the names are bounded by the
+    question sets; a mixed batch keeps the generic name rather than minting
+    one per combination.
+    """
+
+    return f"decide {kinds[0]}" if len(kinds) == 1 else "decide.batch"
+
+
+def _asked(ctx: DecisionContext) -> dict[str, object]:
+    """One decision's input, as the world handed it over. Read, never copied:
+    the span serialises it, and nothing here may touch what is hashed."""
+
+    return {
+        "person_id": ctx.person_id,
+        "role": ctx.role,
+        "kind": ctx.kind,
+        "decision_seq": ctx.decision_seq,
+        "sim_time": ctx.sim_time,
+        "facts": ctx.facts,
+        "traits": ctx.traits,
+    }
+
+
+def _settled_by(digest: str | None, live: set[str]) -> SettledBy:
+    """How one decision was settled. Rows count decisions, not calls: two
+    people in the same situation share one live request, so both rows say
+    `live` with the same `model_call`, and `live_calls` counts it once."""
+
+    if digest is None:
+        return "gated"
+    return "live" if digest in live else "cache"
+
+
+def _settled(
+    ctx: DecisionContext, decision: Decision, settled_by: SettledBy
+) -> dict[str, object]:
+    """One decision's output: what was chosen and what it was chosen from."""
+
+    row: dict[str, object] = {
+        "person_id": ctx.person_id,
+        "settled_by": settled_by,
+        "chosen": decision.chosen,
+        "distributions": decision.distributions,
+        "draws": decision.draws,
+        "prng_path": decision.prng_path,
+        "model_call": decision.model_call,
+    }
+    second = decision.escalation
+    if second is not None:
+        # DECIDE-0005: the second opinion, beside the answer it second-guessed.
+        row["tier1"] = {
+            "mode": second.mode,
+            "model": second.model,
+            "triggers": second.triggers,
+            "sampled": second.sampled,
+            "llm": second.llm,
+            "agrees": second.agrees,
+        }
+    return row
 
 
 def _provider(payload: dict[str, Any]) -> str | None:

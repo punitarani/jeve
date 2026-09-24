@@ -3,7 +3,7 @@
 Only variables the code actually reads are listed here — if a name is not in
 this table, setting it does nothing. Sources: `py/src/jeve/config.py`,
 `py/src/jeve/db.py`, `py/src/jeve/sim/daemon.py`, `py/src/jeve/sim/runner.py`,
-`py/src/jeve/tracing.py`.
+`py/src/jeve/tracing.py`, `py/src/jeve/decide/escalation.py`.
 
 ## Database
 
@@ -47,6 +47,19 @@ more than an afternoon wants the same, plus an account cap at OpenRouter.
 | `JEVE_NIGHT_SPEEDUP` | `--night-speedup` | `10` | How much faster than the open hours dead time passes (SIM-0004). Must be positive. At `60` a weeknight is 13 real seconds instead of 78, and costs nothing — nothing calls a model while the town is shut. |
 | `JEVE_DAILY_BUDGET_USD` | `--daily-budget` | `2` | Governor pauses the clock when the window's spend exceeds it. |
 | `JEVE_BUDGET_WAIT_S` | `--budget-wait` | `900` | Seconds between retries while OpenRouter says 402. |
+| `JEVE_ENGINE_SHA` | — | `git rev-parse HEAD`, else unknown | The commit the engine runs. Stamped on `/state` and, when it changes between two known commits, as an `engine.changed` event, so a report can tell which code produced which days. The images set it from the build's `--build-arg`. |
+
+## Tier 1 (`jeve.decide.escalation`, DECIDE-0005)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `JEVE_ESCALATION` | `off` | `shadow`: Jev's uncertain medium- and high-stakes answers, plus a 2% sample, are asked again of a flash model and both are kept in `escalations`; Jev's still decides. `live`: as shadow, and the sets named below act on the second opinion. Production runs `shadow`. |
+| `JEVE_ESCALATION_LIVE` | empty | Comma-separated question sets whose second opinion decides, e.g. `credit.decision,close.signoff`. Read `make escalation-report` first: a set earns this with at least 200 shadow rows and disagreement concentrated in the band. |
+
+Tier 1 is capped at 5% of the previous sim-day's decisions (at least 25 a day).
+Shadow calls are `explore` purpose and share 45 seconds a batch; a failure in
+shadow records nothing and never stops the world. A live set that gets no usable
+answer waits like any other decision (SIM-0002).
 
 ## API (`uvicorn jeve.api.app:app`)
 
@@ -56,12 +69,26 @@ more than an afternoon wants the same, plus an account cap at OpenRouter.
 | `JEVE_DIALOGUE_GENERATE` | `on` | `off`/`0`/`false`: `/encounters/{seq}/dialogue` serves the typed record and cached prose only — no spend. |
 | `JEVE_OPS_DIR` | repo `ops/` | Where the `spend.json` checkpoint and `discrepancies.jsonl` land. |
 
-## Observability (`jeve.tracing`, LLM-0008)
+## Observability (`jeve.tracing`, LLM-0009)
 
 | Variable | Default | Notes |
 |---|---|---|
 | `BRAINTRUST_API_KEY` | unset | The only switch. Absent, `jeve.tracing` never imports the SDK and opens no socket — CI and a clean clone trace nothing. Unset it to turn tracing off. |
 | `BRAINTRUST_PROJECT_ID` | unset | Which project spans land in; unset falls back to a project named `jeve`. An id rather than a name, so renaming the project does not strand its spans. |
+
+With the key set, each sim tick is one trace: `sim.tick` (the clock in, what the
+tick did out) → `decide <kind>` per decision batch (every decision's facts in;
+its choice, distributions and whether it was gated, cached or live out) →
+`jev.decide` per live model call → `openrouter.attempt` per HTTP try. Ingest is
+about 30KB per tick (58KB at most), or about 1.3MB per sim-day, three quarters
+of it the `agent.tick` batch.
+
+The key traces every run that has it, not only the deployed daemon: with it in
+a local `.env`, `make soak` and `LIVE=1 make e2e` send a trace per tick (a
+replay `make e2e` reads no `.env`, so it traces only with the key exported).
+Give local runs a `BRAINTRUST_PROJECT_ID` of their own. Inside a
+project, a `sim.tick`'s metadata (policy, root seed, database name and the
+world's switches) and each batch's `metadata.mode` tell runs and arms apart.
 
 Spans carry OpenRouter's reported cost as `metrics.estimated_cost`, so a trace
 and the `spend_entries` ledger price a call the same way. A tracing failure is

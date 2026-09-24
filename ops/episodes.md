@@ -12,13 +12,13 @@ The question that has to be answered first: if the cheap proxy and the expensive
 
 | seed | chances (off) | escalated (off) | rate (off) | chances (on) | escalated (on) | rate (on) | gap |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 20260920 | 87 | 9 | 0.10 | 14 | 8 | 0.57 | +0.47 |
-| 20260921 | 74 | 8 | 0.11 | 15 | 9 | 0.60 | +0.49 |
-| 20260922 | 49 | 9 | 0.18 | 9 | 5 | 0.56 | +0.37 |
-| 20260923 | 52 | 6 | 0.12 | 14 | 8 | 0.57 | +0.46 |
-| 20260924 | 75 | 7 | 0.09 | 14 | 12 | 0.86 | +0.76 |
+| 20260920 | 87 | 9 | 0.10 | 16 | 9 | 0.56 | +0.46 |
+| 20260921 | 74 | 8 | 0.11 | 14 | 10 | 0.71 | +0.61 |
+| 20260922 | 49 | 9 | 0.18 | 12 | 6 | 0.50 | +0.32 |
+| 20260923 | 52 | 6 | 0.12 | 13 | 7 | 0.54 | +0.42 |
+| 20260924 | 75 | 7 | 0.09 | 13 | 8 | 0.62 | +0.52 |
 
-**Mean gap: +0.51.** A gap near zero means the two resolutions agree about what a meeting is worth, and the dial is safe to turn. A large gap is not a bug in either arm — it is the finding that resolution and base rate are entangled, and the one-shot question's wording is what would have to be recalibrated.
+**Mean gap: +0.47.** A gap near zero means the two resolutions agree about what a meeting is worth, and the dial is safe to turn. A large gap is not a bug in either arm — it is the finding that resolution and base rate are entangled, and the one-shot question's wording is what would have to be recalibrated.
 
 ## E1 — does it reach the economy?
 
@@ -26,57 +26,75 @@ The billing timeline the one-shot encounter already moves.
 
 | measure | episodes off | episodes on | change |
 |---|---:|---:|---:|
-| first services invoice | d4 Fri 09:09 | d4 Fri 05:42 | -12,420s |
-| outage minutes, total | 2,703.0 | 2,100.0 | -603 min |
-| longest outage | 1,209.0 | 816.0 | -393 min |
+| first services invoice | d4 Fri 09:09 | d4 Fri 02:21 | -24,480s |
+| outage minutes, total | 2,703.0 | 2,058.0 | -645 min |
+| longest outage | 1,209.0 | 906.0 | -303 min |
 | blocked invoice runs | 2.0 | 2.0 | no change |
-| average days late, paid bills | 0.4 | 0.4 | +0.020 |
-| second-hand knowledge rows | 0.0 | 62.0 | +62 |
+| average days late, paid bills | 0.4 | 0.4 | +0.039 |
+| second-hand knowledge rows | 0.0 | 61.6 | +62 |
 
 ## What the extra resolution cost
 
 | measure | episodes off | episodes on |
 |---|---:|---:|
-| decisions | 19,122 | 19,577 |
-| of those, episode rounds | 0 | 403 |
-| extra decisions | — | +454 (+2.4%) |
+| decisions | 19,122 | 19,574 |
+| of those, episode rounds | 0 | 434 |
+| extra decisions | — | +451 (+2.4%) |
 
-On the rules twin a decision is free. The figure that matters is the *share*: against the measured $0.0000384 per distinct model call in `ops/economics.md`, and before any cache sharing between rooms in the same state, the extra rounds above would add roughly $0.0007 per sim-day.
+On the rules twin a decision is free. The figure that matters is the *share*: against the measured $0.0000384 per distinct model call in `ops/economics.md`, and before any cache sharing between rooms in the same state, the extra rounds above would add roughly $0.0008 per sim-day.
+
+## How conversations ended, and how deep they went
+
+Episodes on, every seed together. `settled`: everyone still there had had their say. `stalled`: a round repeated the one before it. `emptied`: people left. `rounds`: the cap ended it (WORLD-0008).
+
+| ended | episodes |
+|---|---:|
+| settled | 303 |
+| stalled | 31 |
+| emptied | 23 |
+| rounds | 25 |
+
+| depth | episodes |
+|---|---:|
+| 0 | 275 |
+| 1 | 71 |
+| 2 | 36 |
+
+The daily ceiling of 12 was reached on 7 of 105 sim-days.
 
 ## What happened, by event
 
 | event | off | on |
 |---|---:|---:|
-| `cafe.sale` | 20603 | 20574 |
-| `cafe.walkout` | 2214 | 2267 |
-| `catering.delivered` | 38 | 46 |
-| `catering.ordered` | 38 | 46 |
+| `cafe.sale` | 20603 | 20560 |
+| `cafe.walkout` | 2214 | 2254 |
+| `catering.delivered` | 38 | 38 |
+| `catering.ordered` | 38 | 38 |
 | `close.completed` | 15 | 15 |
 | `close.deferred` | 1 | 0 |
-| `credit.issued` | 47 | 57 |
-| `encounter` | 5284 | 5084 |
-| `episode.closed` | 0 | 340 |
-| `episode.opened` | 0 | 340 |
-| `episode.round` | 0 | 771 |
-| `fact.passed` | 0 | 176 |
-| `incident.ended` | 76 | 78 |
-| `incident.started` | 76 | 78 |
+| `credit.issued` | 47 | 56 |
+| `encounter` | 5284 | 5137 |
+| `episode.closed` | 0 | 382 |
+| `episode.opened` | 0 | 382 |
+| `episode.round` | 0 | 840 |
+| `fact.passed` | 0 | 181 |
+| `incident.ended` | 76 | 76 |
+| `incident.started` | 76 | 76 |
 | `insolvency.warning` | 5 | 5 |
 | `invoice.blocked` | 10 | 10 |
-| `invoice.issued` | 170 | 178 |
+| `invoice.issued` | 170 | 170 |
 | `month.end` | 5 | 5 |
-| `outage.heard` | 0 | 99 |
-| `payment.deferred` | 172 | 181 |
-| `payment.made` | 713 | 723 |
+| `outage.heard` | 0 | 101 |
+| `payment.deferred` | 172 | 189 |
+| `payment.made` | 713 | 715 |
 | `payroll.paid` | 60 | 60 |
-| `promise.broken` | 0 | 2 |
-| `promise.made` | 0 | 41 |
-| `ticket.answered` | 516 | 515 |
-| `ticket.closed` | 502 | 496 |
-| `ticket.escalated` | 39 | 54 |
-| `ticket.opened` | 400 | 423 |
-| `ticket.reopened` | 71 | 55 |
-| `ticket.triaged` | 445 | 468 |
+| `promise.made` | 0 | 38 |
+| `ticket.answered` | 516 | 503 |
+| `ticket.closed` | 502 | 485 |
+| `ticket.escalated` | 39 | 55 |
+| `ticket.opened` | 400 | 399 |
+| `ticket.reopened` | 71 | 59 |
+| `ticket.triaged` | 445 | 444 |
 
 ## How to read this
 

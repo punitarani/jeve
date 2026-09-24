@@ -45,6 +45,7 @@ from jeve.core.clock import DAY, SimTime
 from jeve.decide.policy import RulesPolicy
 from jeve.sim.runner import advance
 from jeve.world.engine import Engine
+from jeve.world.episodes import MAX_DEPTH, PER_DAY
 from jeve.world.seed_world import ROOT_SEED, seed
 
 REPORT = find_repo_root() / "ops" / "episodes.md"
@@ -67,8 +68,23 @@ class Arm:
     episode_decisions: int = 0
     escalation_chances: int = 0
     escalations: int = 0
+    staked_chances: int = 0
+    """Episodes-off only: meetings an episode would have been held about the
+    outage, recorded as the encounter's shadow stake."""
+    staked_escalations: int = 0
     paid_late_days: float = 0.0
     facts_reach: int = 0
+    exits: dict[str, int] = field(default_factory=dict)
+    depths: dict[int, int] = field(default_factory=dict)
+    days_at_ceiling: int = 0
+
+    @property
+    def staked_rate(self) -> float:
+        return (
+            self.staked_escalations / self.staked_chances
+            if self.staked_chances
+            else 0.0
+        )
 
     @property
     def escalation_rate(self) -> float:
@@ -156,8 +172,43 @@ def measure(
             "SELECT count(*) AS n FROM events WHERE kind = 'ticket.escalated' "
             "AND payload->>'decided_by' <> 'episode'",
         )
+        # The same construct as the episodes-on arm's denominator: meetings
+        # with an outage between the people in them, whatever they chose to
+        # talk about. What escalated from those is what the encounter caused.
+        arm.staked_chances = _one(
+            conn,
+            "SELECT count(*) AS n FROM events WHERE kind = 'encounter' "
+            "AND payload->>'stake' = 'outage'",
+        )
+        arm.staked_escalations = _one(
+            conn,
+            "SELECT count(*) AS n FROM events x JOIN events e ON e.seq = ANY(x.causes) "
+            "WHERE x.kind = 'ticket.escalated' AND e.kind = 'encounter' "
+            "AND e.payload->>'stake' = 'outage'",
+        )
 
     arm.facts_reach = _one(conn, "SELECT count(*) AS n FROM knowledge WHERE hops > 0")
+    if episodes_on:
+        # How conversations ended and how deep they went: the two things
+        # WORLD-0008 changed, and the ones a reader cannot see in event counts.
+        arm.exits = {
+            str(r["exit_reason"]): int(r["n"])
+            for r in conn.execute(
+                "SELECT exit_reason, count(*) AS n FROM episodes GROUP BY 1"
+            ).fetchall()
+        }
+        arm.depths = {
+            int(r["depth"]): int(r["n"])
+            for r in conn.execute(
+                "SELECT depth, count(*) AS n FROM episodes GROUP BY 1"
+            ).fetchall()
+        }
+        arm.days_at_ceiling = _one(
+            conn,
+            "SELECT count(*) AS n FROM (SELECT opened_sim / %s AS d FROM episodes "
+            "GROUP BY 1 HAVING count(*) >= %s) t",
+            (DAY, PER_DAY),
+        )
     return arm
 
 
@@ -216,9 +267,7 @@ def render(pairs: list[tuple[Arm, Arm]]) -> str:
         "*selected* into an episode — which requires a live stake, a free "
         "cooldown and room in the day's budget. Selection is therefore inside "
         "the gap along with resolution, and the honest reading is that the two "
-        "arms disagree by at most this much. Separating them needs the shadow "
-        "arm this harness does not yet run: episodes computed at every eligible "
-        "meeting and applied at none.",
+        "arms disagree by at most this much. The next table separates them.",
         "",
         "| seed | chances (off) | escalated (off) | rate (off) | chances (on) | "
         "escalated (on) | rate (on) | gap |",
@@ -235,6 +284,27 @@ def render(pairs: list[tuple[Arm, Arm]]) -> str:
     mean_gap = sum(on.escalation_rate - off.escalation_rate for on, off in pairs) / len(
         pairs
     )
+    lines += [
+        "",
+        "### The gap, split",
+        "",
+        "With episodes off, each encounter carries the stake an episode would "
+        "have been about (its *shadow*). Counting only encounters whose shadow "
+        "stake was the outage gives the off arm the on arm's denominator. Then "
+        "*selection* is how much choosing those meetings moves the rate, and "
+        "*resolution* is what rounds do with the same meetings. The cooldown "
+        "and daily ceiling are not in the shadow, so selection is slightly "
+        "understated.",
+        "",
+        "| seed | staked (off) | escalated | rate | selection | resolution |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for on, off in pairs:
+        lines.append(
+            f"| {on.seed} | {off.staked_chances} | {off.staked_escalations} | "
+            f"{off.staked_rate:.2f} | {off.staked_rate - off.escalation_rate:+.2f} "
+            f"| {on.escalation_rate - off.staked_rate:+.2f} |"
+        )
     lines += [
         "",
         f"**Mean gap: {mean_gap:+.2f}.** A gap near zero means the two "
@@ -296,6 +366,34 @@ def render(pairs: list[tuple[Arm, Arm]]) -> str:
         "`ops/economics.md`, and before any cache sharing between rooms in the "
         "same state, the extra rounds above would add roughly "
         f"${(on_rounds - 0) * 0.0000384 / days:,.4f} per sim-day.",
+        "",
+    ]
+    exits = {
+        reason: sum(on.exits.get(reason, 0) for on, _ in pairs)
+        for reason in ("settled", "stalled", "emptied", "rounds")
+    }
+    depths = {
+        level: sum(on.depths.get(level, 0) for on, _ in pairs)
+        for level in range(MAX_DEPTH + 1)
+    }
+    at_ceiling = sum(on.days_at_ceiling for on, _ in pairs)
+    lines += [
+        "## How conversations ended, and how deep they went",
+        "",
+        "Episodes on, every seed together. `settled`: everyone still there had "
+        "had their say. `stalled`: a round repeated the one before it. "
+        "`emptied`: people left. `rounds`: the cap ended it (WORLD-0008).",
+        "",
+        "| ended | episodes |",
+        "|---|---:|",
+        *(f"| {reason} | {n} |" for reason, n in exits.items()),
+        "",
+        "| depth | episodes |",
+        "|---|---:|",
+        *(f"| {level} | {n} |" for level, n in depths.items()),
+        "",
+        f"The daily ceiling of {PER_DAY} was reached on {at_ceiling} of "
+        f"{days * len(pairs)} sim-days.",
         "",
         "## What happened, by event",
         "",

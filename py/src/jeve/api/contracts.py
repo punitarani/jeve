@@ -113,7 +113,7 @@ class Health(BaseModel):
     )
     tracing: bool = Field(
         description="Whether this deployment carries a BRAINTRUST_API_KEY "
-        "(LLM-0008). False means nothing is traced, silently and by design. "
+        "(LLM-0009). False means nothing is traced, silently and by design. "
         "True means the key is present, not that Braintrust is accepting the "
         "spans — the SDK reports a rejected key or project only on the "
         "daemon's stderr."
@@ -459,7 +459,7 @@ class Episode(BaseModel):
     closed_sim: int | None
     closed_seq: int | None
     rounds: int
-    exit_reason: Literal["settled", "emptied", "rounds"] | None
+    exit_reason: Literal["settled", "emptied", "rounds", "stalled"] | None
     outcome: EpisodeOutcome
     participants: list[EpisodeParticipant]
     round_log: list[EpisodeRound]

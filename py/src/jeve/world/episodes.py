@@ -27,9 +27,16 @@ not. That is the entire hypothesis, and it is why the design is shaped this way:
   at the end, in `_close`. A round that changed the room's mood has changed
   nothing in the economy yet. This is what keeps an episode atomic to the tick
   that spawned it: it reads a frozen world and writes once.
-* **It has to end.** A settled question, an empty room, or the round cap —
-  whichever comes first. `exit_reason` says which, because "it ran out of
-  rounds" and "they agreed" are different findings.
+* **Each round remembers the last.** Everyone is told what everybody did the
+  round before and how long they have been at it, so round two is asked a
+  different question from round one. When it was not, the same propensity was
+  simply drawn again, and a customer who was 62% likely to press became 95%
+  likely over three rounds without anything having happened (WORLD-0008).
+* **It has to end, the way people end it.** Everyone still there says they have
+  had their say, the room empties, a round repeats the one before it, or the
+  round cap — whichever comes first. `exit_reason` says which, because "they
+  were done", "they went round in circles" and "it ran out of rounds" are
+  different findings.
 
 Three things fold back, and each was chosen because it reaches money by a path
 the tests already follow:
@@ -74,10 +81,15 @@ MAX_ROUNDS = 3
 the evidence that extra rounds earn their cost is exactly what `ops/episodes.md`
 is for, and a cap that binds shows up in `exit_reason` rather than hiding."""
 
-MAX_DEPTH = 1
-"""A side conversation may be carved out of an episode; nothing may be carved
-out of the side conversation. Unbounded nesting is what the multi-resolution
-literature calls chain disaggregation, and the schema holds this too."""
+MAX_DEPTH = 2
+"""An episode may have children and grandchildren, never great-grandchildren.
+
+A child opens only where the parent left a subset of its people with a stake of
+their own — news a listener can carry to the next table, or a second matter two
+of them have between them (WORLD-0008). Depth is bounded because unbounded
+nesting is what the multi-resolution literature calls chain disaggregation, and
+two is the bound the recursion research pre-registered. The schema holds it
+too."""
 
 COOLDOWN = 8 * TICK
 """Two sim-hours before the same person is in another episode. Without it a
@@ -95,7 +107,7 @@ deadline was random would make the same promise a different obligation."""
 
 type StakeKind = Literal["outage", "invoice", "news"]
 type Role = Literal["holder", "asker", "bystander"]
-type Exit = Literal["settled", "emptied", "rounds"]
+type Exit = Literal["settled", "emptied", "rounds", "stalled"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +130,10 @@ class Stake:
     invoice_id: int | None = None
     days_late: int = 0
     large: bool = False
+    track_record: memory.Record | None = None
+    """Whether the payer kept the last promise they made to the creditor's firm.
+    Written down when a promise is scored, and read here, because a promise the
+    next conversation cannot see would be scored for nobody (MEM-0002)."""
 
     def role_of(self, person_id: str) -> Role:
         if person_id == self.holder:
@@ -152,9 +168,13 @@ class Local:
     moods: dict[str, int] = field(default_factory=dict)
     other_acts: int = 0
     """Mass that landed on `other`: the ontology-gap signal, per DECIDE-0001."""
-    rounds: int = 0
+    last_acts: dict[str, str] = field(default_factory=dict)
+    """What each person did in the round just gone. Rendered into the next round,
+    and compared with it: a round in which everybody does what they did before
+    is a conversation going in circles."""
+    rounds_done: int = 0
     """How many rounds were actually run. The outcome used to carry the exit
-    reason under this name, so "how long did it last" could not be read back
+    reason under `rounds`, so "how long did it last" could not be read back
     (field report, defect 3)."""
 
     @property
@@ -520,6 +540,9 @@ def _invoice_stake(engine: Engine, group: list[Agent], now: SimTime) -> Stake | 
                 invoice_id=int(bill["id"]),
                 days_late=max(0, (now.seconds - int(bill["due_sim"])) // DAY),
                 large=int(bill["amount_cents"]) >= 200_000,
+                track_record=memory.track_record(
+                    engine.conn, str(payer["id"]), creditor
+                ),
             )
     return None
 
@@ -540,6 +563,15 @@ def _news_stake(engine: Engine, group: list[Agent]) -> Stake | None:
                 askers=frozenset(),
             )
     return None
+
+
+def stake_of(
+    engine: Engine, group: list[Agent], down: list[str], now: SimTime
+) -> Stake | None:
+    """What an episode between these people would be about, if any: read,
+    never written, so the episodes-off arm can record its shadow."""
+
+    return _stake_for(engine, group, down, now)
 
 
 def _stake_for(
@@ -659,8 +691,10 @@ def run(
             stake,
             members,
             present or asked,
+            down,
             parent_id=None,
             depth=0,
+            held=frozenset(),
         )
         # Every pair inside the episode is now accounted for, not only the two
         # whose decision opened it.
@@ -744,11 +778,18 @@ def _hold(
     stake: Stake,
     members: list[Agent],
     present: list[Agent],
+    down: list[str],
     *,
     parent_id: int | None,
     depth: int,
+    held: frozenset[str],
 ) -> int:
-    """Open an episode, run its rounds, close it. Returns its id."""
+    """Open an episode, run its rounds, close it, then its children. Returns its id.
+
+    `held` is every stake an ancestor of this episode was about. A child is never
+    about one of them: the pair taken aside would otherwise find the matter their
+    parent was already discussing and hold it again, one level down.
+    """
 
     seats = _seats(engine, now, stake, members)
     episode_id = _open(engine, report, stake, seats, parent_id=parent_id, depth=depth)
@@ -756,7 +797,15 @@ def _hold(
     exit_reason = _rounds(engine, report, episode_id, stake, seats, local)
     _close(engine, report, now, episode_id, stake, seats, local, exit_reason)
     if depth < MAX_DEPTH:
-        _carry_the_news(engine, report, now, seats, present, local, episode_id)
+        # Children read the world their parent has just written: that is the
+        # dependency, and the reason they open after the close and not during it.
+        lineage = held | {stake.ref}
+        _take_aside(
+            engine, report, now, seats, present, down, local, episode_id, depth, lineage
+        )
+        _carry_the_news(
+            engine, report, now, seats, present, down, local, episode_id, depth, lineage
+        )
     return episode_id
 
 
@@ -861,12 +910,18 @@ def _rounds(
             for seat in standing
         ]
         made = engine.decide_many(report, contexts)
-        local.rounds = index + 1
+        before = dict(local.last_acts)
         settled = _fold(
             engine, report, episode_id, index, stake, standing, made, local, tellable
         )
         if settled:
             return "settled"
+        # Everybody still here did exactly what they did last round: asking
+        # again would be the same question, and its answer a second draw of the
+        # same propensity rather than anything the conversation produced.
+        still = {p: a for p, a in local.last_acts.items() if p not in local.left}
+        if index > 0 and still and all(before.get(p) == a for p, a in still.items()):
+            return "stalled"
     return "rounds"
 
 
@@ -917,11 +972,19 @@ def _context(
             "days_late": stake.days_late,
             "large": stake.large,
             "role_in_stake": role,
+            "track_record": stake.track_record,
             "present": [
-                {"id": other.agent.id, "org": other.agent.org, "role": other.agent.role}
+                {
+                    "id": other.agent.id,
+                    "org": other.agent.org,
+                    "role": other.agent.role,
+                    "last_act": local.last_acts.get(other.agent.id),
+                }
                 for other in standing
                 if other.agent.id != agent.id
             ],
+            "my_last_act": local.last_acts.get(agent.id),
+            "rounds_done": local.rounds_done,
             "raised": local.raised,
             "pressed": local.pressed,
             "promised": local.promised,
@@ -956,14 +1019,14 @@ def _fold(
     # Keyed by person, never positional: `standing` is in load order and the
     # fold walks seat order, so a list of votes would have been read back
     # against the wrong people the moment the two disagreed.
-    settled_votes: dict[str, bool] = {}
+    done_votes: dict[str, bool] = {}
     for seat, decision in sorted(
         zip(standing, made, strict=True), key=lambda pair: pair[0].seat
     ):
         person = seat.agent.id
         act = str(decision.chosen.get("act", "other"))
         local.moods[person] = int(decision.chosen.get("mood", 2))
-        settled_votes[person] = bool(decision.chosen.get("settled"))
+        done_votes[person] = bool(decision.chosen.get("done"))
         acts.append({"person_id": person, "act": act, "seat": seat.seat})
 
         if person in tellable:
@@ -1006,6 +1069,8 @@ def _fold(
             "decided_by": made[0].source,
         },
     )
+    local.last_acts = {str(a["person_id"]): str(a["act"]) for a in acts}
+    local.rounds_done = index + 1
     engine.conn.execute(
         "UPDATE episodes SET rounds = %s WHERE id = %s", (index + 1, episode_id)
     )
@@ -1015,12 +1080,10 @@ def _fold(
             "AND person_id = %s AND left_round IS NULL",
             (index, episode_id, person),
         )
-    # Everyone still in the room has to think it is done. One person walking
-    # away satisfied is not agreement.
+    # Everyone still in the room has to have had their say. One person walking
+    # away satisfied is not the end of a conversation for the others.
     remaining = [
-        vote
-        for person, vote in sorted(settled_votes.items())
-        if person not in local.left
+        vote for person, vote in sorted(done_votes.items()) if person not in local.left
     ]
     return bool(remaining) and all(remaining)
 
@@ -1047,7 +1110,7 @@ def _close(
     outcome: dict[str, Any] = {
         "stake": stake.kind,
         "stake_ref": stake.ref,
-        "rounds": local.rounds,
+        "rounds": local.rounds_done,
         "pressed": local.pressed,
         "promised": local.promised,
         "refused": local.refused,
@@ -1242,25 +1305,100 @@ def _hear_of_outage(
         )
 
 
+def _take_aside(
+    engine: Engine,
+    report: TickReport,
+    now: SimTime,
+    seats: list[Seat],
+    present: list[Agent],
+    down: list[str],
+    local: Local,
+    parent_id: int,
+    depth: int,
+    held: frozenset[str],
+) -> None:
+    """Two of them have a second matter between them, and take it aside.
+
+    The recursion the research pre-registered (`docs/research/03`, section 6.7): a
+    child opens only where the parent leaves a subset of its people with a stake
+    of their own. A customer who has just cornered the vendor about an outage and
+    also owes the vendor's firm a bill; two people at a table about some news, one
+    of them stuck on a module the other's firm runs. It opens after the parent has
+    closed, so it reads the world the parent wrote.
+
+    Outages and bills only: news already moves by its own recursion, below. One
+    aside per episode, among the people who stayed, and never about a matter an
+    ancestor was already about.
+    """
+
+    if not _budget_left(engine, now):
+        return
+    stayed = sorted(
+        (seat.agent for seat in seats if seat.agent.id not in local.left),
+        key=lambda a: a.id,
+    )
+    for index, first in enumerate(stayed):
+        for second in stayed[index + 1 :]:
+            # Each candidate in turn, not the first one found: a pair's first
+            # stake is usually the very outage their parent was about, and
+            # stopping there hid the bill behind it.
+            pair = [first, second]
+            candidates = (
+                _outage_stake(engine, pair, down),
+                _invoice_stake(engine, pair, now),
+            )
+            stake = next(
+                (c for c in candidates if c is not None and c.ref not in held), None
+            )
+            if stake is None:
+                continue
+            members = [first, second]
+            for other in stayed:
+                if len(members) >= MAX_PARTICIPANTS:
+                    break
+                if other not in members and _joins(
+                    engine, stake, other, down, frozenset()
+                ):
+                    members.append(other)
+            _hold(
+                engine,
+                report,
+                now,
+                _restate(engine, stake, members, down, now),
+                members,
+                present,
+                down,
+                parent_id=parent_id,
+                depth=depth + 1,
+                held=held,
+            )
+            return
+
+
 def _carry_the_news(
     engine: Engine,
     report: TickReport,
     now: SimTime,
     seats: list[Seat],
     present: list[Agent],
+    down: list[str],
     local: Local,
     parent_id: int,
+    depth: int,
+    held: frozenset[str],
 ) -> None:
     """Somebody who has just heard something turns to the rest of the room.
 
-    This is the one recursion the world actually motivates, and the reason it
-    exists is the group cap: a conversation seats four, so in a busy cafe the
-    people at the next table have not heard. Rather than broadcasting to the
-    zone — which would make the cap meaningless and diffusion instantaneous —
-    news ripples outward in a second, smaller conversation, one level deep.
+    The reason this exists is the group cap: a conversation seats four, so in a
+    busy cafe the people at the next table have not heard. Rather than
+    broadcasting to the zone — which would make the cap meaningless and
+    diffusion instantaneous — news ripples outward in a smaller conversation,
+    and from there, once more, to the table after that.
 
     A side conversation is an episode and nothing else: same rounds, same gates,
-    same fold-back, `depth = 1` and no children of its own.
+    same fold-back, one level deeper than the conversation it came from. Unlike
+    an aside it may be about its parent's own stake — carrying the same news
+    further is the point.
     """
 
     if not local.told or not _budget_left(engine, now):
@@ -1301,8 +1439,10 @@ def _carry_the_news(
             child,
             members,
             present,
+            down,
             parent_id=parent_id,
-            depth=1,
+            depth=depth + 1,
+            held=held,
         )
         report.in_episode.update(agent.id for agent in members)
         return

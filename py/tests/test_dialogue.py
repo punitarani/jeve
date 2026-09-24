@@ -23,6 +23,7 @@ from jeve.api import app as api
 from jeve.core.clock import at
 from jeve.decide.policy import RulesPolicy
 from jeve.decide.recorder import insert_call
+from jeve.errors import ModelResolutionError
 from jeve.gen import dialogue
 from jeve.llm import GENERATIVE_PREFERENCE, Gateway
 from jeve.sim import advance
@@ -169,7 +170,7 @@ def test_bad_prose_is_dropped_not_raised(reply: str) -> None:
     assert dialogue.parse_lines(reply) == []
 
 
-# -- spans (LLM-0008) ------------------------------------------------------
+# -- spans (LLM-0009) ------------------------------------------------------
 
 
 def test_rendering_prose_is_one_trace_over_the_fallback_ladder(
@@ -245,6 +246,8 @@ def test_rendering_prose_is_one_trace_over_the_fallback_ladder(
     assert root.type == "task"
     assert root.fields["input"]["seq"] == encounter_seq
     assert root.fields["metadata"]["outcome"] == "ok"
+    # One shape for `output` on every path: `lines` here, `reason` on failure.
+    assert root.fields["output"] == {"lines": body["prose"]["lines"]}
     # The order the gateway resolved, not the preference constant: a slug that
     # does not resolve drops out of the ladder (LLM-0005).
     ladder = gateway.generative_models
@@ -258,3 +261,25 @@ def test_rendering_prose_is_one_trace_over_the_fallback_ladder(
     # never became prose.
     assert calls[0].fields["metrics"]["estimated_cost"] > 0.0
     assert "ResponseShapeError" in (calls[0].error or "")
+
+
+def test_a_render_that_cannot_start_still_says_why_on_its_trace(
+    client: TestClient,
+    encounter_seq: int,
+    spans: RecordingSink,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root with no output is the empty trace LLM-0009 exists to end."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+
+    async def refused() -> Gateway:
+        raise ModelResolutionError("no generative model resolved")
+
+    monkeypatch.setattr(api, "_open_gateway", refused)
+    body = client.get(f"/encounters/{encounter_seq}/dialogue").json()
+
+    assert body["prose"] is None
+    root = spans.only("dialogue")
+    assert root.fields["output"] == {"reason": body["reason"]}
+    assert root.fields["metadata"]["outcome"] == "gateway-unavailable"

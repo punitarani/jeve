@@ -66,10 +66,17 @@ def decisions_url(base_url: str) -> str:
     return f"{root}/alpha/decisions"
 
 
-# Conservative: over-estimating tokens over-reserves, which is the safe
-# direction for a ceiling.
-CHARS_PER_TOKEN = 3.0
-MIN_RESERVATION_USD = 0.0005
+# Measured, not guessed. Over 2,866 recorded Jev requests the wire ran 2.26
+# bytes a token at the median and 1.28 at the densest, so 1.25 never
+# under-reserves. The old 3.0 under-counted tokens by a quarter and was
+# rescued only by a x1.5 on top, and a $0.0005 floor then set every Jev
+# reservation at twelve times the $0.00004 the call cost: a ceiling counted in
+# reserved dollars would have refused work that fitted under it (field report,
+# "reservations run 11x high").
+CHARS_PER_TOKEN = 1.25
+MIN_RESERVATION_USD = 0.0001
+"""Just above the dearest Jev call recorded ($0.000056): a floor for a card
+that prices a model at nothing, not the usual reservation."""
 
 # Statuses where the request was rejected before any inference happened, so the
 # reservation can be given back. Anything else settles at the reserved amount:
@@ -558,7 +565,6 @@ class Gateway:
         request: DecisionRequest,
         *,
         purpose: Purpose = "gate",
-        parent: str | None = None,
     ) -> RawDecision:
         """Issue a decision request and return the response *unparsed*.
 
@@ -580,15 +586,12 @@ class Gateway:
         body = request.wire_bytes()
 
         tokens = _approx_tokens(body)
-        worst_case = max(
-            MIN_RESERVATION_USD,
-            tokens * card.prompt_usd_per_token * 1.5,
-        )
+        # Jev is priced on input only; its answer is a few numbers.
+        worst_case = max(MIN_RESERVATION_USD, tokens * card.prompt_usd_per_token)
         call_id = self._next_call_id("decide")
         with tracing.span(
             "jev.decide",
             type="llm",
-            parent=parent,
             # Parsed from the bytes that go on the wire, never rebuilt from the
             # request: what is logged has to be what was asked (DECIDE-0004).
             input=json.loads(body),
@@ -622,11 +625,10 @@ class Gateway:
         request: DecisionRequest,
         *,
         purpose: Purpose = "gate",
-        parent: str | None = None,
     ) -> DecisionResponse:
         """Ask Jev a set of typed questions about one state."""
 
-        raw = await self.decide_raw(request, purpose=purpose, parent=parent)
+        raw = await self.decide_raw(request, purpose=purpose)
         return parse_decision(
             raw.payload,
             expected=set(request.questions),
@@ -640,7 +642,6 @@ class Gateway:
         request: ChatRequest,
         *,
         purpose: Purpose = "gate",
-        parent: str | None = None,
     ) -> ChatResponse:
         """Generate prose. The exception, not the default path."""
 
@@ -679,7 +680,6 @@ class Gateway:
         with tracing.span(
             "chat.completion",
             type="llm",
-            parent=parent,
             input=body["messages"],
             metadata={
                 "endpoint": "chat",

@@ -270,7 +270,7 @@ This decision is immutable. To change it, write a new record and set `superseded
 ### DECIDE-0005: Tier 1 runs in shadow inside the tick, and a set goes live by name
 
 **Status**: accepted (2026-09-24)  
-**Scope**: `py/src/jeve/decide/escalation.py`, `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/sim/escalations.py`, `py/src/jeve/sim/panel.py`, `py/src/jeve/gen/ontology.py`, `py/migrations/0012_escalations.sql`, `py/tests/test_escalation.py`, `py/tests/test_measurement.py`  
+**Scope**: `py/src/jeve/decide/escalation.py`, `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/sim/escalations.py`, `py/src/jeve/sim/panel.py`, `py/src/jeve/gen/ontology.py`, `py/migrations/0013_escalations.sql`, `py/tests/test_escalation.py`, `py/tests/test_measurement.py`  
 **Tags**: escalation, confidence, llm, agent-decided
 
 Tier 1 is asked inside `JevPolicy.decide_many`, between Jev's answer and the draw, off unless `JEVE_ESCALATION` says `shadow` or `live`; it acts only for sets named in `JEVE_ESCALATION_LIVE`.
@@ -339,13 +339,13 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
-### LLM-0008: trace every model call to braintrust, from one module, off by default
+### LLM-0009: one trace per tick, and each batch carries its decisions
 
-**Status**: accepted (2026-09-21)  
-**Scope**: `py/src/jeve/tracing.py`, `py/src/jeve/llm/gateway.py`, `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/api/app.py`, `py/tests/test_tracing.py`  
+**Status**: accepted (2026-09-23)  
+**Scope**: `py/src/jeve/tracing.py`, `py/src/jeve/world/engine.py`, `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/llm/gateway.py`, `py/src/jeve/api/app.py`, `py/src/jeve/sim/daemon.py`, `py/src/jeve/config.py`, `py/tests/test_tracing.py`, `py/tests/test_jev_policy.py`, `py/tests/test_daemon.py`, `py/tests/test_dialogue.py`  
 **Tags**: observability, braintrust, llm, agent-decided
 
-Model calls are traced to Braintrust from a single guarded module, `jeve.tracing`, which is a no-op unless `BRAINTRUST_API_KEY` is set.
+Every sim tick is one Braintrust trace, from a single guarded module (`jeve.tracing`) that is a no-op unless `BRAINTRUST_API_KEY` is set. Each decision batch under the tick logs every decision's facts as input and, as output, what was chosen and whether it was gated, cached or live. Live model calls and their HTTP tries nest beneath.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 
@@ -366,7 +366,7 @@ This decision is immutable. To change it, write a new record and set `superseded
 ### MEM-0003: Trust is a typed belief, and a fact can be false
 
 **Status**: accepted (2026-09-24)  
-**Scope**: `py/src/jeve/memory/**`, `py/src/jeve/world/customers.py`, `py/migrations/0011_loops.sql`  
+**Scope**: `py/src/jeve/memory/**`, `py/src/jeve/world/customers.py`, `py/migrations/0012_loops.sql`  
 **Tags**: memory, beliefs, diffusion, rumour, agent-decided
 
 A subscriber's trust in the vendor is `persons.beliefs.vendor_reliability`, 0 to 4, revised by a J `score` after each outage they ran into and recovering a level after a month without one; it gates renewal. Facts can now be about late wages, a firm short of money, a vendor losing customers or a broken promise, and `true_fact` is false for a rumour, which travels like any fact.
@@ -531,6 +531,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### WEB-0008: The hero camera is a director, not a clock
+
+**Status**: accepted (2026-09-23)  
+**Scope**: `packages/world/src/attention.ts`, `packages/world/src/index.ts`, `packages/world/test/attention.test.ts`, `apps/web/src/components/WorldHero.tsx`  
+**Tags**: hero, camera, agent-decided
+
+The hero's camera watches `WorldModel` every frame and looks wherever people are: occupied rooms, the street while anyone is crossing it, a fresh conversation, a just-fired escalation — and the whole town when nobody is out. Empty buildings are never a shot.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### WORLD-0001: Build and tune the world on rules before wiring in any model
 
 **Status**: accepted (2026-09-20)  
@@ -591,10 +603,22 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
-### WORLD-0008: Ask agent.tick at decision points, and describe a room as firms
+### WORLD-0008: Conversations remember their rounds, end when people are done, and recurse two deep
+
+**Status**: accepted (2026-09-23)  
+**Scope**: `py/src/jeve/world/episodes.py`, `py/src/jeve/decide/questions.py`, `py/src/jeve/decide/policy.py`, `py/src/jeve/memory/store.py`, `py/migrations/0010_episode_depth_and_stall.sql`, `py/tests/test_episodes.py`  
+**Tags**: episodes, recursion, realism, memory, resolution
+
+- **Rounds remember.** Every round's state says what each person did in the round just gone (by the same neutral labels) and how long they have been at it, so round N depends on round N−1. - **People end conversations.** Each person is asked whether they have had their say, not whether the matter is solved. A round in which everyone repeats their last act ends the episode as `stalled`, as the recursion research pre-registered ("rounds continue only on state change"). - **Two deep, by dependency.** `MAX_DEPTH = 2`, in code and in migration 0010. After an episode closes, a pair who have a *different* outage or bill between them take it aside (never a matter an ancestor was about), and news can ripple a second table further. Both count against the daily ceiling. - **Memory is read back.** How someone heard of an outage reaches their first decision to report it; a payer's last kept or broken promise to a firm reaches the next conversation about a bill. Both are appended only when present, so first-hand and first-time questions keep their bytes.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0009: Ask agent.tick at decision points, and describe a room as firms
 
 **Status**: accepted (2026-09-24)  
-**Scope**: `py/src/jeve/world/space.py`, `py/src/jeve/decide/questions.py`, `py/src/jeve/core/orgs.py`, `py/migrations/0010_decision_points.sql`, `py/tests/test_space.py`, `py/tests/test_questions.py`  
+**Scope**: `py/src/jeve/world/space.py`, `py/src/jeve/decide/questions.py`, `py/src/jeve/core/orgs.py`, `py/migrations/0011_decision_points.sql`, `py/tests/test_space.py`, `py/tests/test_questions.py`  
 **Tags**: space, encounters, cost, cache, jev, agent-decided
 
 Somebody is asked `agent.tick` on arrival, while away from their workplace, in company from another firm, when what is on their mind changes, through lunch, and on the hour; cafe staff alone behind their counter are not asked. A quiet desk is asked about the next hour, everyone else about the next quarter.
@@ -603,7 +627,7 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
-### WORLD-0009: Give the economy sinks and consequences
+### WORLD-0010: Give the economy sinks and consequences
 
 **Status**: accepted (2026-09-24)  
 **Scope**: `py/src/jeve/world/economy.py`, `py/src/jeve/world/flows.py`, `py/src/jeve/world/seed_world.py`, `py/src/jeve/sim/soak.py`, `py/tests/test_consequences.py`  
@@ -615,10 +639,10 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
-### WORLD-0010: Give every firm the loop the scenario names
+### WORLD-0011: Give every firm the loop the scenario names
 
 **Status**: accepted (2026-09-24)  
-**Scope**: `py/src/jeve/world/engineering.py`, `py/src/jeve/world/customers.py`, `py/src/jeve/world/timesheets.py`, `py/src/jeve/world/shocks.py`, `py/migrations/0011_loops.sql`, `py/tests/test_loops.py`  
+**Scope**: `py/src/jeve/world/engineering.py`, `py/src/jeve/world/customers.py`, `py/src/jeve/world/timesheets.py`, `py/src/jeve/world/shocks.py`, `py/migrations/0012_loops.sql`, `py/tests/test_loops.py`  
 **Tags**: flows, decisions, scenario, calibration, agent-decided
 
 Each firm's loop is a decision at the moment it arises, with a rules twin and its consequences in code: engineering allocation and deploys (debt is live and drives the hazard), trust revised after an outage and renewal asked of customers at risk, a workaround chosen with every report, disputes and their resolution, time logged or not at the law firm, the cafe's cover, stock and catering acceptance, and the close's wait/nag/estimate. Shocks (Poisson 1.5 a week, keyed by the week) are the environment they answer to.
@@ -627,13 +651,13 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
-### WORLD-0011: Route an escalation through whoever was cornered
+### WORLD-0012: Route an escalation through whoever was cornered
 
 **Status**: accepted (2026-09-24)  
 **Scope**: `py/src/jeve/world/episodes.py`, `py/src/jeve/world/engine.py`, `py/tests/test_loops.py`  
 **Tags**: escalation, encounters, support, agent-decided
 
-A complaint raised with an engineer (the founder, an engineering lead, an engineer or an SRE) shortens the outage at once, as before; raised with anyone else, it becomes an `escalation.handoff` decision a quarter of an hour later — relay it to engineering, or leave it in the queue. Support escalates by rule once three blocked customers' tickets are triaged against one outage, and a customer can ring their account manager as a workaround (WORLD-0010).
+A complaint raised with an engineer (the founder, an engineering lead, an engineer or an SRE) shortens the outage at once, as before; raised with anyone else, it becomes an `escalation.handoff` decision a quarter of an hour later — relay it to engineering, or leave it in the queue. Support escalates by rule once three blocked customers' tickets are triaged against one outage, and a customer can ring their account manager as a workaround (WORLD-0011).
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 
