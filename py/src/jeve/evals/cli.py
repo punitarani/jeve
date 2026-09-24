@@ -65,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("--worlds", required=True, help="arm:seed,arm:seed")
     validate.add_argument("--per-defect", type=int, default=12)
     validate.add_argument("--live", action="store_true")
+    validate.add_argument("--judge", default=judge.JUDGE, choices=judge.JUDGES)
     validate.add_argument(
         "--retest", action="store_true", help="judge again under another seed"
     )
@@ -75,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     versus.add_argument("--seeds", default="dev")
     versus.add_argument("--per-seed", type=int, default=12)
     versus.add_argument("--live", action="store_true")
+    versus.add_argument("--judge", default=judge.JUDGE, choices=judge.JUDGES)
 
     sweep = sub.add_parser("sweep", help="run, measure and report arms x seeds")
     sweep.add_argument("--arms", required=True)
@@ -151,14 +153,16 @@ def _judge_conn() -> Connection[DictRow]:
     return conn
 
 
-def _records(arm: str, seed: int) -> list[transcripts.Record]:
+def _records(
+    arm: str, seed: int, judged_by: str = judge.JUDGE
+) -> list[transcripts.Record]:
     """Every closed episode of a world, except any in which a round was
     answered by the judge's own family: a judge must never score its own
     family's decisions (arXiv 2404.13076). Tier 1 falls back through
     LLM-0006's order, which includes the judge's model, so this happens."""
 
     dsn = runner.dsn_for(runner.database(arm, seed))
-    family = judge.JUDGE.split("/")[0] + "/%"
+    family = judged_by.split("/")[0] + "/%"
     with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
         ids = [
             int(r["id"])
@@ -185,6 +189,12 @@ def _row(t: judge.Tally) -> dict[str, object]:
         "consistent": t.consistent,
         "ties": t.ties,
     }
+
+
+def _suffix(model: str) -> str:
+    """The first judge's files keep their names; another's say whose they are."""
+
+    return "" if model == judge.JUDGE else "." + model.split("/")[-1]
 
 
 def _write(name: str, payload: dict[str, object]) -> None:
@@ -215,7 +225,10 @@ def _validate(args: argparse.Namespace) -> int:
     pool: list[tuple[str, object]] = []
     for spec in args.worlds.split(","):
         arm, _, seed = spec.partition(":")
-        pool += [(f"{arm}:{seed}:{r.episode_id}", r) for r in _records(arm, int(seed))]
+        pool += [
+            (f"{arm}:{seed}:{r.episode_id}", r)
+            for r in _records(arm, int(seed), args.judge)
+        ]
     pairs = judge.defect_pairs(pool, transcripts.DEFECTS, args.per_defect, seed=11)
     # Identical accounts: the only honest answer is a tie, or a split that
     # follows position. Whatever the judge does here is its position bias.
@@ -225,7 +238,7 @@ def _validate(args: argparse.Namespace) -> int:
         text = transcripts.render(record)
         pairs.append(judge.Pair(f"identical:{ident}", text, text, "identical"))
     conn = _judge_conn()
-    run = judge.judge(conn, pairs, live=args.live)
+    run = judge.judge(conn, pairs, model=args.judge, live=args.live)
     tallies = judge.tally(run)
     _say(run, tallies)
     if run.missing:
@@ -234,7 +247,9 @@ def _validate(args: argparse.Namespace) -> int:
     if args.retest:
         # Test-retest with the cache out of the way (the minimum validation
         # protocol of arXiv 2606.19544): the same pairs, another sampling seed.
-        again = judge.judge(conn, pairs, live=args.live, seed=judge.SEED + 1)
+        again = judge.judge(
+            conn, pairs, model=args.judge, live=args.live, seed=judge.SEED + 1
+        )
         same = [
             (a.forward, a.backward) == (b.forward, b.backward)
             for a, b in zip(run.scored, again.scored, strict=True)
@@ -250,9 +265,9 @@ def _validate(args: argparse.Namespace) -> int:
     n = sum(t.n for t in caught)
     accuracy = sum(t.points for t in caught) / n if n else 0.0
     _write(
-        "0-validation",
+        "0-validation" + _suffix(args.judge),
         {
-            "title": f"Validation: planted defects ({judge.JUDGE})",
+            "title": f"Validation: planted defects ({args.judge})",
             "note": "Each real episode against a copy of itself with one defect "
             "planted in its typed record; *right preferred* is how often the judge "
             f"chose the clean copy, both orders counted. Overall {accuracy:.2f} "
@@ -269,7 +284,7 @@ def _validate(args: argparse.Namespace) -> int:
 
 
 def _versus(args: argparse.Namespace) -> int:
-    validation = report.JUDGE_DIR / "0-validation.json"
+    validation = report.JUDGE_DIR / f"0-validation{_suffix(args.judge)}.json"
     if not validation.exists():
         raise SystemExit("validate the judge first: judge-validate")
     accuracy = float(json.loads(validation.read_text()).get("accuracy") or 0.0)
@@ -284,7 +299,7 @@ def _versus(args: argparse.Namespace) -> int:
             lambda: ([], [])
         )
         for side, arm in ((0, args.a), (1, args.b)):
-            for r in _records(arm, seed):
+            for r in _records(arm, seed, args.judge):
                 by_stake[r.stake][side].append(r)
         rng = derive_rng(seed, "pairs", args.a, args.b)
         per_stake = max(1, args.per_seed // max(1, len(by_stake)))
@@ -301,7 +316,7 @@ def _versus(args: argparse.Namespace) -> int:
                         f"{args.b} over {args.a} ({stake})",
                     )
                 )
-    run = judge.judge(_judge_conn(), pairs, live=args.live)
+    run = judge.judge(_judge_conn(), pairs, model=args.judge, live=args.live)
     tallies = judge.tally(run)
     _say(run, tallies)
     if run.missing:
@@ -319,10 +334,10 @@ def _versus(args: argparse.Namespace) -> int:
         )
     )
     _write(
-        f"{args.a}-vs-{args.b}-{args.seeds}",
+        f"{args.a}-vs-{args.b}-{args.seeds}{_suffix(args.judge)}",
         {
             "title": f"`{args.b}` against `{args.a}`, {args.seeds} seeds "
-            f"({judge.JUDGE})",
+            f"({args.judge})",
             "note": "Episodes from the two arms, matched by what was at stake and "
             "by seed, shown both ways round. *Right preferred* is how often the "
             f"judge preferred `{args.b}`'s episode; 0.50 is no difference.",

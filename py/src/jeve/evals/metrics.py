@@ -33,7 +33,7 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve.api import detectors
-from jeve.core.clock import DAY, HOUR
+from jeve.core.clock import DAY, HOUR, SimTime
 from jeve.sim import soak
 
 type Value = float | None
@@ -308,6 +308,99 @@ def _detectors(conn: Connection[DictRow], m: Measures) -> None:
         m.notes[reading.name] = reading.detail
 
 
+def _warnings(conn: Connection[DictRow], m: Measures, end: int) -> None:
+    """Every field-report detector over the last week of the run, as the live
+    report reads them, and how many of them fire."""
+
+    firing = 0
+    for row in detectors.run(conn, SimTime(end)):
+        name = str(row["name"])
+        value = row["value"]
+        m.values[f"detector_{name}"] = None if value is None else float(value)  # type: ignore[arg-type]
+        firing += bool(row["fires"])
+        if row["fires"]:
+            m.notes[f"detector_{name}"] = f"FIRES: {row['detail']}"
+    m.values["detectors_firing"] = float(firing)
+
+
+def _health(conn: Connection[DictRow], m: Measures) -> None:
+    """Whether the economy holds up over the run, and how fast money comes in."""
+
+    def count(kind: str) -> float:
+        return float(
+            _scalar(conn, "SELECT count(*) FROM events WHERE kind = %s", (kind,)) or 0
+        )
+
+    m.values["insolvency_warnings"] = count("insolvency.warning")
+    m.values["firms_failed"] = count("firm.failed")
+    m.values["payroll_held_or_missed"] = count("payroll.held") + count("payroll.missed")
+    m.values["staff_left"] = count("staff.left")
+    m.values["subscriptions_cancelled"] = count("subscription.cancelled")
+    m.values["days_to_collect_mean"] = _scalar(
+        conn,
+        "SELECT avg((paid_sim - issued_sim)::float / %s) FROM invoices "
+        "WHERE paid_sim IS NOT NULL AND kind <> 'supplies'",
+        (DAY,),
+    )
+    m.values["receivables_open_share"] = _scalar(
+        conn,
+        "SELECT sum(amount_cents) FILTER (WHERE paid_sim IS NULL "
+        "AND written_off_sim IS NULL)::float / NULLIF(sum(amount_cents), 0) "
+        "FROM invoices WHERE kind <> 'supplies'",
+    )
+
+
+def _drift(conn: Connection[DictRow], m: Measures, end: int) -> None:
+    """Does the town behave in its last week as in its first? The population's
+    `agent.tick` profile, first seven days against last seven, in bits. A run
+    of one week has nothing to compare."""
+
+    if end < 14 * DAY:
+        m.values["drift_first_last_week"] = None
+        return
+    weeks: list[Counter[str]] = [Counter(), Counter()]
+    for row in conn.execute(
+        "SELECT sim_time, chosen FROM decisions WHERE question_set = 'agent.tick' "
+        "AND (sim_time < %s OR sim_time >= %s)",
+        (7 * DAY, end - 7 * DAY),
+    ).fetchall():
+        side = 0 if int(row["sim_time"]) < 7 * DAY else 1
+        chosen = row["chosen"] or {}
+        for key in PROFILE_KEYS:
+            if key in chosen and chosen[key] is not None:
+                weeks[side][f"{key}={json.dumps(chosen[key])}"] += 1
+    m.values["drift_first_last_week"] = _jsd(weeks[0], weeks[1])
+
+
+def _ties(conn: Connection[DictRow], m: Measures) -> None:
+    """How social life is structured: of all meetings (encounters, and
+    episodes' pairs), how many are between people who had met before, and how
+    concentrated meetings are on a few pairs. People with friends meet them
+    again; stateless agents meet whoever is there (docs/research/04 §3.4)."""
+
+    pairs: list[tuple[str, str]] = []
+    for row in conn.execute(
+        "SELECT payload->>'a' AS a, payload->>'b' AS b FROM events "
+        "WHERE kind = 'encounter' ORDER BY seq"
+    ).fetchall():
+        if row["a"] and row["b"]:
+            pairs.append(tuple(sorted((str(row["a"]), str(row["b"])))))  # type: ignore[arg-type]
+    if not pairs:
+        m.values["repeat_meeting_share"] = None
+        m.values["meetings_top10_pair_share"] = None
+        return
+    seen: set[tuple[str, str]] = set()
+    repeats = 0
+    for pair in pairs:
+        repeats += pair in seen
+        seen.add(pair)
+    counts = Counter(pairs)
+    top = sum(n for _, n in counts.most_common(10))
+    m.values["repeat_meeting_share"] = repeats / len(pairs)
+    m.values["meetings_top10_pair_share"] = top / len(pairs)
+    m.values["distinct_pairs_met"] = float(len(counts))
+
+
 # -- cost and integrity -------------------------------------------------------------
 
 
@@ -376,6 +469,10 @@ def measure(conn: Connection[DictRow]) -> Measures:
     _memory(conn, m)
     _episodes(conn, m)
     _detectors(conn, m)
+    _warnings(conn, m, end)
+    _health(conn, m)
+    _drift(conn, m, end)
+    _ties(conn, m)
     _cost(conn, m)
     m.checks_failed = [c.name for c in soak.checks(conn, days=m.days) if not c.ok]
     m.values["invariants_failed"] = float(len(m.checks_failed))

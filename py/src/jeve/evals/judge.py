@@ -45,6 +45,10 @@ from jeve.llm import ChatMessage, ChatRequest, Gateway
 type Verdict = Literal["A", "B", "tie"]
 
 JUDGE = "openai/gpt-5.6-luna"
+JUDGES: tuple[str, ...] = (JUDGE, "anthropic/claude-haiku-4.5")
+"""A jury of two families, neither answering for any role (arXiv 2404.18796:
+disjoint families beat one judge). Haiku is outside LLM-0006's order
+altogether, so no fallback can ever put it on both sides of a comparison."""
 KIND = "judge"
 MAX_TOKENS = 2000
 """Luna reasons before it answers and cannot be told not to reliably; a reply
