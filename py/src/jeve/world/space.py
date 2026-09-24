@@ -17,7 +17,7 @@ answers the questions in one request independently, so "where next" cannot
 depend on "whom did I talk to" — and asking both about the present moment is
 what keeps it to one call per person per decision point.
 
-**Not everyone is asked every tick** (WORLD-0008). The field report counted
+**Not everyone is asked every tick** (WORLD-0009). The field report counted
 5,331 `agent.tick` answers per office worker and 8,783 per member of cafe staff,
 most of them somebody alone at their own desk being asked again whether they
 would like to stay there. DECIDE-0001 already said an agent is evaluated at a
@@ -71,7 +71,7 @@ class Agent:
     role_index: int = 0
     """Position among their own org's staff in the same role: which shift."""
     mind: str = ""
-    """What was on their mind the last time they were asked (WORLD-0008)."""
+    """What was on their mind the last time they were asked (WORLD-0009)."""
 
     @property
     def own_zone(self) -> Zone:
@@ -88,7 +88,7 @@ def on_shift(
     """Whether this person is due at work now. Roles keep hours (field report
     defect 5): the cafe's weekend part-timer used to work six days a week,
     because hours belonged to the firm and not to the job. And the rota can
-    override them (WORLD-0010): somebody off sick stays home, somebody covering
+    override them (WORLD-0011): somebody off sick stays home, somebody covering
     works their firm's open hours."""
 
     if agent.id in absent:

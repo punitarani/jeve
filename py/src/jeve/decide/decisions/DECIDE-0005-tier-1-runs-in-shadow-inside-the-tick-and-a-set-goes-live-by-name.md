@@ -4,7 +4,7 @@ title: "Tier 1 runs in shadow inside the tick, and a set goes live by name"
 status: "accepted"
 date: 2026-09-24
 deciders: ["claude"]
-scope: ["py/src/jeve/decide/escalation.py", "py/src/jeve/decide/jev_policy.py", "py/src/jeve/sim/escalations.py", "py/src/jeve/sim/panel.py", "py/src/jeve/gen/ontology.py", "py/migrations/0012_escalations.sql", "py/tests/test_escalation.py", "py/tests/test_measurement.py"]
+scope: ["py/src/jeve/decide/escalation.py", "py/src/jeve/decide/jev_policy.py", "py/src/jeve/sim/escalations.py", "py/src/jeve/sim/panel.py", "py/src/jeve/gen/ontology.py", "py/migrations/0013_escalations.sql", "py/tests/test_escalation.py", "py/tests/test_measurement.py"]
 tags: ["escalation", "confidence", "llm", "agent-decided"]
 supersedes: []
 superseded-by: null

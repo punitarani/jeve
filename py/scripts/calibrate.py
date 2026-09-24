@@ -5,7 +5,7 @@
 
 The scenario asks every firm to run *warm* — cash that moves, runways of weeks
 for the cafe and months for the software company — and the field report found
-one firm structurally insolvent and three that only accumulated (WORLD-0009).
+one firm structurally insolvent and three that only accumulated (WORLD-0010).
 Tuning prices and costs against a model would cost money for each attempt and
 mix the economy's shape up with the model's temperament. This runs the world on
 the rules twin, which is free and deterministic, and prints what a person

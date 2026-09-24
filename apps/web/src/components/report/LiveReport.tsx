@@ -73,7 +73,7 @@ const firstName = (name: string) => name.split(" ")[0] ?? name;
 
 type Loaded = { report: FieldReport; map: TownMap; town: TownData };
 
-// What was on somebody's mind, by the key the API reports (WORLD-0008). A
+// What was on somebody's mind, by the key the API reports (WORLD-0009). A
 // module id is an outage and is labelled from the outage list instead.
 const MIND_LABELS: Record<string, string> = {
 	ordinary: "ordinary working day",

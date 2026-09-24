@@ -71,14 +71,14 @@ def payroll_held(engine: Engine, org_id: str) -> bool:
 
 def weekly_outgoings(engine: Engine, org_id: str) -> int:
     """What a week costs a firm to stay open: wages, and rent, stock and
-    interest (WORLD-0009)."""
+    interest (WORLD-0010)."""
 
     return weekly_wages(engine, org_id) + economy.weekly_fixed(engine, org_id)
 
 
 def _person(engine: Engine, role: str, org: str) -> dict[str, Any] | None:
     """Whoever does this job at this firm, or whoever covers it now that they
-    have gone (WORLD-0009). A job with nobody in it used to stop its flow for
+    have gone (WORLD-0010). A job with nobody in it used to stop its flow for
     ever without a word: no payroll clerk, no payroll, for the whole town."""
 
     roles = [role, *COVER.get(role, ())]
@@ -264,7 +264,7 @@ def payroll(
             "AND ended_sim IS NULL ORDER BY id DESC LIMIT 1"
         ).fetchone()
     # The employer kept this week's hours on paper while TimeTrack was down
-    # (WORLD-0010): the clerk can see them, and they must be reconciled later.
+    # (WORLD-0011): the clerk can see them, and they must be reconciled later.
     on_paper = outage is not None and engine.by_hand(org_id, "timetrack")
 
     made = engine.decide(
@@ -313,7 +313,7 @@ def payroll(
         missed = int(payload.get("missed", 0))
         if reason == "insufficient_cash" and not payload.get("held"):
             # That wages are late is news, and the staff are the first to know
-            # (WORLD-0010). It travels from there.
+            # (WORLD-0011). It travels from there.
             fact = memory.Fact.payroll_late(org_id)
             memory.record_fact(
                 engine.conn, fact, sim_time=report.sim_time, seq=held_seq
@@ -333,7 +333,7 @@ def payroll(
                 )
         if reason == "insufficient_cash":
             # Paydays gone by unpaid, counted from this payday — or from when
-            # the world came under WORLD-0009, for one that predates it.
+            # the world came under WORLD-0010, for one that predates it.
             since = max(
                 due, int(economy.policy(engine, org_id).get("economy_since", due))
             )
@@ -455,7 +455,7 @@ def _warn_of_insolvency(
         },
     )
     # Whoever runs the firm, and whoever pays its bills, know it is short; the
-    # news travels from them (WORLD-0010).
+    # news travels from them (WORLD-0011).
     fact = memory.Fact.insolvency(org_id)
     memory.record_fact(engine.conn, fact, sim_time=report.sim_time, seq=seq)
     memory.revive(engine.conn, fact.id)
@@ -536,7 +536,7 @@ def close_books(
     )
     ready = int(made.chosen.get("readiness", 1)) >= 1
     late = str(made.chosen.get("if_not_ready", "wait"))
-    # Close on an estimate and fix it next month (WORLD-0010): the month is
+    # Close on an estimate and fix it next month (WORLD-0011): the month is
     # closed, marked as estimated, and the true-up is billed with the next one.
     estimated = not ready and late == "estimate"
     ready = ready or estimated

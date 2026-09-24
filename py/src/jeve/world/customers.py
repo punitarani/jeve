@@ -1,4 +1,4 @@
-"""Customers who can leave, and bills that can be argued with (WORLD-0010).
+"""Customers who can leave, and bills that can be argued with (WORLD-0011).
 
 Two of the scenario's behaviours had nowhere to happen. Churn bargaining (#7):
 repeated incidents wear a customer's trust down, the account manager sees the

@@ -1,5 +1,5 @@
-"""The loops the scenario names and the field report found missing (WORLD-0010,
-WORLD-0011).
+"""The loops the scenario names and the field report found missing (WORLD-0011,
+WORLD-0012).
 
 Each test drives the real entry point — a scheduled job, the engine's flow, or
 `episodes.escalate` — on the rules twin, and fails on a world without the loop.

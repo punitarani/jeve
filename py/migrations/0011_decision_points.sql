@@ -1,4 +1,4 @@
--- WORLD-0008: somebody is asked `agent.tick` at a decision point, not every tick.
+-- WORLD-0009: somebody is asked `agent.tick` at a decision point, not every tick.
 --
 -- `mind` is what was on their mind the last time they were asked, as a typed
 -- key (`nothing`, `unpaid`, `outage:invoicing`, ...). A change to it is one of

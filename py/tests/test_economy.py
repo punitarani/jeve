@@ -191,7 +191,7 @@ def test_wages_arrive_somewhere_and_are_spent(conn: Connection[DictRow]) -> None
             "WHERE account_id LIKE 'households.%' GROUP BY account_id"
         ).fetchall()
     }
-    # One household purse per employer (WORLD-0009), each paid and each spent.
+    # One household purse per employer (WORLD-0010), each paid and each spent.
     for org in ("tallybird", "halloran", "ledgerline", "thirdrail"):
         assert rows[f"households.{org}.income"] < 0  # credited: wages received
         assert rows[f"households.{org}.spending"] > 0

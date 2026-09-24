@@ -1,4 +1,4 @@
-"""The law firm bills the hours it logs (WORLD-0010).
+"""The law firm bills the hours it logs (WORLD-0011).
 
 The scenario's table has Halloran & Pike's month-end invoices blocked by
 Invoicing and "for the law firm also time entries in TimeTrack". The field

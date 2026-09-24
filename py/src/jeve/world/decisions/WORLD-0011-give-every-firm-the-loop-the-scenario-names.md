@@ -1,18 +1,18 @@
 ---
-id: "WORLD-0010"
+id: "WORLD-0011"
 title: "Give every firm the loop the scenario names"
 status: "accepted"
 date: 2026-09-24
 deciders: ["claude"]
-scope: ["py/src/jeve/world/engineering.py", "py/src/jeve/world/customers.py", "py/src/jeve/world/timesheets.py", "py/src/jeve/world/shocks.py", "py/migrations/0011_loops.sql", "py/tests/test_loops.py"]
+scope: ["py/src/jeve/world/engineering.py", "py/src/jeve/world/customers.py", "py/src/jeve/world/timesheets.py", "py/src/jeve/world/shocks.py", "py/migrations/0012_loops.sql", "py/tests/test_loops.py"]
 tags: ["flows", "decisions", "scenario", "calibration", "agent-decided"]
 supersedes: []
 superseded-by: null
-relates-to: ["WORLD-0004", "WORLD-0009", "WORLD-0011", "MEM-0003", "DECIDE-0001", "CORE-0009"]
+relates-to: ["WORLD-0004", "WORLD-0010", "WORLD-0012", "MEM-0003", "DECIDE-0001", "CORE-0009"]
 confirmation: "cd py && uv run pytest tests/test_loops.py tests/test_questions.py"
 ---
 
-# WORLD-0010 — Give every firm the loop the scenario names
+# WORLD-0011 — Give every firm the loop the scenario names
 
 ## Context and Problem Statement
 

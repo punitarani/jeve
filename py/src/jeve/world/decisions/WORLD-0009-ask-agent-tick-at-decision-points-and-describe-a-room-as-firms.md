@@ -1,10 +1,10 @@
 ---
-id: "WORLD-0008"
+id: "WORLD-0009"
 title: "Ask agent.tick at decision points, and describe a room as firms"
 status: "accepted"
 date: 2026-09-24
 deciders: ["claude"]
-scope: ["py/src/jeve/world/space.py", "py/src/jeve/decide/questions.py", "py/src/jeve/core/orgs.py", "py/migrations/0010_decision_points.sql", "py/tests/test_space.py", "py/tests/test_questions.py"]
+scope: ["py/src/jeve/world/space.py", "py/src/jeve/decide/questions.py", "py/src/jeve/core/orgs.py", "py/migrations/0011_decision_points.sql", "py/tests/test_space.py", "py/tests/test_questions.py"]
 tags: ["space", "encounters", "cost", "cache", "jev", "agent-decided"]
 supersedes: ["WORLD-0003"]
 superseded-by: null
@@ -12,7 +12,7 @@ relates-to: ["DECIDE-0001", "DECIDE-0004", "WORLD-0006", "WORLD-0007"]
 confirmation: "cd py && uv run pytest tests/test_space.py tests/test_questions.py"
 ---
 
-# WORLD-0008 — Ask agent.tick at decision points, and describe a room as firms
+# WORLD-0009 — Ask agent.tick at decision points, and describe a room as firms
 
 ## Context and Problem Statement
 

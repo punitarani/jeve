@@ -1,5 +1,5 @@
 ---
-id: "WORLD-0009"
+id: "WORLD-0010"
 title: "Give the economy sinks and consequences"
 status: "accepted"
 date: 2026-09-24
@@ -8,11 +8,11 @@ scope: ["py/src/jeve/world/economy.py", "py/src/jeve/world/flows.py", "py/src/je
 tags: ["economy", "insolvency", "households", "calibration", "agent-decided"]
 supersedes: []
 superseded-by: null
-relates-to: ["WORLD-0005", "WORLD-0008", "DECIDE-0001", "CORE-0009", "WORLD-0007"]
+relates-to: ["WORLD-0005", "WORLD-0009", "DECIDE-0001", "CORE-0009", "WORLD-0007"]
 confirmation: "cd py && uv run pytest tests/test_consequences.py tests/test_soak.py"
 ---
 
-# WORLD-0009 — Give the economy sinks and consequences
+# WORLD-0010 — Give the economy sinks and consequences
 
 ## Context and Problem Statement
 

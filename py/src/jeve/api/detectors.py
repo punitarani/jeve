@@ -133,7 +133,7 @@ def idle_with_backlog(conn: Connection[DictRow], since: int, now: int) -> Readin
     """Support somewhere other than the desk, or home, while tickets wait.
 
     Measured where people *are*, sampled at half past each working hour, not
-    from what they decided: since WORLD-0008 an agent is asked mostly at
+    from what they decided: since WORLD-0009 an agent is asked mostly at
     decision points such as lunch, so a count of decisions would be a count of
     lunchtimes.
     """

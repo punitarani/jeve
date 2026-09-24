@@ -56,11 +56,11 @@ TABLES = {
     "persons": "id",
     "modules": "id",
     "outage_notices": "incident_id, person_id",
-    # What each firm has decided, and every account it has opened (WORLD-0009).
+    # What each firm has decided, and every account it has opened (WORLD-0010).
     "orgs": "id",
     "accounts": "id",
     # Customers won and lost, hours logged, and who stood in for whom
-    # (WORLD-0010): each written by a job a restart must pick up exactly.
+    # (WORLD-0011): each written by a job a restart must pick up exactly.
     "subscriptions": "id",
     "timesheets": "person_id, day",
     "rota": "id",

@@ -140,7 +140,7 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
     )
 
     # Wages arrive somewhere and come back as demand. Households are accounts
-    # without an org, one set per employer (WORLD-0009).
+    # without an org, one set per employer (WORLD-0010).
     wages = -_one(
         conn,
         "SELECT COALESCE(sum(e.amount_cents),0) FROM ledger_entries e "
@@ -182,7 +182,7 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
         )
     )
 
-    # A warning is read (WORLD-0009). It used to be emitted every week and read
+    # A warning is read (WORLD-0010). It used to be emitted every week and read
     # by nothing (field report, finding 2): the head of the firm looks within
     # a week, or had just looked.
     unread = _one(
@@ -389,7 +389,7 @@ def compare(with_outage: Connection[DictRow], calm: Connection[DictRow]) -> list
     def invoices(
         conn: Connection[DictRow],
     ) -> dict[tuple[str, str, int], tuple[int, int]]:
-        # The law firm bills the hours it logged (WORLD-0010), and logging is
+        # The law firm bills the hours it logged (WORLD-0011), and logging is
         # behaviour, which the counterfactual is allowed to change. What is
         # still a draw about the client and the month is everyone else's work.
         # The work as drawn: a firm may have raised its prices, or discounted

@@ -48,7 +48,7 @@ def _file_ticket(ctx: DecisionContext) -> Settled | None:
 def _payment_timing(ctx: DecisionContext) -> Settled | None:
     if ctx.facts.get("disputed"):
         # Queried and not yet answered: nobody pays a bill they are arguing
-        # about (WORLD-0010).
+        # about (WORLD-0011).
         return {"pay": False, "reason": "disputed"}
     if not ctx.facts.get("can_afford", True):
         return {"pay": False, "reason": "insufficient_cash"}
@@ -87,7 +87,7 @@ def _cafe_purchase(ctx: DecisionContext) -> Settled | None:
     if not ctx.facts.get("can_afford", True):
         return {"buy": False, "reason": "no_money"}
     if ctx.facts.get("sold_out"):
-        # The cafe could not pay for its stock this week (WORLD-0009).
+        # The cafe could not pay for its stock this week (WORLD-0010).
         return {"buy": False, "reason": "sold_out"}
     if _number(ctx.facts.get("queue_length")) <= 0 and not ctx.facts.get("pos_down"):
         # Nobody ahead of them and the till works: someone who walked into a
@@ -99,7 +99,7 @@ def _cafe_purchase(ctx: DecisionContext) -> Settled | None:
 
 
 HEAD_ROLES = frozenset({"founder", "partner", "principal", "owner"})
-"""Whoever runs a firm does not quit it (WORLD-0009): the firm fails instead."""
+"""Whoever runs a firm does not quit it (WORLD-0010): the firm fails instead."""
 
 
 def _leave_consider(ctx: DecisionContext) -> Settled | None:

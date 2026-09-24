@@ -381,7 +381,7 @@ def test_the_report_places_every_member_of_staff(client: TestClient) -> None:
         assert 0 <= person["cafe_share"] <= 1
         assert 0 <= person["talk_share"] <= 1
     # Everyone who has worked a shift; the weekend part-timer has not, in a
-    # fixture that ends on a Friday (WORLD-0008).
+    # fixture that ends on a Friday (WORLD-0009).
     cafe = {p["id"]: p["cafe_share"] for p in body["people"] if p["decisions"]}
     assert "thirdrail.weekend.23" not in cafe
     # The cafe's staff work there; the fixture's office staff mostly do not.
@@ -437,7 +437,7 @@ def test_what_is_on_their_mind_reads_the_prompt_vocabulary() -> None:
     from jeve.decide.questions import MIND_WORDS
 
     assert mind_of(MIND_WORDS["nothing"]) == "ordinary"
-    # Money reaches the mind now (WORLD-0008), and the report says so by key.
+    # Money reaches the mind now (WORLD-0009), and the report says so by key.
     assert mind_of(MIND_WORDS["unpaid"]) == "unpaid"
     assert mind_of(MIND_WORDS["payday"]) == "payday"
     assert (

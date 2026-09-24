@@ -1,4 +1,4 @@
-"""The shock deck: the world's weather (WORLD-0010).
+"""The shock deck: the world's weather (WORLD-0011).
 
 The scenario seeds "a module outage, a key person out sick, an unusually large
 catering order, a supplier price rise, an outside client disputing a bill, an

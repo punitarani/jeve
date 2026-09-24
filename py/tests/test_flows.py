@@ -133,7 +133,7 @@ def test_a_conversation_in_the_cafe_reaches_money(conn: Connection[DictRow]) -> 
 
     run(conn, days=5)
     # Straight to an engineer, or through whoever was cornered deciding to pass
-    # it on (WORLD-0011); in one shot or over rounds (WORLD-0007). Either way
+    # it on (WORLD-0012); in one shot or over rounds (WORLD-0007). Either way
     # the chain starts at a conversation.
     reached = conn.execute(
         """
@@ -312,7 +312,7 @@ def test_an_outage_nobody_chased_delays_the_close_and_the_fee(
     Friday, the close is put off, and Ledgerline bills for it days later.
 
     "Anybody" is more people than it was: support's own queue and a customer's
-    call to the account manager prioritise an outage too (WORLD-0011), and
+    call to the account manager prioritise an outage too (WORLD-0012), and
     either would clear this one by Friday. The unchased arm switches them off,
     so what it measures is still the outage nobody chased.
     """

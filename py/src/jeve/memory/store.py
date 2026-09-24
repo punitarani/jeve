@@ -44,7 +44,7 @@ class Fact:
     about_person_id: str | None = None
     true_fact: bool = True
     """False for a rumour: it travels like a fact, and nothing in the world
-    that computes money reads it (WORLD-0010)."""
+    that computes money reads it (WORLD-0011)."""
 
     @staticmethod
     def outage(incident_id: int, module_id: str) -> Fact:

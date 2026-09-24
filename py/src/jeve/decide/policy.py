@@ -217,7 +217,7 @@ class RulesPolicy:
         vocality = _num(ctx.traits.get("vocality"), 0.4)
         patience = _num(ctx.traits.get("patience"), 0.6)
         # Two draws on every path, in this order, so that the workaround
-        # (WORLD-0010) cannot shift the luck the report question always had.
+        # (WORLD-0011) cannot shift the luck the report question always had.
         draw, how = _uniform(rng), _uniform(rng)
         if _num(ctx.facts.get("hours_down"), 0.0) < 4:
             # It has only just gone: most people wait, the loud ring someone,
@@ -292,7 +292,7 @@ class RulesPolicy:
         else:
             cafe, plaza = (0.25 if lunch else 0.04), 0.04
             if ctx.facts.get("horizon") == "hour":
-                # Asked once an hour at a quiet desk (WORLD-0008): the chance
+                # Asked once an hour at a quiet desk (WORLD-0009): the chance
                 # of going at all in four quarter hours, not in one.
                 cafe, plaza = 1 - (1 - cafe) ** 4, 1 - (1 - plaza) ** 4
             next_zone = "cafe" if go < cafe else "plaza" if go < cafe + plaza else here
@@ -346,7 +346,7 @@ class RulesPolicy:
         """A month whose invoices have not gone out has no revenue to close on."""
 
         if ctx.facts.get("invoices_stuck"):
-            # Wait, then chase, then close on an estimate (WORLD-0010).
+            # Wait, then chase, then close on an estimate (WORLD-0011).
             attempt = _num(ctx.facts.get("attempt"), 1.0)
             late = "wait" if attempt <= 1 else "nag" if attempt <= 2 else "estimate"
             return {"readiness": 0, "if_not_ready": late}, {}
@@ -464,7 +464,7 @@ class RulesPolicy:
 
         return {"hire": _num(ctx.facts.get("runway_days"), 0.0) >= 28}, {}
 
-    # -- the loops the scenario names (WORLD-0010) ------------------------------
+    # -- the loops the scenario names (WORLD-0011) ------------------------------
 
     def _eng_allocation(
         self, ctx: DecisionContext, rng: object

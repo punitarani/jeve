@@ -4,11 +4,11 @@ title: "Trust is a typed belief, and a fact can be false"
 status: "accepted"
 date: 2026-09-24
 deciders: ["claude"]
-scope: ["py/src/jeve/memory/**", "py/src/jeve/world/customers.py", "py/migrations/0011_loops.sql"]
+scope: ["py/src/jeve/memory/**", "py/src/jeve/world/customers.py", "py/migrations/0012_loops.sql"]
 tags: ["memory", "beliefs", "diffusion", "rumour", "agent-decided"]
 supersedes: []
 superseded-by: null
-relates-to: ["MEM-0001", "MEM-0002", "WORLD-0010"]
+relates-to: ["MEM-0001", "MEM-0002", "WORLD-0011"]
 confirmation: "cd py && uv run pytest tests/test_loops.py"
 ---
 

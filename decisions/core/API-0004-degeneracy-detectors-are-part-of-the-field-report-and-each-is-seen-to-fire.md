@@ -8,7 +8,7 @@ scope: ["py/src/jeve/api/detectors.py", "py/src/jeve/api/report.py", "py/src/jev
 tags: ["api", "reports", "measurement", "agent-decided"]
 supersedes: []
 superseded-by: null
-relates-to: ["API-0003", "DECIDE-0005", "WORLD-0010"]
+relates-to: ["API-0003", "DECIDE-0005", "WORLD-0011"]
 confirmation: "cd py && uv run pytest tests/test_detectors.py"
 ---
 
@@ -38,7 +38,7 @@ with a value, the line past which it fires, and the rows it came from; the live
 report shows them first.
 
 They are idle-with-backlog (sampled from where support *is* at half past each
-working hour, not from decisions, which since WORLD-0008 are mostly
+working hour, not from decisions, which since WORLD-0009 are mostly
 lunchtimes), collapsed acts, role information, friction per week, money
 velocity, persona signal (a two-proportion z of at least 2 on some trait, not a
 gap size, which chance alone exceeds), ontology gaps and a redundant tier 1.

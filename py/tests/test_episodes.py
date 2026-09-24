@@ -456,7 +456,7 @@ def test_an_episode_can_escalate_an_outage_and_still_only_once(
     """The consequence a meeting has always had, reached from the other arm.
 
     With an engineer: pressed, they act at once. Anyone else at the vendor has
-    to decide to pass it on (WORLD-0011), which the test below covers."""
+    to decide to pass it on (WORLD-0012), which the test below covers."""
 
     asker = "halloran.office_manager.12"
     vendor = "tallybird.engineer.2"
@@ -834,7 +834,7 @@ def test_a_world_begun_before_episodes_carries_on_with_them(
     )
     conn.execute("DELETE FROM schema_migrations WHERE name = '0009_episodes.sql'")
     # And everything written after 0009, which that code had not seen either:
-    # left in place, 0011 would read as applied to a `facts` table that 0009 is
+    # left in place, 0012 would read as applied to a `facts` table that 0009 is
     # about to create again without its columns.
     conn.execute("DROP TABLE timesheets, rota, escalations")
     conn.execute(
@@ -847,7 +847,7 @@ def test_a_world_begun_before_episodes_carries_on_with_them(
     )
     conn.execute(
         "DELETE FROM schema_migrations WHERE name IN "
-        "('0010_decision_points.sql', '0011_loops.sql', '0012_escalations.sql')"
+        "('0011_decision_points.sql', '0012_loops.sql', '0013_escalations.sql')"
     )
     _hand_the_world_to_the_daemon(conn)
 

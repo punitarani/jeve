@@ -204,7 +204,7 @@ def open_incident(engine: Engine, down: list[str]) -> dict[str, Any] | None:
 
 ENGINEERING_ROLES = frozenset({"founder", "eng_lead", "engineer", "sre"})
 """People who can act on an outage themselves. Anyone else at the vendor has to
-pass a complaint on (WORLD-0011)."""
+pass a complaint on (WORLD-0012)."""
 
 
 def escalate(
@@ -229,7 +229,7 @@ def escalate(
     episode's closing event for an episode, so the cascade query walks through
     whichever ran.
 
-    Whom it was raised with matters (WORLD-0011). The field report found
+    Whom it was raised with matters (WORLD-0012). The field report found
     escalation was social — it landed on whoever from the vendor happened to be
     in the cafe, and every one of them could shorten an outage on the spot. An
     engineer can; a support agent or the account manager decides whether to
@@ -622,8 +622,8 @@ def run(
     """Open and run every episode this tick. Returns the pairs it consumed.
 
     `asked` and `made` are the people at a decision point and what they chose
-    (WORLD-0008); `present` is everyone about, who may join a conversation they
-    did not start. Everyone present was asked, before WORLD-0008, and still is
+    (WORLD-0009); `present` is everyone about, who may join a conversation they
+    did not start. Everyone present was asked, before WORLD-0009, and still is
     when `present` is not given.
 
     A pair that became an episode must not also be recorded as a one-shot

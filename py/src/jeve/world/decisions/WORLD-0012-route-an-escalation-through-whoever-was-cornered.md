@@ -1,5 +1,5 @@
 ---
-id: "WORLD-0011"
+id: "WORLD-0012"
 title: "Route an escalation through whoever was cornered"
 status: "accepted"
 date: 2026-09-24
@@ -8,11 +8,11 @@ scope: ["py/src/jeve/world/episodes.py", "py/src/jeve/world/engine.py", "py/test
 tags: ["escalation", "encounters", "support", "agent-decided"]
 supersedes: []
 superseded-by: null
-relates-to: ["WORLD-0008", "WORLD-0007", "WORLD-0010"]
+relates-to: ["WORLD-0009", "WORLD-0007", "WORLD-0011"]
 confirmation: "cd py && uv run pytest tests/test_loops.py"
 ---
 
-# WORLD-0011 — Route an escalation through whoever was cornered
+# WORLD-0012 — Route an escalation through whoever was cornered
 
 ## Context and Problem Statement
 
@@ -36,7 +36,7 @@ engineer or an SRE) shortens the outage at once, as before; raised with anyone
 else, it becomes an `escalation.handoff` decision a quarter of an hour later —
 relay it to engineering, or leave it in the queue. Support escalates by rule
 once three blocked customers' tickets are triaged against one outage, and a
-customer can ring their account manager as a workaround (WORLD-0010).
+customer can ring their account manager as a workaround (WORLD-0011).
 
 Procedure is weaker than a face. A relay by phone, or support's rule, puts the
 incident at the top of the queue: what is left of it halves, once per

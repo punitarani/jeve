@@ -1,4 +1,4 @@
-"""The economy has consequences (WORLD-0009).
+"""The economy has consequences (WORLD-0010).
 
 The golden-20260920 field report ran production for 232 sim-days and found an
 economy with no consequences in it. Tallybird paid $14.6k a week in wages
@@ -115,7 +115,7 @@ AT_WORK = (
     "NOT EXISTS (SELECT 1 FROM rota r, sim_meta m WHERE r.person_id = persons.id "
     "AND r.kind = 'absent' AND r.starts_sim <= m.sim_time AND r.ends_sim > m.sim_time)"
 )
-"""Not off sick right now (WORLD-0010), for a query over `persons`: a job whose
+"""Not off sick right now (WORLD-0011), for a query over `persons`: a job whose
 holder is away is done by whoever covers it, which is how an absence reaches a
 flow."""
 
@@ -389,7 +389,7 @@ def supplier_order(
 ) -> None:
     """The cafe's weekly stock, about a third of what it sold last week.
 
-    How much is the owner's call (WORLD-0010): the usual, more, or less, from
+    How much is the owner's call (WORLD-0011): the usual, more, or less, from
     how last week compared with the one before — and with the card reader down
     the till's records are not there to compare. Paid on the spot; a cafe that
     cannot pay for all of it buys what it can and runs short, which the till
@@ -1087,7 +1087,7 @@ def recurring(now: int) -> list[tuple[int, str, str | None, dict[str, object]]]:
         (monday + 7 * HOUR, "households.week", None, {}),
         (monday + 7 * HOUR, "loans.week", None, {}),
         (monday + 7 * HOUR, "supplier.order", "thirdrail", {}),
-        # WORLD-0010: the engineering week, the deploy train, the shock deck
+        # WORLD-0011: the engineering week, the deploy train, the shock deck
         # and the law firm's timesheets.
         (monday + 7 * HOUR, "shocks.week", None, {}),
         (monday + 9 * HOUR + 30 * 60, "eng.allocate", None, {}),

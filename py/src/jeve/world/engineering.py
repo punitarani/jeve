@@ -1,4 +1,4 @@
-"""Tallybird's engineering loop: the firefighting trap (WORLD-0010).
+"""Tallybird's engineering loop: the firefighting trap (WORLD-0011).
 
 The scenario's behaviour #4: a ticket surge pushes the engineering lead to
 spend the week firefighting, the debt that causes outages goes unpaid, and the

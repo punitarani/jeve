@@ -332,7 +332,7 @@ def test_only_someone_affected_can_escalate_and_only_to_the_vendor(
         assert subscribed is not None, row
 
 
-# -- decision points (WORLD-0008) ----------------------------------------------
+# -- decision points (WORLD-0009) ----------------------------------------------
 
 
 def test_the_weekend_part_timer_works_the_weekend(conn: Connection[DictRow]) -> None:

@@ -316,7 +316,7 @@ BLOCKS: dict[str, str] = {
     "timetrack": "They cannot record the hours their people work.",
     "pos": "Their card reader is down, so they can only take cash.",
 }
-"""What each feature being down stops somebody doing (WORLD-0010). The report
+"""What each feature being down stops somebody doing (WORLD-0011). The report
 found the situation wording bland and temperament swamping it (finding 5)."""
 
 
@@ -717,7 +717,7 @@ def who_is_here(ctx: DecisionContext) -> dict[str, str] | str:
 
 def _next_zone(org: str, horizon: str) -> Ask:
     """Where next. Asked of somebody alone at their desk on the hour, or of
-    anyone else every quarter hour (WORLD-0008), and the question says which:
+    anyone else every quarter hour (WORLD-0009), and the question says which:
     "the next fifteen minutes" put to someone asked once an hour would make
     every coffee break four times rarer than the person would take it."""
 
@@ -1084,7 +1084,7 @@ _IF_LATE = Ask(
     ),
 )
 """The scenario's Ledgerline row: when a client's data is late, wait, nag, or
-estimate and fix later. Asked only when the data is late (WORLD-0010)."""
+estimate and fix later. Asked only when the data is late (WORLD-0011)."""
 
 
 def _interpret_close(
@@ -1326,7 +1326,7 @@ TELLABLE_WORDS: dict[str, str] = {
     "price_rise": "that the software company is planning to put its prices up",
 }
 """The two original sentences, kept byte for byte. Everything a fact can be
-about now (WORLD-0010) is worded by `tellable_words`, which names the firm."""
+about now (WORLD-0011) is worded by `tellable_words`, which names the firm."""
 
 _TOPIC_WORDS: dict[str, str] = {
     "price_rise": "that {org} is putting its prices up",
@@ -1500,7 +1500,7 @@ def _interpret_episode_round(
     )
 
 
-# -- the economy has consequences (WORLD-0009) ---------------------------------
+# -- the economy has consequences (WORLD-0010) ---------------------------------
 
 
 def arrears_words(weeks_behind: object) -> str:
@@ -1665,7 +1665,7 @@ def _interpret_hire(
     return Outcome({"hire": bool(got["hire"].value)}, {})
 
 
-# -- the loops the scenario names (WORLD-0010) ----------------------------------
+# -- the loops the scenario names (WORLD-0011) ----------------------------------
 
 
 def debt_words(level: object) -> str:

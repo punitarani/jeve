@@ -1,4 +1,4 @@
-"""The economy has consequences (WORLD-0009).
+"""The economy has consequences (WORLD-0010).
 
 The field report's world warned of insolvency every week for 28 weeks and
 nothing happened: nobody left, nobody borrowed, nothing failed, and a founder
@@ -278,7 +278,7 @@ def test_an_unpaid_firm_empties_only_its_own_staffs_purses(
 def test_a_world_seeded_before_the_economy_is_brought_up_to_date(
     conn: Connection[DictRow],
 ) -> None:
-    """Production's world predates WORLD-0009 and migrates while the old daemon
+    """Production's world predates WORLD-0010 and migrates while the old daemon
     writes, so the upgrade happens when the new engine starts, once."""
 
     seed(conn, root_seed=ROOT_SEED)

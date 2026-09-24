@@ -1,4 +1,4 @@
--- WORLD-0010 and WORLD-0011: the loops the scenario names and the field report
+-- WORLD-0011 and WORLD-0012: the loops the scenario names and the field report
 -- found missing, and somewhere for each of them to write.
 
 -- ------------------------------------------------------------------- facts

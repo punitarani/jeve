@@ -55,7 +55,7 @@ from jeve.world import (
 
 # Tallybird's hazard: chance per business hour that a module falls over, at no
 # debt; `DEBT_MULTIPLIER` scales it with the codebase's debt, which engineering
-# now moves (WORLD-0010). It was 0.016, which at the seeded debt is about one
+# now moves (WORLD-0011). It was 0.016, which at the seeded debt is about one
 # outage a day: harmless while an outage changed nothing lasting, and a
 # certain death spiral once customers remember them. At 0.006 the seeded debt
 # gives about two a week, before deploys and shocks add theirs.
@@ -164,7 +164,7 @@ class Engine:
         self._root = root_seed
         self.pinned_debt = debt_level
         """None: the codebase's debt is what engineering makes of it
-        (WORLD-0010). A number pins it, for an experiment about the hazard."""
+        (WORLD-0011). A number pins it, for an experiment about the hazard."""
         self.encounters = encounters
         """Off, people still move but meeting changes nothing: the control arm
         for "does space matter?"."""
@@ -179,7 +179,7 @@ class Engine:
         # Whatever ran before us may have died mid-tick (WORLD-0002).
         db.resync_sequences(self._conn)
         self._remember_outages_from_before_memory()
-        # A world seeded before WORLD-0009 gets its accounts, prices and
+        # A world seeded before WORLD-0010 gets its accounts, prices and
         # recurring jobs here, under the writer lock, once.
         economy.install(self._conn, root_seed=root_seed)
         self._conn.commit()
@@ -436,7 +436,7 @@ class Engine:
 
         roles = list(BY_ID[org_id].payer_roles)
         # Whoever is left, if the people whose job it is have gone: somebody
-        # still has to open the post (WORLD-0009).
+        # still has to open the post (WORLD-0010).
         return self._conn.execute(
             "SELECT id, org_id, role, traits FROM persons WHERE org_id = %s "
             f"AND kind = 'staff' AND status <> 'left' AND {economy.AT_WORK} "
@@ -591,7 +591,7 @@ class Engine:
 
     def _maybe_incident(self, report: TickReport, now: SimTime) -> None:
         if economy.failed(self, "tallybird"):
-            return  # its customers have moved to another vendor (WORLD-0009)
+            return  # its customers have moved to another vendor (WORLD-0010)
         debt = engineering.debt(self)
         chance = per_tick(HAZARD_PER_HOUR * (1 + debt * (DEBT_MULTIPLIER - 1)))
         for module_id in ("timetrack", "invoicing", "pos"):
@@ -752,7 +752,7 @@ class Engine:
             minutes=minutes,
             escalated=row["escalation_event_seq"] is not None,
         )
-        # A long outage leaves debt behind it (WORLD-0010)...
+        # A long outage leaves debt behind it (WORLD-0011)...
         level = engineering.postmortem(self, report, minutes=minutes)
         if level is not None:
             self._emit(
@@ -793,7 +793,7 @@ class Engine:
             (report.sim_time,),
         ).fetchall()
         # Month-end is close, or a month-end run is already waiting on the
-        # outage: what makes an invoicing outage matter this week (WORLD-0010).
+        # outage: what makes an invoicing outage matter this week (WORLD-0011).
         month_end = (
             self._conn.execute(
                 "SELECT 1 FROM scheduled WHERE (kind = 'month.end' AND "
@@ -864,7 +864,7 @@ class Engine:
         (the scenario's behaviour #5). Recorded, and where it reaches the world
         it does so by rule: work done by hand goes out, and may not reconcile
         at the month's close; ringing the account manager is an escalation
-        that has to be passed on to be worth anything (WORLD-0011)."""
+        that has to be passed on to be worth anything (WORLD-0012)."""
 
         how = str(made.chosen["workaround"])
         person_id = str(row["person_id"])
@@ -1115,7 +1115,7 @@ class Engine:
 
     INTERNAL_ESCALATION_TICKETS = 3
     """Blocked customers on one outage before support takes it to engineering
-    without anybody having to be cornered (WORLD-0011). Triage severity had no
+    without anybody having to be cornered (WORLD-0012). Triage severity had no
     consequence; now enough of it is a priority."""
 
     def _escalate_internally(
@@ -1243,7 +1243,7 @@ class Engine:
         was_blocked: bool = False,
     ) -> None:
         """The cascade's first link: no Invoicing module, no invoices — unless
-        the firm has chosen to do them by hand (WORLD-0010), in which case they
+        the firm has chosen to do them by hand (WORLD-0011), in which case they
         go out, and have to be reconciled at the close."""
 
         manual = self._module_down("invoicing") and self.by_hand(org_id, "invoicing")
@@ -1317,7 +1317,7 @@ class Engine:
     def billed_work(self, org_id: str, month: int) -> list[tuple[str, int]]:
         """What each engaged client is billed this month.
 
-        The law firm bills the hours it logged (WORLD-0010), shared across the
+        The law firm bills the hours it logged (WORLD-0011), shared across the
         month's clients by the size of their matters; everyone else bills the
         work drawn for the month.
         """
@@ -1367,7 +1367,7 @@ class Engine:
         """Issue one invoice: the row, the event, the receivable. Returns its id.
 
         `work_cents` is what the work came to before the firm's price list,
-        which it may have raised (WORLD-0009): the draw a counterfactual must
+        which it may have raised (WORLD-0010): the draw a counterfactual must
         find unchanged, whatever the firm decided about its prices.
         """
 
@@ -1418,7 +1418,7 @@ class Engine:
         if economy.failed(self, "tallybird"):
             return
         # Before the month is billed, customers at risk decide whether to stay,
-        # and some who left come back (WORLD-0010).
+        # and some who left come back (WORLD-0011).
         month = report.sim_time // (28 * DAY)
         customers.win_back(self, report, month)
         discounts = customers.renewals(self, report)
@@ -1701,7 +1701,7 @@ class Engine:
             (report.sim_time - CHASE_HARDER_AFTER, report.sim_time - WRITE_OFF_AFTER),
         ).fetchall()
         # A week late, or three days while the firm has decided to chase
-        # harder (WORLD-0009).
+        # harder (WORLD-0010).
         after = {
             org.id: economy.chase_after_days(self, org.id, report.sim_time) * DAY
             for org in ORGS
@@ -1838,7 +1838,7 @@ class Engine:
             "AND p.org_id <> 'thirdrail' ORDER BY p.id",
             (report.tick_seq,),
         ).fetchall()
-        # Each from their own employer's households (WORLD-0009): an unpaid
+        # Each from their own employer's households (WORLD-0010): an unpaid
         # engineer's coffee used to come out of the lawyers' wages.
         purse = {
             org: self.cash_of(economy.household(org))
@@ -1850,7 +1850,7 @@ class Engine:
         sold_out_share = float(cafe.get("stock_short_share", 0.0)) if short else 0.0
 
         # Service is a queue whose rate depends on who is behind the counter
-        # (the scenario's Third Rail row, WORLD-0010): somebody off sick and not
+        # (the scenario's Third Rail row, WORLD-0011): somebody off sick and not
         # covered is a slower line. A card reader that is down halves it,
         # unless the cafe has chosen to write sales down by hand.
         behind = self._conn.execute(

@@ -41,7 +41,7 @@ ORGS = tuple((org.id, org.name, org.kind) for org in ORG_SPECS)
 
 HOUSEHOLD_OPENING_WEEKS = 1.5
 """What each firm's households have in the bank on day zero, in weeks of that
-firm's wages. One purse per employer (WORLD-0009): the town used to share one,
+firm's wages. One purse per employer (WORLD-0010): the town used to share one,
 so an unpaid engineer's coffee came out of a lawyer's wages."""
 
 # Staff with a full decision surface. Counterparties are generated below.
@@ -138,7 +138,7 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         db.executemany(
             conn, "INSERT INTO modules (id, name) VALUES (%s, %s)", list(MODULES)
         )
-        # What each firm has decided lives in `policy` (WORLD-0009). A world
+        # What each firm has decided lives in `policy` (WORLD-0010). A world
         # seeded here is under this economy from its first second; a world
         # that predates it counts missed paydays from its upgrade.
         db.executemany(
@@ -268,7 +268,7 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
                 index % 5
             ]
             person = f"tallybird.subscriber.{index}"
-            # Small firms, paying per seat (WORLD-0009): a hundred at $49 a
+            # Small firms, paying per seat (WORLD-0010): a hundred at $49 a
             # month each was a tenth of Tallybird's wage bill.
             price = SEAT_PRICE_CENTS * seats_for(root_seed, person)
             subs.append((None, person, module, price))
@@ -451,7 +451,7 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             (at(1, 10), 0, "catering.consider", org_id, "{}")
             for org_id in ("halloran", "ledgerline", "tallybird")
         ]
-        # Rent, stock, tax, households, loans, reviews and hiring (WORLD-0009).
+        # Rent, stock, tax, households, loans, reviews and hiring (WORLD-0010).
         schedule += [
             (due, 0, kind, subject, json.dumps(payload))
             for due, kind, subject, payload in recurring(at(0, 7))

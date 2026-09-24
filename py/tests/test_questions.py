@@ -516,7 +516,7 @@ def test_a_late_close_asks_what_to_do_about_it_only_when_it_is_late() -> None:
 def test_news_about_a_firm_names_the_firm() -> None:
     from jeve.decide.questions import TELLABLE_WORDS, tellable_words
 
-    # The two sentences recorded before WORLD-0010 are unchanged.
+    # The two sentences recorded before WORLD-0011 are unchanged.
     assert tellable_words("price_rise", "tallybird") == TELLABLE_WORDS["price_rise"]
     assert tellable_words("outage", None) == TELLABLE_WORDS["outage"]
     assert "the software company" in tellable_words("insolvency", "tallybird")
