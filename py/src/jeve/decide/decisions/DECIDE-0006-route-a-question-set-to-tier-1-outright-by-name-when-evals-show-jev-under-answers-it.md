@@ -52,7 +52,7 @@ What overrides design/005 here (six held-out seeds, 513 decisions answered
 by both):
 
 | | Jev | routed |
-|---|---:|---:|
+| --- | ---: | ---: |
 | normalised entropy of the act, per decision | 0.51 | 0.81 |
 | P(had their say) | 0.29 | 0.52 |
 | gap in P(press), outspoken minus quiet | +0.40 | +0.16 |
