@@ -959,6 +959,9 @@ def _context(
     agent = seat.agent
     role = stake.role_of(agent.id)
     news = tellable.get(agent.id)
+    ties = memory.ties_of(
+        engine.conn, agent.id, [o.agent.id for o in standing if o is not seat]
+    )
     return DecisionContext(
         person_id=agent.id,
         role=agent.role,
@@ -979,11 +982,15 @@ def _context(
                     "org": other.agent.org,
                     "role": other.agent.role,
                     "last_act": local.last_acts.get(other.agent.id),
+                    **ties.get(other.agent.id, memory.Tie()).as_facts(),
                 }
                 for other in standing
                 if other.agent.id != agent.id
             ],
             "my_last_act": local.last_acts.get(agent.id),
+            # How they feel now: this conversation's last word on it, else how
+            # they came in (WORLD-0013).
+            "mood": local.moods.get(agent.id, agent.mood),
             "rounds_done": local.rounds_done,
             "raised": local.raised,
             "pressed": local.pressed,
@@ -1091,6 +1098,26 @@ def _fold(
     return bool(remaining) and all(remaining)
 
 
+def pair_warmth(x: str, y: str, stake: Stake, local: Local) -> int:
+    """How a conversation moved one pair's tie, from what each did last
+    (MEM-0004): a refusal to the one asking cools it, a promise warms it,
+    pressing someone hard when tempers are up cools it, and two people who
+    ended on small talk part a little warmer."""
+
+    acts = {x: local.last_acts.get(x, ""), y: local.last_acts.get(y, "")}
+    delta = 0
+    for me, them in ((x, y), (y, x)):
+        if acts[me] == "decline" and them in stake.askers:
+            delta -= 1
+        elif acts[me] == "promise" and them in stake.askers:
+            delta += 1
+        elif acts[me] == "press" and them == stake.holder and local.tension >= 2:
+            delta -= 1
+    if acts[x] == acts[y] == "small_talk":
+        delta += 1
+    return max(-2, min(2, delta))
+
+
 def _close(
     engine: Engine,
     report: TickReport,
@@ -1140,6 +1167,27 @@ def _close(
     for person, mood in sorted(local.moods.items()):
         engine.conn.execute(
             "UPDATE positions SET mood = %s WHERE person_id = %s", (mood, person)
+        )
+
+    # Everyone at the table has now met everyone else, and how it went moves
+    # how they get on (MEM-0004).
+    people = [seat.agent.id for seat in seats]
+    for i, x in enumerate(people):
+        for y in people[i + 1 :]:
+            memory.meet(
+                engine.conn,
+                x,
+                y,
+                sim_time=report.sim_time,
+                warmth=pair_warmth(x, y, stake, local),
+                topic=stake.kind,
+            )
+    if local.pressed and stake.kind == "invoice" and stake.invoice_id is not None:
+        # A bill pressed in person is a reminder its payer is told about
+        # (WORLD-0013); before, only a promise changed anything.
+        engine.conn.execute(
+            "UPDATE invoices SET reminded_sim = %s WHERE id = %s AND paid_sim IS NULL",
+            (report.sim_time, stake.invoice_id),
         )
 
     for teller in sorted(local.told):
@@ -1481,7 +1529,7 @@ def commitment_due(
     )
     if not settled:
         return
-    engine.emit(
+    seq = engine.emit(
         report,
         "promise.broken",
         actor_id=open_promise.from_person_id,
@@ -1492,4 +1540,19 @@ def commitment_due(
             "to": open_promise.to_person_id,
             "days_promised": (report.sim_time - open_promise.made_sim) // DAY,
         },
+    )
+    # The creditor now knows something they can pass on (MEM-0003's topic,
+    # which nothing ever recorded), and thinks less of the one who broke it.
+    fact = memory.Fact.promise_broken(open_promise.from_person_id)
+    memory.record_fact(engine.conn, fact, sim_time=report.sim_time, seq=seq)
+    memory.learn(
+        engine.conn, open_promise.to_person_id, fact.id,
+        sim_time=report.sim_time, seq=seq,
+    )  # fmt: skip
+    memory.warm(
+        engine.conn,
+        open_promise.from_person_id,
+        open_promise.to_person_id,
+        -2,
+        sim_time=report.sim_time,
     )

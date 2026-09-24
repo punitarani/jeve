@@ -100,7 +100,10 @@ def test_prompt_clients_are_never_asked_about_a_bill(
     ]
     assert prompt, "no prompt client had a bill fall due in two weeks"
     reasons = {str(r["chosen"]["reason"]) for r in prompt}
-    assert reasons == {"standing_instruction"}
+    # A standing instruction, or — when the account is short — the bounce that
+    # comes before it (WORLD-0014: clients' cash is finite). Gates both.
+    assert "standing_instruction" in reasons
+    assert reasons <= {"standing_instruction", "insufficient_cash"}
     assert {str(r["source"]) for r in prompt} == {"rules"}
 
 

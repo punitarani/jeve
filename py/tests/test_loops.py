@@ -286,7 +286,8 @@ def test_customers_remember_outages_and_some_leave(conn: Connection[DictRow]) ->
         "SELECT count(*) FROM persons WHERE (beliefs->>'vendor_reliability')::int < 3",
     )
     assert lowered > 0
-    # Renewal is asked only of customers at risk, at the monthly billing.
+    # Renewal is asked of every holder at the monthly billing (WORLD-0014),
+    # the ones who lost trust among them.
     asked = conn.execute(
         "SELECT person_id FROM decisions WHERE question_set = 'subscription.renew'"
     ).fetchall()
@@ -306,12 +307,22 @@ def test_customers_remember_outages_and_some_leave(conn: Connection[DictRow]) ->
         assert memory.holders_of(conn, "churned:tallybird")
 
 
-def test_a_confident_customer_is_not_asked_whether_to_stay(
+def test_a_confident_customer_weighs_the_month_but_is_not_courted(
     conn: Connection[DictRow],
 ) -> None:
+    """Every holder is asked whether to stay (WORLD-0014): content customers
+    leave too, at a few in a hundred a month. Only one at risk is worth the
+    account manager's call, so a world where nobody is at risk offers nothing."""
+
     engine, report = fresh(conn)
+    holders = count(conn, "SELECT count(*) FROM subscriptions WHERE active")
     assert customers.renewals(engine, report) == {}
-    assert count(conn, "SELECT count(*) FROM decisions") == 0
+    asked = count(
+        conn,
+        "SELECT count(*) FROM decisions WHERE question_set = 'subscription.renew'",
+    )
+    assert 0 < asked <= holders
+    assert count(conn, "SELECT count(*) FROM decisions") == asked
     conn.rollback()
 
 

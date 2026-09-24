@@ -221,8 +221,18 @@ def test_no_timetrack_no_timesheets_no_payday(conn: Connection[DictRow]) -> None
         ).fetchall()
     }
     # Halloran and the cafe keep their hours in TimeTrack; the others do not.
+    # Theirs wait exactly as long as TimeTrack stayed down past the payroll
+    # hour — how long that is depends on who rang whom about it (WORLD-0012).
     assert lateness["tallybird"] == lateness["ledgerline"] == 0
-    assert lateness["halloran"] >= 60 and lateness["thirdrail"] >= 60
+    back = conn.execute(
+        "SELECT sim_time FROM events WHERE kind = 'incident.ended' "
+        "AND payload->>'module_id' = 'timetrack' AND sim_time > %s",
+        (at(4, 9, 30),),
+    ).fetchone()
+    assert back is not None
+    waited = (int(back["sim_time"]) - at(4, 10)) // 60
+    assert waited > 0
+    assert lateness["halloran"] == lateness["thirdrail"] == waited
 
     held = conn.execute(
         "SELECT org_id, causes FROM events WHERE kind = 'payroll.held' ORDER BY seq"

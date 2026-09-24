@@ -80,9 +80,13 @@ because by the time they tried the feature it worked."""
 # six-a-tick it replaces, shaped like a cafe: a rush before work, a bigger one
 # at lunch.
 CAFE_ARRIVALS_PER_HOUR: dict[int, int] = {
-    7: 10, 8: 30, 9: 25, 10: 19, 11: 22, 12: 41,
-    13: 31, 14: 19, 15: 19, 16: 16, 17: 10,
+    7: 24, 8: 42, 9: 36, 10: 26, 11: 18, 12: 28,
+    13: 20, 14: 14, 15: 12, 16: 12, 17: 10,
 }  # fmt: skip
+"""The same 242 walk-ins a day, reshaped (WORLD-0014): cafes are busiest from
+8 to 10 in the morning (Square POS data, 2018), and this table put its peak at
+noon, so the world's busiest hour was lunch. Office staff still come at lunch,
+on top of these."""
 
 CLIENT_ENGAGED_PER_MONTH = 0.12
 """A firm bills about twelve of its hundred clients in a month. It was always the
@@ -95,7 +99,26 @@ REOPEN_WINDOW = 3 * DAY
 CHASE_AFTER = 7 * DAY
 CHASE_HARDER_AFTER = 3 * DAY
 WRITE_OFF_AFTER = 60 * DAY
-AUTOPAY_ABOVE = 0.2
+AUTOPAY_ABOVE = 0.5
+"""Clients this far up the promptness range pay by standing instruction on the
+day. It was 0.2 — four clients in five — and the world paid its bills about on
+time, where real small businesses are paid 7.8 days late (Xero, Dec quarter
+2025) and 43% of B2B invoice value is overdue (Atradius US 2025). Half now pay
+by instruction; the other half decide, daily, from their own cash (WORLD-0014)."""
+CHASE_AGAIN_AFTER = 7 * DAY
+REMINDER_LASTS = 14 * DAY
+"""A bill raised in person weighs on the payer for a fortnight."""
+CLIENT_CAN_PAY_DAYS = 5.0
+"""Under five days of cash in hand, a client cannot pay a bill today."""
+"""A dunning cadence: a bill still unpaid a week after it was chased is chased
+again. It used to be chased once, ever."""
+CLIENT_BUFFER_MEDIAN_DAYS = 27.0
+CLIENT_BUFFER_SIGMA = 1.16
+"""A client's cash buffer, in days of outgoings, drawn each month from a
+log-normal fitted to JPMorgan Chase Institute's 597,000 small businesses
+("Cash is King", 2016): median 27 days, a quarter under 13, a quarter over 62.
+About 29% fall under the 14 days `runway_words` calls tight. Clients were told
+they had 60 days, always."""
 """Clients in the four prompter fifths pay by standing instruction on the day a
 bill falls due: a gate, not a question. The slowest fifth decide, daily."""
 
@@ -130,6 +153,11 @@ FRICTION: tuple[str, ...] = (
     "firm.failed",
     "invoice.disputed",
     "invoice.written_off",
+    # A bill left unpaid past its date, once per bill (WORLD-0005): the same
+    # failure as `rent.late` and `supplier.unpaid`, owed to another firm or a
+    # client's supplier instead of a landlord. Left out while deferrals were a
+    # die rolled every tick; counted since WORLD-0014 put real late payment in.
+    "payment.deferred",
     "payroll.held",
     "payroll.missed",
     "promise.broken",
@@ -353,7 +381,8 @@ class Engine:
         row = self._conn.execute(
             "INSERT INTO decisions (person_id, decision_seq, sim_time, tick_seq, "
             "question_set, model_call, source, distributions, prng_path, draws, "
-            "chosen) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            "chosen, facts) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "RETURNING id",
             (
                 ctx.person_id,
                 ctx.decision_seq,
@@ -366,6 +395,9 @@ class Engine:
                 decision.prng_path,
                 json.dumps(decision.draws),
                 json.dumps(decision.chosen),
+                # WORLD-0013: what the decision was asked from, so the row is
+                # evidence on its own. Typed facts, not the rendered words.
+                json.dumps(ctx.facts, sort_keys=True, default=str),
             ),
         ).fetchone()
         assert row is not None
@@ -1312,6 +1344,8 @@ class Engine:
         for org in ORGS:
             if org.bills_clients_monthly and not economy.failed(self, org.id):
                 self._issue_invoices(report, org.id, cause=seq, month=month)
+        # Everyone weighs whether to stay (WORLD-0014).
+        economy.careers(self, report)
         # And the month after. It fired once, and the world ran down (audit B1).
         self._schedule(
             report.sim_time + 28 * DAY,
@@ -1565,6 +1599,7 @@ class Engine:
         return self._conn.execute(
             "SELECT i.id, i.amount_cents, i.due_sim, i.from_org_id, i.to_org_id, "
             "  i.to_person_id, i.issued_seq, i.asked_day, i.deferrals, i.chased_sim, "
+            "  i.chases, i.reminded_sim, i.kind, i.late_reason, "
             "  (i.disputed_sim IS NOT NULL AND i.dispute_resolution IS NULL) "
             "    AS disputed "
             "FROM invoices i WHERE i.paid_sim IS NULL AND i.written_off_sim IS NULL "
@@ -1612,10 +1647,7 @@ class Engine:
                         // DAY,
                         "can_afford": cash >= int(bill["amount_cents"]),
                         "runway_days": runway,
-                        "chased": bill["chased_sim"] is not None,
-                        "promised": memory.open_commitment(self._conn, int(bill["id"]))
-                        is not None,
-                        "disputed": bool(bill["disputed"]),
+                        **self._pressure_on(bill, report.sim_time),
                     },
                     traits=dict(payer["traits"] or {}),
                 )
@@ -1647,6 +1679,7 @@ class Engine:
             )
             if autopay and days_until_due > 0:
                 continue  # the instruction fires on the day, not before
+            buffer = self.client_buffer_days(person_id, now)
             bills.append(bill)
             contexts.append(
                 DecisionContext(
@@ -1656,19 +1689,40 @@ class Engine:
                     kind="payment.timing",
                     facts={
                         "days_until_due": days_until_due,
-                        "can_afford": True,
-                        "runway_days": 60,
-                        "chased": bill["chased_sim"] is not None,
+                        "can_afford": buffer >= CLIENT_CAN_PAY_DAYS,
+                        "runway_days": round(buffer, 1),
                         "autopay": autopay,
-                        "promised": memory.open_commitment(self._conn, int(bill["id"]))
-                        is not None,
-                        "disputed": bool(bill["disputed"]),
+                        **self._pressure_on(bill, report.sim_time),
                     },
                     traits=traits,
                 )
             )
         if bills:
             self._settle(report, now, bills, contexts, payer_account=None)
+
+    def client_buffer_days(self, person_id: str, now: SimTime) -> float:
+        """How many days of outgoings this client could cover this month
+        (WORLD-0014): keyed by the client and the month (CORE-0009), so a
+        client's cash is tight for a month, not for a tick."""
+
+        rng = derive_rng(self.root_seed, "client.cash", person_id, now.day // 30)
+        return math.exp(
+            math.log(CLIENT_BUFFER_MEDIAN_DAYS)
+            + CLIENT_BUFFER_SIGMA * rng.gauss(0.0, 1.0)
+        )
+
+    def _pressure_on(self, bill: DictRow, sim_time: int) -> dict[str, object]:
+        """What has been done to get this bill paid, as the payer knows it."""
+
+        reminded = bill["reminded_sim"]
+        return {
+            "chased": bill["chased_sim"] is not None,
+            "times_chased": int(bill["chases"] or 0),
+            "reminded_in_person": reminded is not None
+            and sim_time - int(reminded) <= REMINDER_LASTS,
+            "promised": memory.open_commitment(self._conn, int(bill["id"])) is not None,
+            "disputed": bool(bill["disputed"]),
+        }
 
     def _settle(
         self,
@@ -1702,6 +1756,19 @@ class Engine:
             days_late = max(0, (report.sim_time - int(bill["due_sim"])) // DAY)
             payee = str(bill["from_org_id"])
             payer_org = str(bill["to_org_id"]) if bill["to_org_id"] else payee
+            # What was known when it was decided, on the event (WORLD-0013):
+            # a payment can be explained from its own row.
+            context = {
+                "to": payee,
+                "invoice_kind": str(bill["kind"]),
+                "amount_cents": amount,
+                "days_late": days_late,
+                "deferrals": int(bill["deferrals"]),
+                "times_chased": ctx.facts.get("times_chased", 0),
+                "reminded_in_person": ctx.facts.get("reminded_in_person", False),
+                "promised": ctx.facts.get("promised", False),
+                "runway_days": ctx.facts.get("runway_days"),
+            }
             if not pays:
                 overdue = report.sim_time >= int(bill["due_sim"])
                 if overdue and int(bill["deferrals"]) == 0:
@@ -1716,15 +1783,16 @@ class Engine:
                         decision_id=made.id,
                         payload={
                             "invoice_id": int(bill["id"]),
-                            "days_late": days_late,
+                            **context,
                             "reason": reason,
                             "decided_by": made.source,
                         },
                     )
                 if overdue:
                     self._conn.execute(
-                        "UPDATE invoices SET deferrals = deferrals + 1 WHERE id = %s",
-                        (bill["id"],),
+                        "UPDATE invoices SET deferrals = deferrals + 1, "
+                        "late_reason = %s WHERE id = %s",
+                        (reason, bill["id"]),
                     )
                 continue
 
@@ -1737,8 +1805,9 @@ class Engine:
                 decision_id=made.id,
                 payload={
                     "invoice_id": int(bill["id"]),
-                    "amount_cents": amount,
-                    "days_late": days_late,
+                    **context,
+                    # Why it had been left, when it was: the last reason given.
+                    "late_reason": bill["late_reason"] if days_late > 0 else None,
                     "reason": reason,
                     "decided_by": made.source,
                 },
@@ -1764,10 +1833,20 @@ class Engine:
                 "days_late, decided_by) VALUES (%s,%s,%s,%s,%s,%s)",
                 (bill["id"], report.sim_time, amount, txn, days_late, made.source),
             )
-            # Anyone who gave their word about this bill has now kept it.
+            # Anyone who gave their word about this bill has now kept it, and
+            # the creditor thinks the better of them for it (MEM-0004).
+            kept = memory.open_commitment(self._conn, int(bill["id"]))
             memory.close_commitments_for(
                 self._conn, int(bill["id"]), sim_time=report.sim_time, kept=True
             )
+            if kept is not None:
+                memory.warm(
+                    self._conn,
+                    kept.from_person_id,
+                    kept.to_person_id,
+                    1,
+                    sim_time=report.sim_time,
+                )
 
     def _chase(self, report: TickReport, now: SimTime) -> None:
         """A bill a week late gets chased — if whoever is owed is the type.
@@ -1779,13 +1858,18 @@ class Engine:
 
         late = self._conn.execute(
             "SELECT i.id, i.amount_cents, i.due_sim, i.from_org_id, i.to_org_id, "
-            "  i.to_person_id, i.issued_seq, i.chase_asked_day "
+            "  i.to_person_id, i.issued_seq, i.chase_asked_day, i.chases "
             "FROM invoices i WHERE i.paid_sim IS NULL AND i.written_off_sim IS NULL "
             # A bill under dispute is argued over, not chased.
             "  AND (i.disputed_sim IS NULL OR i.dispute_resolution IS NOT NULL) "
-            "  AND i.due_sim <= %s AND (i.chased_sim IS NULL OR i.due_sim <= %s) "
+            "  AND i.due_sim <= %s AND (i.chased_sim IS NULL OR i.chased_sim <= %s "
+            "    OR i.due_sim <= %s) "
             "ORDER BY i.from_org_id, i.due_sim, i.id",
-            (report.sim_time - CHASE_HARDER_AFTER, report.sim_time - WRITE_OFF_AFTER),
+            (
+                report.sim_time - CHASE_HARDER_AFTER,
+                report.sim_time - CHASE_AGAIN_AFTER,
+                report.sim_time - WRITE_OFF_AFTER,
+            ),
         ).fetchall()
         # A week late, or three days while the firm has decided to chase
         # harder (WORLD-0010).
@@ -1833,6 +1917,7 @@ class Engine:
                         "days_late": (report.sim_time - int(bill["due_sim"])) // DAY,
                         "large": int(bill["amount_cents"]) >= 200_000,
                         "runway_days": self.runway_days(issuer, cash),
+                        "times_chased": int(bill["chases"] or 0),
                     },
                     traits=dict(chaser["traits"] or {}),
                 )
@@ -1859,11 +1944,14 @@ class Engine:
                     "invoice_id": int(bill["id"]),
                     "to": str(bill["to_person_id"] or bill["to_org_id"]),
                     "days_late": ctx.facts["days_late"],
+                    "amount_cents": int(bill["amount_cents"]),
+                    "attempt": int(bill["chases"] or 0) + 1,
                     "decided_by": made.source,
                 },
             )
             self._conn.execute(
-                "UPDATE invoices SET chased_sim = %s WHERE id = %s",
+                "UPDATE invoices SET chased_sim = %s, chases = chases + 1 "
+                "WHERE id = %s",
                 (report.sim_time, bill["id"]),
             )
 

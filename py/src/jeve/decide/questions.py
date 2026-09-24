@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from jeve.core.clock import SimTime
-from jeve.decide.policy import DecisionContext
+from jeve.decide.policy import DecisionContext, approach_weight
 from jeve.llm.protocol import Choice, Noul, NoulCriteria, Prose, Score
 
 type Mode = Literal["J", "P"]
@@ -224,7 +224,9 @@ def lateness_words(days_until_due: object) -> str:
     return "the invoice is more than a month overdue"
 
 
-def chased_words(chased: object, in_person: object, promised: object = False) -> str:
+def chased_words(
+    chased: object, in_person: object, promised: object = False, times: object = 0
+) -> str:
     """How hard this bill has been pushed.
 
     The `promised` branch is new (WORLD-0006) and is deliberately additive: the
@@ -237,6 +239,8 @@ def chased_words(chased: object, in_person: object, promised: object = False) ->
         return "they have given their word to pay it by a set day"
     if in_person:
         return "someone from the firm they owe brought it up with them in person"
+    if chased and _number(times) >= 2:
+        return "the firm they owe has chased them about it more than once"
     if chased:
         return "the firm they owe has rung them about it"
     return "nobody has chased them about it"
@@ -488,10 +492,32 @@ _PAY = Ask(
 )
 
 
+LATE_REASONS: dict[str, str] = {
+    "cash_flow": "They are waiting for money to come in before they pay out.",
+    "approval": "It is waiting on someone's sign-off or the next payment run.",
+    "query": "They have a question or a disagreement about the bill.",
+    "forgot": "It has slipped their mind among everything else.",
+    "other_bills": "Other bills are being paid first.",
+    "other": "Something else.",
+}
+"""Why a bill is left unpaid, typed (WORLD-0013): the reasons the trade
+surveys count — liquidity, process delays, disputes (Atradius US 2025) — plus
+the two every bookkeeper knows. The world keeps the last one on the bill."""
+_WHY_NOT = Ask(
+    "why_not",
+    "P",
+    Choice(
+        instructions="If this person leaves the invoice unpaid today, what is the "
+        "main reason?",
+        criteria=dict(LATE_REASONS),
+    ),
+)
+
+
 def _prepare_payment(ctx: DecisionContext) -> Prepared:
     return Prepared(
         ctx.kind,
-        asks=(_PAY,),
+        asks=(_PAY, _WHY_NOT),
         state={
             "person": "the person who pays the bills for a small business",
             "habit": trait_words("promptness", ctx.traits.get("promptness")),
@@ -501,6 +527,7 @@ def _prepare_payment(ctx: DecisionContext) -> Prepared:
                 ctx.facts.get("chased"),
                 ctx.facts.get("reminded_in_person"),
                 ctx.facts.get("promised"),
+                ctx.facts.get("times_chased"),
             ),
         },
     )
@@ -510,7 +537,9 @@ def _interpret_payment(
     ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
 ) -> Outcome:
     pay = bool(got["pay_today"].value)
-    return Outcome({"pay": pay, "reason": "due" if pay else "deferred"}, {})
+    return Outcome(
+        {"pay": pay, "reason": "due" if pay else str(got["why_not"].value)}, {}
+    )
 
 
 _BUY = Ask(
@@ -725,9 +754,46 @@ def groups(ctx: DecisionContext) -> list[Group]:
             key = _GROUP_KEYS.get(org, "another_firm")
             words = f"{count} from {ORG_WORDS.get(org, 'another firm')}"
         words += _DEALING_WORDS.get(dealing.get(org, ""), "")
+        words += rapport_in_group(members)
         ordered = tuple(sorted(members, key=lambda p: str(p.get("id", ""))))
         shown.append(Group(key, words, ordered))
     return shown
+
+
+def _tie(person: dict[str, object]) -> tuple[int, int]:
+    return int(_number(person.get("met"), 0.0)), int(_number(person.get("warmth"), 0.0))
+
+
+def _is_friend(met: int, warmth: int) -> bool:
+    return warmth >= 2 or (met >= 4 and warmth >= 1)
+
+
+def rapport_words(ctx: DecisionContext) -> str:
+    """How this person gets on with the others in the conversation (MEM-0004),
+    in four buckets so tables in the same state share a call."""
+
+    ties = [_tie(p) for p in _present(ctx)]
+    if any(warmth <= -1 for _, warmth in ties):
+        return "They have fallen out with someone here before."
+    if any(_is_friend(met, warmth) for met, warmth in ties):
+        return "Someone here is a friend of theirs."
+    if any(met >= 1 for met, _ in ties):
+        return "They know the others here a little."
+    return "They have not really met the others here before."
+
+
+def rapport_in_group(members: list[dict[str, object]]) -> str:
+    """A friend in the group, or somebody they have fallen out with, said in
+    words (MEM-0004). Nothing for a group of strangers and acquaintances, so a
+    room nobody has history in reads as it did before ties existed."""
+
+    ties = [_tie(m) for m in members]
+    words = ""
+    if any(_is_friend(met, warmth) for met, warmth in ties):
+        words += "; one of them is a friend"
+    if any(warmth <= -1 for _, warmth in ties):
+        words += "; one of them is someone they have fallen out with"
+    return words
 
 
 def who_is_here(ctx: DecisionContext) -> dict[str, str] | str:
@@ -785,9 +851,22 @@ _INTERACT = Ask(
 )
 _MOOD = Ask(
     "mood",
-    "J",
+    # P, not J (WORLD-0013): with how they were feeling now in the state, the
+    # argmax was a fixed function of that line and `mind`, so mood could only
+    # ever copy itself. Sampled, it drifts the way moods do, anchored to the
+    # last one.
+    "P",
     Score(instructions="What is this person's mood right now?", criteria=list(MOODS)),
 )
+
+
+def feeling_words(mood: object) -> str:
+    """How they were feeling the last time anyone could tell (WORLD-0013)."""
+
+    index = int(_number(mood, 2.0))
+    return MOODS[min(max(index, 0), len(MOODS) - 1)]
+
+
 _RAISE = Ask(
     "raise_outage",
     "P",
@@ -845,6 +924,7 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
             "at their own workplace" if at_own else f"in {_PLACE_WORDS.get(here, here)}"
         ),
         "on_their_mind": mind_words(ctx.facts.get("mind"), outage),
+        "feeling": feeling_words(ctx.facts.get("mood")),
         "who_is_here": who_is_here(ctx),
     }
     asks: list[Ask] = [_next_zone(org, str(ctx.facts.get("horizon", ""))), _MOOD]
@@ -903,13 +983,21 @@ def _interpret_agent_tick(
         picked = str(got["with_whom"].value)
         members = next((g.members for g in groups(ctx) if g.key == picked), ())
         # The model chose the firm; which of its people is a draw, taken only
-        # when there is a choice, so a room of one costs no luck.
+        # when there is a choice, so a room of one costs no luck. Weighted by
+        # how well they know each other (MEM-0004): a friend at the next table
+        # is the one somebody walks over to.
         if len(members) == 1:
             with_id = str(members[0]["id"])
         elif members:
             extra["who"] = draw()
-            index = min(len(members) - 1, int(extra["who"] * len(members)))
-            with_id = str(members[index]["id"])
+            weights = [approach_weight(m) for m in members]
+            point, total = extra["who"] * sum(weights), 0.0
+            with_id = str(members[-1]["id"])
+            for member, weight in zip(members, weights, strict=True):
+                total += weight
+                if point < total:
+                    with_id = str(member["id"])
+                    break
     return Outcome(
         {
             "next_zone": next_zone,
@@ -1572,6 +1660,8 @@ def _prepare_episode_round(ctx: DecisionContext) -> Prepared:
         "their_part_in_it": _ROLE_WORDS[role],
         "so_far": so_far_words(ctx),
         "mood_of_the_room": tension_words(ctx.facts.get("tension")),
+        "feeling": feeling_words(ctx.facts.get("mood")),
+        "how_they_get_on": rapport_words(ctx),
     }
     just_now = just_now_words(ctx)
     if just_now is not None:
@@ -1649,6 +1739,95 @@ def _prepare_leave(ctx: DecisionContext) -> Prepared:
                 "risk_appetite", ctx.traits.get("risk_appetite")
             ),
         },
+    )
+
+
+# -- career.review: does somebody move on (WORLD-0014) ------------------------
+
+QUIT_REASONS: dict[str, str] = {
+    "better_offer": "Another job that pays or suits them better.",
+    "workload": "The work has become too much.",
+    "people": "They do not get on with the people they work with.",
+    "pay": "Their wages have not been reliable.",
+    "moving_on": "A change of life: moving away, study, a new start.",
+    "other": "Something else.",
+}
+_NOTICE = Ask(
+    "notice",
+    "P",
+    Noul(
+        instructions="Does this person hand in their notice this month?",
+        criteria=_yes_no(
+            "They resign and work out their notice.",
+            "They stay in their job this month.",
+        ),
+    ),
+)
+_QUIT_WHY = Ask(
+    "why",
+    "P",
+    Choice(
+        instructions="If this person resigns this month, what is the main reason?",
+        criteria=dict(QUIT_REASONS),
+    ),
+)
+
+
+def _colleague_words(friends: object, fallen_out: object) -> str:
+    if _number(fallen_out) >= 1 and _number(friends) < 1:
+        return (
+            "They have fallen out with someone they work with, and have no "
+            "friends at work."
+        )
+    if _number(fallen_out) >= 1:
+        return "They have friends at work, and someone they have fallen out with."
+    if _number(friends) >= 2:
+        return "They have good friends among the people they work with."
+    if _number(friends) >= 1:
+        return "They have a friend at work."
+    return "They get along with the people they work with, but are not close to anyone."
+
+
+def _prepare_career(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_NOTICE, _QUIT_WHY),
+        state={
+            "person": person_words(ctx.role, org),
+            "feeling": feeling_words(ctx.facts.get("mood")),
+            "colleagues": _colleague_words(
+                ctx.facts.get("friends_at_work"), ctx.facts.get("fallen_out_at_work")
+            ),
+            "wages": (
+                "Their wages have been paid late recently."
+                if ctx.facts.get("pay_late")
+                else "Their wages have always been paid on time."
+            ),
+            "firm": (
+                "There is talk that the firm is short of money."
+                if ctx.facts.get("firm_struggling")
+                else "The firm seems steady."
+            ),
+            "workload": (
+                "The support queue they work on is overflowing."
+                if ctx.facts.get("swamped")
+                else "Busy, but manageable."
+            ),
+            "temperament": trait_words("patience", ctx.traits.get("patience")),
+            "attitude_to_risk": trait_words(
+                "risk_appetite", ctx.traits.get("risk_appetite")
+            ),
+        },
+    )
+
+
+def _interpret_career(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    notice = bool(got["notice"].value)
+    return Outcome(
+        {"notice": notice, "reason": str(got["why"].value) if notice else "stays"}, {}
     )
 
 
@@ -2377,6 +2556,7 @@ QUESTION_SETS: dict[str, QuestionSet] = {
         QuestionSet("chase.invoice", _prepare_chase, _interpret_chase),
         QuestionSet("episode.round", _prepare_episode_round, _interpret_episode_round),
         QuestionSet("leave.consider", _prepare_leave, _interpret_leave),
+        QuestionSet("career.review", _prepare_career, _interpret_career),
         QuestionSet("founder.review", _prepare_review, _interpret_review),
         QuestionSet("hire.decision", _prepare_hire, _interpret_hire),
         QuestionSet("eng.allocation", _prepare_allocation, _interpret_allocation),

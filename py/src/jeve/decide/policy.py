@@ -21,6 +21,16 @@ from jeve.decide import gates
 type Source = Literal["rules", "jev", "llm"]
 
 
+def approach_weight(person: dict[str, object]) -> float:
+    """How likely somebody is to be the one approached within their firm:
+    people talk to those they know and like (MEM-0004). Shared by both
+    policies, so the rules twin and the model resolve "whom" the same way."""
+
+    met = float(person.get("met") or 0)  # type: ignore[arg-type]
+    warmth = float(person.get("warmth") or 0)  # type: ignore[arg-type]
+    return max(0.2, 1.0 + 0.15 * min(met, 10.0) + 0.5 * warmth)
+
+
 @dataclass(frozen=True, slots=True)
 class DecisionContext:
     """Everything a policy may look at. Small on purpose: Jev's accuracy falls
@@ -177,12 +187,22 @@ class RulesPolicy:
             pressure += 0.2
         if runway_days < 14:
             pressure -= 0.3
-        draw = _uniform(rng)
+        draw, why = _uniform(rng), _uniform(rng)
         pay = draw < max(0.05, min(0.98, pressure))
-        return (
-            {"pay": pay, "reason": "due" if pay else "deferred"},
-            {"pay": draw},
-        )
+        # Why not, when not: cash first when cash is short (liquidity is the
+        # most common reason in the trade surveys), a query while disputed,
+        # otherwise process delays, other bills and plain oversight.
+        if pay:
+            reason = "due"
+        elif runway_days < 14:
+            reason = "cash_flow"
+        elif ctx.facts.get("disputed"):
+            reason = "query"
+        else:
+            reason = (
+                "approval" if why < 0.5 else "other_bills" if why < 0.8 else "forgot"
+            )
+        return {"pay": pay, "reason": reason}, {"pay": draw, "why_not": why}
 
     def _cafe_purchase(
         self, ctx: DecisionContext, rng: object
@@ -280,11 +300,13 @@ class RulesPolicy:
     ) -> tuple[dict[str, object], dict[str, float]]:
         """Where next, and whether to stop and talk. Null model N1 for space.
 
-        Always takes the same five draws in the same order, whatever branch is
+        Always takes the same six draws in the same order, whatever branch is
         taken, so a change to one rule cannot shift the luck of another.
         """
 
         go, talk, who, about, push = (_uniform(rng) for _ in range(5))
+        # Drawn last so the first five keep the luck they had before ties.
+        whom = _uniform(rng)
         here = str(ctx.facts.get("here", ""))
         own = str(ctx.facts.get("own_zone", here))
         present = ctx.facts.get("present")
@@ -311,11 +333,35 @@ class RulesPolicy:
 
         sociability = _num(ctx.traits.get("sociability"), 0.5)
         with_id: str | None = None
+        with_org = ""
         if people and talk < 0.6 * sociability:
-            with_id = str(people[int(who * len(people))]["id"])
+            # The firm as before, by headcount; then, as the model's choice of
+            # firm is resolved, whichever of its people they know best is the
+            # likeliest one approached (MEM-0004). Weighting the whole room
+            # instead sent everyone to the barista they see daily, and nobody
+            # with an outage ever reached the vendor.
+            with_org = str(people[int(who * len(people))].get("org", ""))
+            members = [p for p in people if str(p.get("org", "")) == with_org]
+            weights = [approach_weight(p) for p in members]
+            point, total = whom * sum(weights), 0.0
+            chosen = members[-1]
+            for person, weight in zip(members, weights, strict=True):
+                total += weight
+                if point < total:
+                    chosen = person
+                    break
+            with_id = str(chosen["id"])
         topic = None
         if with_id is not None:
-            topic = "the_outage" if outage and about < 0.6 else "small_talk"
+            dealings = ctx.facts.get("dealings")
+            owed = isinstance(dealings, dict) and with_org in dealings
+            topic = (
+                "the_outage"
+                if outage and about < 0.6
+                else "money"
+                if owed and about < 0.5
+                else "small_talk"
+            )
         vocality = _num(ctx.traits.get("vocality"), 0.4)
         raised = bool(with_id and ctx.facts.get("can_raise") and push < vocality)
         return (
@@ -329,7 +375,14 @@ class RulesPolicy:
                 ),
                 "raise_outage": raised,
             },
-            {"go": go, "talk": talk, "who": who, "about": about, "push": push},
+            {
+                "go": go,
+                "talk": talk,
+                "who": who,
+                "about": about,
+                "push": push,
+                "whom": whom,
+            },
         )
 
     def _credit_decision(
@@ -454,6 +507,35 @@ class RulesPolicy:
         return {"leave": leave, "reason": "unpaid" if leave else "stays"}, {
             "leave": draw
         }
+
+    def _career_review(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """A month's quit chance: about two in a hundred for someone content
+        (BLS JOLTS: 1.2-3.5% of staff quit a month), more for someone unhappy,
+        unpaid, fallen out with a colleague or swamped; a friend at work keeps
+        people. The reason is whatever pushed hardest."""
+
+        draw, why = _uniform(rng), _uniform(rng)
+        mood = _num(ctx.facts.get("mood"), 2.0)
+        chance = 0.02
+        chance += 0.04 if mood <= 0 else 0.015 if mood <= 1 else 0.0
+        chance += 0.05 if ctx.facts.get("pay_late") else 0.0
+        chance += 0.03 if ctx.facts.get("fallen_out_at_work") else 0.0
+        chance += 0.02 if ctx.facts.get("swamped") else 0.0
+        chance -= 0.01 if _num(ctx.facts.get("friends_at_work"), 0.0) >= 1 else 0.0
+        notice = draw < max(0.005, min(0.3, chance))
+        if not notice:
+            reason = "stays"
+        elif ctx.facts.get("pay_late"):
+            reason = "pay"
+        elif ctx.facts.get("fallen_out_at_work"):
+            reason = "people"
+        elif ctx.facts.get("swamped"):
+            reason = "workload"
+        else:
+            reason = "better_offer" if why < 0.6 else "moving_on"
+        return {"notice": notice, "reason": reason}, {"notice": draw, "why": why}
 
     def _founder_review(
         self, ctx: DecisionContext, rng: object

@@ -787,6 +787,133 @@ def missed_payday(
             )
 
 
+NOTICE = 14 * DAY
+"""Two weeks' notice: somebody who decides to go works it out."""
+PAY_LATE_LOOKBACK = 56 * DAY
+
+
+def careers(engine: Engine, report: TickReport) -> None:
+    """Once a month, everyone but the head of each firm weighs whether to stay
+    (WORLD-0014). Before, the only ways to leave were unpaid wages and a firm
+    failing, so a healthy town had no turnover at all; real small businesses
+    lose 1-4% of their staff a month to quits (BLS JOLTS). What they weigh is
+    what the world knows about them: how they have been feeling, how they get
+    on with the people they work with (MEM-0004), whether wages have been late,
+    whether the firm is struggling, and how swamped the desk is."""
+
+    from jeve.world.space import SWAMPED_AT  # space -> shocks -> economy
+
+    backlog = engine.conn.execute(
+        "SELECT count(*) AS n FROM tickets WHERE status IN ('open','triaged')"
+    ).fetchone()
+    swamped = bool(backlog and int(backlog["n"]) > SWAMPED_AT)
+    staff = engine.conn.execute(
+        "SELECT p.id, p.org_id, p.role, p.traits, COALESCE(s.mood, 2) AS mood "
+        "FROM persons p LEFT JOIN positions s ON s.person_id = p.id "
+        "WHERE p.kind = 'staff' AND p.status <> 'left' AND NOT EXISTS ("
+        "  SELECT 1 FROM scheduled q WHERE q.kind = 'staff.leaves' "
+        "  AND q.subject_id = p.id) ORDER BY p.id"
+    ).fetchall()
+    contexts: list[DecisionContext] = []
+    asked: list[DictRow] = []
+    for person in staff:
+        org = str(person["org_id"])
+        if person["role"] == HEADS.get(org) or failed(engine, org):
+            continue
+        colleagues = engine.conn.execute(
+            "SELECT count(*) FILTER (WHERE t.warmth >= 2 OR (t.met >= 4 AND "
+            "t.warmth >= 1)) AS friends, count(*) FILTER (WHERE t.warmth <= -1) "
+            "AS fallen_out FROM ties t JOIN persons o ON o.id = "
+            "CASE WHEN t.a = %s THEN t.b ELSE t.a END "
+            "WHERE (t.a = %s OR t.b = %s) AND o.org_id = %s AND o.status <> 'left'",
+            (person["id"], person["id"], person["id"], org),
+        ).fetchone()
+        pay_late = engine.conn.execute(
+            "SELECT count(*) AS n FROM events WHERE org_id = %s AND kind IN "
+            "('payroll.held', 'payroll.missed') AND sim_time >= %s",
+            (org, report.sim_time - PAY_LATE_LOOKBACK),
+        ).fetchone()
+        struggling = engine.conn.execute(
+            "SELECT count(*) AS n FROM events WHERE org_id = %s "
+            "AND kind = 'insolvency.warning' AND sim_time >= %s",
+            (org, report.sim_time - PAY_LATE_LOOKBACK),
+        ).fetchone()
+        asked.append(person)
+        contexts.append(
+            DecisionContext(
+                person_id=str(person["id"]),
+                role=str(person["role"]),
+                sim_time=report.sim_time,
+                kind="career.review",
+                facts={
+                    "org": org,
+                    "mood": int(person["mood"]),
+                    "friends_at_work": int(colleagues["friends"]) if colleagues else 0,
+                    "fallen_out_at_work": int(colleagues["fallen_out"])
+                    if colleagues
+                    else 0,
+                    "pay_late": bool(pay_late and int(pay_late["n"])),
+                    "firm_struggling": bool(struggling and int(struggling["n"])),
+                    "swamped": org == "tallybird" and swamped,
+                },
+                traits=dict(person["traits"] or {}),
+            )
+        )
+    for person, made in zip(asked, engine.decide_many(report, contexts), strict=True):
+        if not made.chosen.get("notice"):
+            continue
+        reason = str(made.chosen.get("reason") or "other")
+        seq = engine.emit(
+            report,
+            "staff.notice",
+            actor_id=str(person["id"]),
+            org_id=str(person["org_id"]),
+            decision_id=made.id,
+            payload={
+                "person_id": str(person["id"]),
+                "role": str(person["role"]),
+                "reason": reason,
+                "leaves_sim": report.sim_time + NOTICE,
+                "decided_by": made.source,
+            },
+        )
+        engine.schedule(
+            report.sim_time + NOTICE,
+            "staff.leaves",
+            str(person["id"]),
+            {
+                "org": str(person["org_id"]),
+                "reason": reason,
+                "cause": seq,
+                "decision_id": made.id,
+                "decided_by": made.source,
+            },
+        )
+
+
+@scheduler.job("staff.leaves")
+def _job_staff_leaves(
+    engine: Engine, report: TickReport, subject: str, payload: dict[str, Any]
+) -> None:
+    """The notice is worked; they go."""
+
+    row = engine.conn.execute(
+        "SELECT status FROM persons WHERE id = %s", (subject,)
+    ).fetchone()
+    if row is None or row["status"] == "left":
+        return
+    leave(
+        engine,
+        report,
+        subject,
+        str(payload.get("org", "")),
+        reason=str(payload.get("reason", "other")),
+        cause=int(payload["cause"]) if payload.get("cause") else None,
+        decision_id=int(payload["decision_id"]) if payload.get("decision_id") else None,
+        decided_by=str(payload.get("decided_by", "rules")),
+    )
+
+
 def leave(
     engine: Engine,
     report: TickReport,
@@ -808,6 +935,9 @@ def leave(
         "WHERE person_id = %s",
         (person_id,),
     )
+    role = engine.conn.execute(
+        "SELECT role FROM persons WHERE id = %s", (person_id,)
+    ).fetchone()
     engine.emit(
         report,
         "staff.left",
@@ -818,6 +948,7 @@ def leave(
         payload={
             "person_id": person_id,
             "org_id": org_id,
+            "role": str(role["role"]) if role else None,
             "reason": reason,
             "decided_by": decided_by,
         },

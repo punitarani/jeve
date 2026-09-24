@@ -123,6 +123,7 @@ STAKES: dict[str, Stakes] = {
     "close.signoff": "high",
     "founder.review": "high",
     "leave.consider": "high",
+    "career.review": "high",
     "hire.decision": "high",
     "eng.allocation": "high",
     "subscription.renew": "high",

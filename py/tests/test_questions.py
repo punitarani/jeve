@@ -87,6 +87,15 @@ ASKING: dict[str, dict[str, object]] = {
         "tellable_topic": "price_rise",
     },
     "leave.consider": {"org": "tallybird", "weeks_behind": 2},
+    "career.review": {
+        "org": "tallybird",
+        "mood": 1,
+        "friends_at_work": 1,
+        "fallen_out_at_work": 1,
+        "pay_late": True,
+        "firm_struggling": False,
+        "swamped": True,
+    },
     "eng.allocation": {
         "debt_level": 1.3,
         "incidents_last_week": 2,

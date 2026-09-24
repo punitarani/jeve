@@ -36,6 +36,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from jeve import memory
 from jeve.core.clock import DAY, HOUR, TICK, SimTime
 from jeve.core.orgs import shift_for
 from jeve.core.seed import derive_seed
@@ -72,6 +73,9 @@ class Agent:
     """Position among their own org's staff in the same role: which shift."""
     mind: str = ""
     """What was on their mind the last time they were asked (WORLD-0009)."""
+    mood: int = 2
+    """How they felt the last time they were asked: read back into the next
+    decision (WORLD-0013), where before it was written and never read."""
 
     @property
     def own_zone(self) -> Zone:
@@ -109,7 +113,7 @@ def load_agents(engine: Engine) -> list[Agent]:
 
     rows = engine.conn.execute(
         "SELECT p.id, p.org_id, p.role, p.traits, p.status, s.zone, s.x, s.y, "
-        "s.mind FROM persons p JOIN positions s ON s.person_id = p.id "
+        "s.mind, s.mood FROM persons p JOIN positions s ON s.person_id = p.id "
         "WHERE p.kind = 'staff' ORDER BY p.id"
     ).fetchall()
     seen: dict[str, int] = {}
@@ -136,6 +140,7 @@ def load_agents(engine: Engine) -> list[Agent]:
                 index=index,
                 role_index=role_index,
                 mind=str(row["mind"] or ""),
+                mood=int(row["mood"]) if row["mood"] is not None else 2,
             )
         )
     return agents
@@ -479,6 +484,7 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
             continue
         asked.append(agent)
         minds.append(mind)
+        ties = memory.ties_of(engine.conn, agent.id, [o.id for o in others])
         contexts.append(
             DecisionContext(
                 person_id=agent.id,
@@ -490,10 +496,17 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
                     "here": agent.zone.value,
                     "own_zone": agent.own_zone.value,
                     "present": [
-                        {"id": o.id, "org": o.org, "role": o.role} for o in others
+                        {
+                            "id": o.id,
+                            "org": o.org,
+                            "role": o.role,
+                            **ties.get(o.id, memory.Tie()).as_facts(),
+                        }
+                        for o in others
                     ],
                     "outage": outage,
                     "mind": mind,
+                    "mood": agent.mood,
                     "dealings": {
                         o: way
                         for o, way in between.get(agent.org, {}).items()
@@ -567,6 +580,37 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
             )
 
 
+def encounter_warmth(topic: str, mood: int) -> int:
+    """How a one-shot conversation moves a tie (MEM-0004): a pleasant word
+    warms it; money or the outage raised by someone already stressed cools it;
+    anything else leaves it where it was."""
+
+    if topic == "small_talk" and mood >= 2:
+        return 1
+    if topic in ("money", "the_outage") and mood == 0:
+        return -1
+    return 0
+
+
+def remind_in_person(
+    engine: Engine, org: str, other_org: str, sim_time: int
+) -> list[int]:
+    """Money talked over between two firms that have a bill between them, due
+    or overdue: a reminder in person, which the payer's next decision is told
+    about (WORLD-0013). Returns the bills it touched."""
+
+    if org == other_org:
+        return []
+    rows = engine.conn.execute(
+        "UPDATE invoices SET reminded_sim = %s WHERE paid_sim IS NULL "
+        "AND written_off_sim IS NULL AND due_sim <= %s AND to_org_id IS NOT NULL "
+        "AND ((from_org_id = %s AND to_org_id = %s) "
+        "  OR (from_org_id = %s AND to_org_id = %s)) RETURNING id",
+        (sim_time, sim_time + 2 * DAY, org, other_org, other_org, org),
+    ).fetchall()
+    return sorted(int(r["id"]) for r in rows)
+
+
 def _encounters(
     engine: Engine,
     report: TickReport,
@@ -591,14 +635,35 @@ def _encounters(
         incident = (
             episodes.open_incident(engine, down) if topic == "the_outage" else None
         )
+        mood = int(decision.chosen.get("mood", 2))
+        before = memory.meet(
+            engine.conn,
+            agent.id,
+            other.id,
+            sim_time=report.sim_time,
+            warmth=encounter_warmth(topic, mood),
+            topic=topic,
+        )
+        reminded = (
+            remind_in_person(engine, agent.org, other.org, report.sim_time)
+            if topic == "money"
+            else []
+        )
         payload: dict[str, object] = {
             "a": agent.id,
             "b": other.id,
+            "b_org": other.org,
+            "b_role": other.role,
             "zone": agent.zone.value,
             "topic": topic,
-            "mood": int(decision.chosen.get("mood", 2)),
+            "mood": mood,
+            "b_mood": other.mood,
+            "met_before": before.met,
+            "warmth_before": before.warmth,
             "decided_by": decision.source,
         }
+        if reminded:
+            payload["reminded_invoices"] = reminded
         if not engine.episodes:
             # The shadow of an episode: what one would have been about, had
             # episodes been on. Only in that arm, so every other world's log is

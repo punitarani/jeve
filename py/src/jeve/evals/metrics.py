@@ -80,17 +80,21 @@ def _ratio(numerator: Value, denominator: Value) -> Value:
 
 def _payments(conn: Connection[DictRow], m: Measures, end: int) -> None:
     """Late payment, the way the trade surveys count it: of the bills that fell
-    due inside the run, how many were settled after their due date — counting
-    one still unpaid at the end as late, since it is (right-censored)."""
+    due inside the run, how many were settled at least a day after their due
+    date — counting one still unpaid a day past it at the end as late, since it
+    is (right-censored). Days, not seconds: a bill paid on its due date, after
+    the hour it fell due, is on time to anyone who keeps books."""
 
     row = conn.execute(
-        "SELECT count(*) FILTER (WHERE paid_sim IS NOT NULL AND paid_sim <= due_sim) "
-        "  AS on_time, "
-        "count(*) FILTER (WHERE paid_sim IS NOT NULL AND paid_sim > due_sim) AS late, "
-        "count(*) FILTER (WHERE paid_sim IS NULL) AS open "
+        "SELECT count(*) FILTER (WHERE paid_sim IS NOT NULL "
+        "  AND paid_sim - due_sim < %s) AS on_time, "
+        "count(*) FILTER (WHERE paid_sim IS NOT NULL AND paid_sim - due_sim >= %s) "
+        "  AS late, "
+        "count(*) FILTER (WHERE paid_sim IS NULL AND %s - due_sim >= %s) AS open, "
+        "count(*) FILTER (WHERE paid_sim IS NULL AND %s - due_sim < %s) AS not_yet "
         "FROM invoices WHERE due_sim < %s AND written_off_sim IS NULL "
         "AND kind <> 'supplies'",
-        (end,),
+        (DAY, DAY, end, DAY, end, DAY, end),
     ).fetchone()
     assert row is not None
     due = int(row["on_time"]) + int(row["late"]) + int(row["open"])
@@ -98,13 +102,14 @@ def _payments(conn: Connection[DictRow], m: Measures, end: int) -> None:
         (int(row["late"]) + int(row["open"])) / due if due else None
     )
     m.notes["invoice_late_share"] = (
-        f"{row['late']} paid late + {row['open']} unpaid, of {due} bills due"
+        f"{row['late']} paid a day or more late + {row['open']} unpaid past their "
+        f"date, of {due} bills due"
     )
     m.values["days_late_mean"] = _scalar(
         conn,
-        "SELECT avg((paid_sim - due_sim)::float / %s) FROM invoices "
-        "WHERE paid_sim > due_sim AND kind <> 'supplies'",
-        (DAY,),
+        "SELECT avg(floor((paid_sim - due_sim)::float / %s)) FROM invoices "
+        "WHERE paid_sim - due_sim >= %s AND kind <> 'supplies'",
+        (DAY, DAY),
     )
     issued = _scalar(conn, "SELECT count(*) FROM invoices WHERE kind = 'services'")
     disputed = _scalar(
@@ -113,6 +118,23 @@ def _payments(conn: Connection[DictRow], m: Measures, end: int) -> None:
         "AND disputed_sim IS NOT NULL",
     )
     m.values["dispute_share"] = _ratio(disputed, issued)
+    # Why bills were left, as the payers said (WORLD-0013): each reason's share
+    # of the bills that were ever left unpaid past their date.
+    # A gate's reason is the same reason in other words: no cash is cash flow,
+    # a bill under dispute is a query.
+    gate = {"insufficient_cash": "cash_flow", "disputed": "query"}
+    reasons: Counter[str] = Counter()
+    for r in conn.execute(
+        "SELECT late_reason, count(*) AS n FROM invoices "
+        "WHERE late_reason IS NOT NULL GROUP BY 1"
+    ).fetchall():
+        reason = str(r["late_reason"])
+        reasons[gate.get(reason, reason)] += int(r["n"])
+    total = sum(reasons.values())
+    for reason in ("cash_flow", "approval", "query", "forgot", "other_bills"):
+        m.values[f"late_reason_{reason}"] = (
+            reasons.get(reason, 0) / total if total else None
+        )
 
 
 def _support(conn: Connection[DictRow], m: Measures) -> None:

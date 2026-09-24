@@ -198,13 +198,19 @@ def renewals(engine: Engine, report: TickReport) -> dict[int, float]:
         ).fetchall()
     ]
     at_risk: list[tuple[dict[str, Any], str]] = []
+    renewing: list[tuple[dict[str, Any], str]] = []
     for sub in subs:
         holder = holder_of(engine, sub)
         if holder is None:
             continue
+        # Every subscriber weighs the month (WORLD-0014). Only the ones at risk
+        # used to be asked, so a content customer never left: zero churn in a
+        # quiet world, against 2-6% a month for small SaaS customers
+        # (ChartMogul). The account manager still only calls the ones at risk.
+        renewing.append((sub, holder))
         if trust(engine, holder) < AT_RISK_BELOW or heard_bad_news(engine, holder):
             at_risk.append((sub, holder))
-    if not at_risk:
+    if not renewing:
         return discounts
 
     manager = engine.conn.execute(
@@ -257,7 +263,7 @@ def renewals(engine: Engine, report: TickReport) -> dict[int, float]:
                 )
 
     contexts = []
-    for sub, holder in at_risk:
+    for sub, holder in renewing:
         contexts.append(
             DecisionContext(
                 person_id=holder,
@@ -276,7 +282,7 @@ def renewals(engine: Engine, report: TickReport) -> dict[int, float]:
             )
         )
     for (sub, holder), made in zip(
-        at_risk, engine.decide_many(report, contexts), strict=True
+        renewing, engine.decide_many(report, contexts), strict=True
     ):
         if made.chosen.get("renew"):
             continue
@@ -327,6 +333,8 @@ def cancel(
         payload={
             "subscription_id": int(sub["id"]),
             "by": holder,
+            "trust": trust(engine, holder),
+            "heard_bad_news": heard_bad_news(engine, holder),
             "module_id": str(sub["module_id"]),
             "monthly_cents": int(sub["monthly_cents"]),
             "decided_by": made.source,

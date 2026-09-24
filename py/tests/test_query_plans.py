@@ -24,8 +24,16 @@ from jeve.llm.ledger import _HEAD_SQL, _OPEN_RESERVE_SQL
 
 pytestmark = pytest.mark.timeout(60)
 
-# The tables that grow without bound. Everything else is a few hundred rows.
-GROWING = ("events", "decisions", "ledger_entries", "ledger_txns", "spend_entries")
+# The tables that grow without bound. Everything else is a few hundred rows —
+# except ties, which grows with the square of the town (MEM-0004).
+GROWING = (
+    "events",
+    "decisions",
+    "ledger_entries",
+    "ledger_txns",
+    "spend_entries",
+    "ties",
+)
 
 # Each hot query and the index that makes it a range. Naming the index matters:
 # the crowd count had (kind, seq) to fall back on, and that was the slow plan —
@@ -50,6 +58,17 @@ HOT: list[tuple[str, str, tuple[object, ...], str | None]] = [
         "SELECT count(*) FROM decisions WHERE sim_time >= %s AND sim_time < %s",
         (0, 86400),
         "decisions_time",
+    ),
+    (
+        # MEM-0004: once for every person asked what to do, every tick. Either
+        # index (the key, or `ties_b`) is a range over one person's ties, and
+        # which one the planner takes turns on the table's statistics, so only
+        # the absence of a scan is asserted.
+        "ties in the room",
+        "SELECT a, b, met, warmth FROM ties WHERE (a = %s AND b = ANY(%s)) "
+        "OR (b = %s AND a = ANY(%s))",
+        ("p", ["q", "r"], "p", ["q", "r"]),
+        None,
     ),
     (
         "events after seq",
