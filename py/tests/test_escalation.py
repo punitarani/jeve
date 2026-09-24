@@ -152,6 +152,27 @@ def test_a_reply_is_read_into_jevs_own_types() -> None:
         escalation.parse("I would say b.", asks[:1])
 
 
+def test_a_reply_that_reasons_first_is_still_read_and_one_cut_off_is_not() -> None:
+    """GLM on some providers writes its reasoning into the reply; the answer
+    after it is still the answer. A reply cut off mid-thought has none."""
+
+    asks = [_ask("x", "J", NOUL)]
+    thinking = (
+        'Let me think this through. {"note": 1} So: {"x": {"yes": 0.8, "no": 0.2}}'
+    )
+    assert escalation.parse(thinking, asks)["x"] == NoulAnswer(noul=0.8)
+    with pytest.raises(ValueError, match="not JSON"):
+        escalation.parse("Let me think this through carefully and then", asks)
+
+
+def test_tier_1_is_routed_away_from_the_provider_that_ignored_the_schema() -> None:
+    request = escalation.request_for(
+        _prepared("dispute.resolution"), ["resolution"], FIRST
+    )
+    assert request.provider is not None and request.provider.ignore == ["together"]
+    assert request.max_tokens >= 4000
+
+
 def test_live_takes_a_judgement_and_mixes_a_propensity() -> None:
     judged, felt = _ask("x", "J", NOUL), _ask("y", "P", NOUL)
     jev, llm = NoulAnswer(noul=0.45), NoulAnswer(noul=0.95)

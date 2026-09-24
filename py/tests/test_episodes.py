@@ -1057,6 +1057,8 @@ def test_a_world_begun_before_episodes_carries_on_with_them(
     conn.execute("DROP TABLE spend_totals")
     conn.execute("DROP INDEX events_kind_tick")
     conn.execute("DROP INDEX ledger_entries_account")
+    # 0014: tier 1's daily room reads decisions by sim time.
+    conn.execute("DROP INDEX decisions_time")
     conn.execute(
         "CREATE INDEX ledger_entries_account ON ledger_entries (account_id, id)"
     )

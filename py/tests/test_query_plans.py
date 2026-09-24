@@ -45,6 +45,13 @@ HOT: list[tuple[str, str, tuple[object, ...], str | None]] = [
         "ledger_entries_account",
     ),
     (
+        # DECIDE-0005: once per batch with a tier-1 candidate.
+        "tier-1 room",
+        "SELECT count(*) FROM decisions WHERE sim_time >= %s AND sim_time < %s",
+        (0, 86400),
+        "decisions_time",
+    ),
+    (
         "events after seq",
         "SELECT seq FROM events WHERE seq > %s ORDER BY seq LIMIT 50",
         (0,),

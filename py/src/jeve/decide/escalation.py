@@ -57,6 +57,7 @@ from jeve.llm.protocol import (
     ChoiceAnswer,
     Noul,
     NoulAnswer,
+    ProviderPrefs,
     Score,
     ScoreAnswer,
 )
@@ -70,7 +71,14 @@ in the cassette with everything else, and never mistaken for a Jev call."""
 
 # Room for a model that reasons before it answers: GLM 5.3 Flash cannot be told
 # not to (ChatRequest.reasoning), and a reply cut off mid-thought is empty.
-MAX_TOKENS = 1600
+# 1,600 was not room: every one of GLM's 50 unreadable replies on held-out
+# seeds stopped at exactly 1,600 tokens, mid-reasoning, before any JSON.
+MAX_TOKENS = 4000
+PROVIDERS = ProviderPrefs(ignore=["together"])
+"""LLM-0003, per request. Together served 134 of 330 of GLM's tier-1 calls on
+held-out seeds and all 50 of the unreadable ones: it writes the model's
+reasoning into the reply instead of honouring the schema. Wafer, Fireworks and
+Baseten returned schema-shaped JSON every time (docs/ops/llm-integration.md)."""
 SEED = 0
 """Fixed, so two people in the same situation share one cached answer, as they
 share one Jev call."""
@@ -344,6 +352,7 @@ def request_for(prepared: Prepared, keys: Sequence[str], model: str) -> ChatRequ
         max_tokens=MAX_TOKENS,
         seed=SEED,
         temperature=0.0,
+        provider=PROVIDERS,
         response_schema={
             "type": "object",
             "properties": {
@@ -368,11 +377,31 @@ def request_key(request: ChatRequest) -> str:
 
 
 def _json_in(text: str) -> object:
+    """The answer object in a reply: the whole reply when it is JSON, else the
+    last JSON object in it — a provider that ignores the schema writes its
+    reasoning first and the answer after, and the answer is still the answer.
+    A reply with no object in it is not JSON."""
+
     stripped = text.strip()
     if stripped.startswith("```"):
         # A model that honours the schema but fences it anyway.
         stripped = stripped.split("\n", 1)[-1].rsplit("```", 1)[0]
-    return json.loads(stripped)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError as error:
+        decoder = json.JSONDecoder()
+        found: object = None
+        at = stripped.find("{")
+        while at != -1:
+            try:
+                found, end = decoder.raw_decode(stripped, at)
+            except json.JSONDecodeError:
+                at = stripped.find("{", at + 1)
+                continue
+            at = stripped.find("{", end)
+        if not isinstance(found, dict):
+            raise error
+        return found
 
 
 def parse(text: str, asks: Sequence[Ask]) -> dict[str, Answer]:
