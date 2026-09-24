@@ -138,6 +138,24 @@ def health() -> JSONResponse:
         )
 
 
+# Polled every five seconds by every open page, so each must be an index range
+# (tests/test_query_plans.py). The crowd count was a bitmap scan of every cafe
+# event ever written until events (kind, tick_seq) existed: 11% of the
+# production database's time (LLM-0010).
+ORG_BALANCES_SQL = (
+    "SELECT a.org_id, COALESCE(sum(e.amount_cents),0) AS cents "
+    "FROM accounts a LEFT JOIN ledger_entries e ON e.account_id = a.id "
+    "WHERE a.kind = %s AND a.org_id IS NOT NULL GROUP BY a.org_id"
+)
+CROWD_SQL = (
+    "SELECT count(*) AS n FROM events "
+    "WHERE kind IN ('cafe.sale','cafe.walkout') "
+    "AND tick_seq = (SELECT max(tick_seq) FROM events "
+    "                WHERE kind IN ('cafe.sale','cafe.walkout') "
+    "                  AND tick_seq > %s - 2)"
+)
+
+
 @app.get("/state")
 def state() -> dict[str, object]:
     """Everything the dashboard needs for a first paint, in one read."""
@@ -155,19 +173,11 @@ def state() -> dict[str, object]:
 
         cash = {
             str(row["org_id"]): int(row["cents"])
-            for row in conn.execute(
-                "SELECT a.org_id, COALESCE(sum(e.amount_cents),0) AS cents "
-                "FROM accounts a LEFT JOIN ledger_entries e ON e.account_id = a.id "
-                "WHERE a.kind = 'cash' AND a.org_id IS NOT NULL GROUP BY a.org_id"
-            ).fetchall()
+            for row in conn.execute(ORG_BALANCES_SQL, ("cash",)).fetchall()
         }
         receivable = {
             str(row["org_id"]): int(row["cents"])
-            for row in conn.execute(
-                "SELECT a.org_id, COALESCE(sum(e.amount_cents),0) AS cents "
-                "FROM accounts a LEFT JOIN ledger_entries e ON e.account_id = a.id "
-                "WHERE a.kind = 'receivable' AND a.org_id IS NOT NULL GROUP BY a.org_id"
-            ).fetchall()
+            for row in conn.execute(ORG_BALANCES_SQL, ("receivable",)).fetchall()
         }
         orgs = [
             {
@@ -692,14 +702,7 @@ def world_agents() -> dict[str, object]:
         ).fetchall()
         # Counterparties have no positions; they are demand. Draw as many as
         # actually turned up at the cafe in the last tick that had any.
-        crowd = conn.execute(
-            "SELECT count(*) AS n FROM events "
-            "WHERE kind IN ('cafe.sale','cafe.walkout') "
-            "AND tick_seq = (SELECT max(tick_seq) FROM events "
-            "                WHERE kind IN ('cafe.sale','cafe.walkout') "
-            "                  AND tick_seq > %s - 2)",
-            (int(meta["tick_seq"]),),
-        ).fetchone()
+        crowd = conn.execute(CROWD_SQL, (int(meta["tick_seq"]),)).fetchone()
         down = conn.execute(
             "SELECT id FROM modules WHERE status = 'down' ORDER BY id"
         ).fetchall()

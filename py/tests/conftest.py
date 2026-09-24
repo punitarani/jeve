@@ -105,7 +105,9 @@ def spend_table(db_conn: Connection[DictRow]) -> Connection[DictRow]:
 
     Spend is a table now, not a file, so the ledger tests need the same
     Postgres the daemon and API share — and a clean one, since every row is
-    real accounting.
+    real accounting. The running total (LLM-0010) is not reset here: a ledger
+    that opens against a total ahead of an emptied table folds it back to
+    zero itself, which is the same path a deploy relies on.
     """
 
     db.migrate(db_conn)

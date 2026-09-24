@@ -2,13 +2,13 @@
 
 id: LLM-0007
 title: the spend ledger lives in Postgres and OpenRouter holds the ceiling
-status: accepted
+status: superseded
 date: 2026-09-21
 deciders: ["devin"]
 scope: ["py/src/jeve/llm/ledger.py", "py/src/jeve/llm/budget.py", "py/src/jeve/llm/gateway.py", "py/migrations/0008_spend_ledger.sql", "py/tests/test_ledger_and_budget.py"]
 tags: ["cost", "safety", "deployment", "agent-decided"]
 supersedes: ["LLM-0004"]
-superseded-by: null
+superseded-by: "LLM-0010"
 relates-to: ["CORE-0002", "LLM-0001", "OPS-0001"]
 confirmation: "cd py && uv run pytest tests/test_ledger_and_budget.py"
 

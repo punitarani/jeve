@@ -1052,6 +1052,14 @@ def test_a_world_begun_before_episodes_carries_on_with_them(
         "DROP TABLE commitments, episode_participants, episodes, knowledge, facts "
         "CASCADE"
     )
+    # 0011 (LLM-0010) came later still: the ledger's running total and two read
+    # indexes. Left in place, re-running it is a DuplicateTable, not a deploy.
+    conn.execute("DROP TABLE spend_totals")
+    conn.execute("DROP INDEX events_kind_tick")
+    conn.execute("DROP INDEX ledger_entries_account")
+    conn.execute(
+        "CREATE INDEX ledger_entries_account ON ledger_entries (account_id, id)"
+    )
     # Every migration from 0009 on: the code before episodes had none of them,
     # and forgetting only 0009 re-created its tables under a later migration's
     # record, so the schema the rest of the module ran on was 0009's alone.

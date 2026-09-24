@@ -56,6 +56,25 @@ cd py && pytest
 cd py && pytest tests/test_live.py -m live
 ```
 
+## Database
+
+Production is PlanetScale Postgres on an eighth of a vCPU and one gigabyte.
+Growth, not traffic, is what breaks it.
+
+- **Hot paths are O(1) or an index range.** Anything read per tick, per model
+  call or per page poll must not scan a growing table (`events`, `decisions`,
+  `ledger_entries`, `ledger_txns`, `spend_entries`). A total that a journal
+  can rebuild beats a fold over the journal (LLM-0010).
+- **`tests/test_query_plans.py` is the gate.** Every new hot query goes in
+  the list; it fails when no index can serve the query.
+- **Migrations are plain SQL, one transaction each, never idempotent.** No
+  `CONCURRENTLY`. A new table needs no `GRANT`: the app role is a member of
+  `pg_write_all_data`. The schema-rewind test in `tests/test_episodes.py`
+  must undo every migration from 0009 on, so extend it with yours.
+- **Measure before and after.** PlanetScale Insights sorted by CPU time, and
+  `EXPLAIN (ANALYZE, BUFFERS)` through the read-only role, are the numbers;
+  a local database is too small to show a plan the planner will pick at size.
+
 ## Key Constraints
 
 - No parallel abstractions "in case" - one way to do each thing
