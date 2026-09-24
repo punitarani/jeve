@@ -30,7 +30,7 @@ simulation ever reads generated text.
 | `decisions/` | Decision records and their generated index |
 | `docs/research/` | Ground truth on Jev, prior-art mapping, validation survey, the recursive-micro-simulation survey |
 | `docs/design/` | Long-form analysis behind the decision records |
-| `ops/` | Runtime state (spend ledger) and tracked measurements (`economics.md`, `soak.md`, `persona-probe.md`, `providers.md`) |
+| `ops/` | Runtime state (spend ledger) and tracked measurements (`economics.md`, `soak.md`, `persona-probe.md`, `providers.md`, `field-report-v2.md`, `escalation.md`) |
 | `tools/` | Contract generation and utility scripts |
 
 ## Decisions

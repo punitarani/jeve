@@ -93,6 +93,10 @@ fixture: ## Run the golden fixture. POLICY=jev|rules CALLS=replay|record
 soak: ## 35 sim-days on rules, on its own database; checks invariants, writes ops/soak.md. POLICY= CALLS= DAYS= COUNTERFACTUAL=1
 	$(UV) python scripts/soak.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS)) $(if $(COUNTERFACTUAL),--counterfactual)
 
+.PHONY: situation-probe
+situation-probe: ## Does the situation move Jev as much as the person? ~155 live calls, well under a cent; DRY=1 for the design
+	$(UV) python scripts/situation_probe.py $(if $(DRY),--dry-run)
+
 .PHONY: census
 census: ## What would a run cost Jev? Distinct requests per question set, on rules, free. DAYS= LEVELS=
 	$(UV) python scripts/call_census.py $(if $(DAYS),--days $(DAYS)) $(if $(LEVELS),--levels $(LEVELS))

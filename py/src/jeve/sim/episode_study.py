@@ -305,6 +305,15 @@ def render(pairs: list[tuple[Arm, Arm]]) -> str:
             f"{off.staked_rate:.2f} | {off.staked_rate - off.escalation_rate:+.2f} "
             f"| {on.escalation_rate - off.staked_rate:+.2f} |"
         )
+    selection = sum(off.staked_rate - off.escalation_rate for _, off in pairs)
+    resolution = sum(on.escalation_rate - off.staked_rate for on, off in pairs)
+    lines += [
+        "",
+        f"**Mean selection: {selection / len(pairs):+.2f}; mean resolution: "
+        f"{resolution / len(pairs):+.2f}.** The part of the gap that is "
+        "resolution is what rounds do that one shot does not, on the same "
+        "meetings.",
+    ]
     lines += [
         "",
         f"**Mean gap: {mean_gap:+.2f}.** A gap near zero means the two "

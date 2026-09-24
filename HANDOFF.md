@@ -42,17 +42,58 @@ stake, and is the control arm `make episodes` compares against.
   forward about 7 hours, at +2.4% decisions — and the two resolutions
   **disagree** about how often a conversation gets an outage escalated (mean gap
   +0.47; +0.59 live in production before WORLD-0008), so the dial moves base
-  rates too. That gap is an upper bound; separating
-  selection from resolution needs a shadow arm that computes episodes everywhere
-  and applies them nowhere. It is the next piece of work; until it runs, read the
-  default world's escalation rate as a property of this resolution, not a
-  finding. (The first, one-seed figures — ~16h, 0.72 — were inflated by a
+  rates too. That gap was an upper bound until the episodes-off arm began
+  recording each encounter's shadow stake (below); read the default world's
+  escalation rate as a property of this resolution, not a finding. (The first, one-seed figures — ~16h, 0.72 — were inflated by a
   Tallybird employee counting as a customer stuck on the outage; fixed with
   WORLD-0007.)
 * The survey behind it is `docs/research/03-recursive-micro-simulation.md`; the
   design analysis is `docs/design/011-episodes.md`.
 * `GET /episodes` and `GET /episodes/{id}` serve the typed record, its rounds,
   and what it caused. No prose, and none is rendered on request.
+
+## Since then: the field report's review (WORLD-0009 to WORLD-0012, MEM-0003, DECIDE-0005, API-0004)
+
+golden-20260920's field report found a world whose mechanics held and whose
+economy and perception did not. The review fixed its defects and built what it
+found missing. `ops/field-report-v2.md` sets the base commit against the result,
+30 sim-days each on rules.
+
+* **Decision points (WORLD-0009).** `agent.tick` is asked at arrival, away, in
+  company, on a change of mind, through lunch and on the hour; a room is at most
+  three firms; money reaches what is on somebody's mind.
+* **Economy (WORLD-0010).** Rent, stock, tax, household spending per employer,
+  seat pricing, departures after missed paydays, monthly reviews, hiring, loans
+  and failure. A running world gets all of it at engine start (`economy.install`),
+  under the writer lock: no reseed.
+* **Loops (WORLD-0011).** Engineering debt and deploys, trust and churn,
+  workarounds, disputes, logged hours, the cafe's cover, stock and catering,
+  Ledgerline's close queue, and a shock deck.
+* **Escalation routing (WORLD-0012).** An engineer acts at once; anyone else
+  decides whether to relay; procedure halves an outage, a face quarters it.
+* **Memory (MEM-0003).** Trust is a typed belief; late payroll, insolvency,
+  churn and broken promises travel; a rumour can be false.
+* **Tier 1 (DECIDE-0005).** Uncertain medium- and high-stakes Jev answers are
+  asked again of a flash model in the same typed shape. Production runs it in
+  **shadow**; a set acts on it only when named in `JEVE_ESCALATION_LIVE`.
+* **Detectors (API-0004).** Eight on `/report`, each tested by breaking a
+  healthy world. The soak holds 12 invariants.
+* **The docking gap, split.** Over five seeds the one-shot encounter and the
+  episode disagree by +0.36 about how often a meeting escalates an outage, and
+  almost all of it is resolution, not selection (`ops/episodes.md`): three
+  rounds escalate what one shot does not. Recalibrating the one-shot question
+  is the open item.
+
+### Needs a key, and a person
+
+* **Re-record the golden cassette** with `LIVE=1 make e2e`: nearly every
+  question set's wording changed, so replay tests skip and `make e2e` in replay
+  exits early until it is committed.
+* `make situation-probe` (does the situation now move Jev as much as the
+  person?), `make providers` (can each model return a typed tier-1 answer?),
+  and after a week of shadow, `make escalation-report` before naming any set
+  live. `make judge-panel LIVE=1` puts cached contexts to three model families
+  (under $1).
 
 ## Not yet done
 
