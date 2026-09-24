@@ -22,9 +22,9 @@ from psycopg.rows import DictRow
 
 from jeve import db, tracing
 from jeve.api.app import app
-from jeve.config import load_settings
+from jeve.config import ESCALATION_ROUTE, load_settings
 from jeve.core.clock import SimTime, at
-from jeve.decide import jev_policy
+from jeve.decide import escalation, jev_policy
 
 # Captured before `no_network` swaps the name out: these tests want the real
 # thread, because the thread is what they are about.
@@ -37,7 +37,7 @@ from jeve.decide.recorder import (
     finalize_cassette,
     load_cassette,
 )
-from jeve.llm import Gateway
+from jeve.llm import DECISION_PIN, GENERATIVE_PREFERENCE, Gateway
 from jeve.sim import CASSETTE, advance
 from jeve.world.engine import Engine
 from jeve.world.seed_world import ROOT_SEED, seed
@@ -79,8 +79,15 @@ def no_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def replay(conn: Connection[DictRow], *, days: int = DAYS) -> JevPolicy:
+    """The golden world, replayed the way the daemon runs it: conversations
+    answered by tier 1 (DECIDE-0006), from the rows the recording kept."""
+
     seed(conn, root_seed=ROOT_SEED)
-    policy = JevPolicy(ROOT_SEED, Recorder(mode="replay"))
+    policy = JevPolicy(
+        ROOT_SEED,
+        Recorder(mode="replay"),
+        tier1=escalation.Config(route=frozenset(ESCALATION_ROUTE)),
+    )
     engine = Engine(conn, policy, root_seed=ROOT_SEED)
     advance(conn, engine, until=at(days))
     return policy
@@ -261,9 +268,13 @@ def test_economics_prices_the_run_from_the_calls_it_used(
     assert 0.0 < body["dedup_rate"] < 1.0
     # Ignoring the cache can only cost more, never less.
     assert body["without_dedup"]["spend_usd"] > body["spend_usd"]
-    assert [m["model"] for m in body["decisions_by_model"]] == [
-        "typesafe/jev-1.13-20260917"
-    ]
+    # Jev, and the tier-1 models that answered the routed conversations
+    # (DECIDE-0006): their calls are part of what this world cost.
+    models = {m["model"] for m in body["decisions_by_model"]}
+    assert DECISION_PIN in models
+    assert models - {DECISION_PIN} and models <= {DECISION_PIN, *GENERATIVE_PREFERENCE}
+    routed = [k for k in body["by_kind"] if k["kind"] == "episode.round"]
+    assert routed and all(k["source"] == "llm" and k["usd"] > 0 for k in routed)
     assert sum(k["decisions"] for k in body["by_kind"]) == body["counts"]["decisions"]
 
 

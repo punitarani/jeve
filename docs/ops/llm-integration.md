@@ -151,8 +151,10 @@ counts other users of the key and so over-counts.
 | golden cassette re-record before any change (`LIVE=1 make e2e`) | 0.033 |
 | judge validation and retest | 0.089 |
 | dev arms: jev 0.054, tier-1 0.030, rounds 0.332, done 0.139, personas 0.059 | 0.614 |
-| held-out arms, first batch: jev 0.060, tier-1 0.019, rounds 0.335, personas 0.036 | 0.450 |
-| judge comparisons, dev and held-out | 0.297 |
+| held-out arms: jev 0.127, tier-1 0.019, rounds 0.801, personas 0.036 | 0.983 |
+| judge comparisons, dev and held-out | 0.387 |
+| golden cassette re-record with routing on | 0.134 |
+| **total** | **2.24** |
 
-Final totals, and the second held-out batch and the re-recorded cassette,
-are in the PR description.
+The key meter read $2.30 at the end: the difference is other traffic on the
+shared key. $7.70 of the $10 was left unspent.
