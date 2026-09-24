@@ -22,7 +22,14 @@ type PolicyName = Literal["rules", "jev"]
 
 DEV_SEEDS: tuple[int, ...] = (20260920, 20260921, 20260922)
 """Where arms are developed and compared while a role is being built."""
-HELD_OUT_SEEDS: tuple[int, ...] = (20261101, 20261102, 20261103)
+HELD_OUT_SEEDS: tuple[int, ...] = (
+    20261101,
+    20261102,
+    20261103,
+    20261104,
+    20261105,
+    20261106,
+)
 """Never looked at until the final run. The report's headline table is these."""
 
 

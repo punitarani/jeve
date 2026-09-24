@@ -157,7 +157,7 @@ def _records(arm: str, seed: int) -> list[transcripts.Record]:
     family's decisions (arXiv 2404.13076). Tier 1 falls back through
     LLM-0006's order, which includes the judge's model, so this happens."""
 
-    dsn = runner.dsn_for(runner.database(runner.arm(arm), seed))
+    dsn = runner.dsn_for(runner.database(arm, seed))
     family = judge.JUDGE.split("/")[0] + "/%"
     with psycopg.connect(dsn, autocommit=True, row_factory=dict_row) as conn:
         ids = [

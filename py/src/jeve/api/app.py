@@ -459,6 +459,11 @@ def economics() -> dict[str, object]:
     decision row names the call that answered it, and the call row carries what
     OpenRouter billed when it was first made — so the join prices exactly the
     calls this world needed, whether they were live or replayed.
+
+    Tier 1's calls count too — a second opinion in shadow, one that acts, and a
+    routed set's answers (DECIDE-0006) — found through `escalations`, which is
+    where a decision names the LLM call beside Jev's. Before routing they were
+    a rounding error; routed conversations are most of the bill.
     """
 
     with _db() as conn:
@@ -480,12 +485,14 @@ def economics() -> dict[str, object]:
             "       COALESCE(sum(m.input_tokens),0) AS input_tokens, "
             "       count(*) FILTER (WHERE m.cost_estimated) AS estimated "
             "FROM model_calls m WHERE m.hash IN "
-            "  (SELECT DISTINCT model_call FROM decisions "
-            "   WHERE model_call IS NOT NULL)"
+            "  (SELECT model_call FROM decisions WHERE model_call IS NOT NULL "
+            "   UNION SELECT call_hash FROM escalations)"
         ).fetchone()
         undeduped = conn.execute(
-            "SELECT COALESCE(sum(m.cost_usd),0) AS usd FROM decisions d "
-            "JOIN model_calls m ON m.hash = d.model_call"
+            "SELECT (SELECT COALESCE(sum(m.cost_usd),0) FROM decisions d "
+            "        JOIN model_calls m ON m.hash = d.model_call) "
+            "     + (SELECT COALESCE(sum(m.cost_usd),0) FROM escalations x "
+            "        JOIN model_calls m ON m.hash = x.call_hash) AS usd"
         ).fetchone()
         unpriced = conn.execute(
             "SELECT count(*) AS n FROM decisions d WHERE d.model_call IS NOT NULL "
@@ -494,7 +501,9 @@ def economics() -> dict[str, object]:
         by_model = conn.execute(
             "SELECT m.model, count(*) AS decisions, "
             "       count(DISTINCT m.hash) AS calls "
-            "FROM decisions d JOIN model_calls m ON m.hash = d.model_call "
+            "FROM (SELECT model_call AS h FROM decisions WHERE model_call IS NOT NULL "
+            "      UNION ALL SELECT call_hash FROM escalations) u "
+            "JOIN model_calls m ON m.hash = u.h "
             "GROUP BY m.model ORDER BY m.model"
         ).fetchall()
         by_kind = conn.execute(
@@ -507,9 +516,11 @@ def economics() -> dict[str, object]:
             (str(r["kind"]), str(r["source"])): float(r["usd"])
             for r in conn.execute(
                 "SELECT u.question_set AS kind, u.source, sum(m.cost_usd) AS usd "
-                "FROM (SELECT DISTINCT question_set, source, model_call "
-                "      FROM decisions WHERE model_call IS NOT NULL) u "
-                "JOIN model_calls m ON m.hash = u.model_call "
+                "FROM (SELECT DISTINCT question_set, source, model_call AS h "
+                "      FROM decisions WHERE model_call IS NOT NULL "
+                "      UNION SELECT DISTINCT d.question_set, d.source, x.call_hash "
+                "      FROM escalations x JOIN decisions d ON d.id = x.decision_id) u "
+                "JOIN model_calls m ON m.hash = u.h "
                 "GROUP BY u.question_set, u.source"
             ).fetchall()
         }

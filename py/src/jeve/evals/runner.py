@@ -38,8 +38,10 @@ RUNS = find_repo_root() / "ops" / "evals" / "runs"
 report is rendered from."""
 
 
-def database(arm: Arm, seed: int) -> str:
-    return f"jeve_eval_{slug(arm.name)}_{seed}"
+def database(arm: Arm | str, seed: int) -> str:
+    """By name too, so a retired arm's worlds can still be measured and judged."""
+
+    return f"jeve_eval_{slug(arm if isinstance(arm, str) else arm.name)}_{seed}"
 
 
 def dsn_for(name: str) -> str:
