@@ -74,6 +74,12 @@ class Escalated:
 
 @runtime_checkable
 class Policy(Protocol):
+    def begin_tick(self, sim_time: int) -> None:
+        """A tick, or a retry of one, is starting. Anything a policy counts
+        per tick starts again here, so a retried tick decides as a replay of it
+        would."""
+        ...
+
     def decide(self, ctx: DecisionContext) -> Decision: ...
 
     def decide_many(self, contexts: Sequence[DecisionContext]) -> list[Decision]:
@@ -102,6 +108,9 @@ class RulesPolicy:
     def _rng(self, ctx: DecisionContext) -> tuple[object, str]:
         path = path_of("person", ctx.person_id, "decision", ctx.decision_seq, ctx.kind)
         return derive_rng(self._root, path), path
+
+    def begin_tick(self, sim_time: int) -> None:
+        return None
 
     def decide(self, ctx: DecisionContext) -> Decision:
         rng, path = self._rng(ctx)

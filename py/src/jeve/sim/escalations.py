@@ -148,7 +148,8 @@ def render(conn: Connection[DictRow]) -> str:
         SELECT model, count(*) AS n, coalesce(sum(cost_usd), 0) AS cost,
                avg(latency_s) AS mean_s,
                percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_s) AS p95_s
-        FROM model_calls WHERE kind = %s GROUP BY model ORDER BY model
+        FROM model_calls WHERE kind = %s AND NOT response ? 'unanswered'
+        GROUP BY model ORDER BY model
         """,
         (escalation.KIND,),
     ).fetchall()

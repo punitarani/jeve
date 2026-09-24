@@ -49,10 +49,14 @@ from jeve.llm.gateway import parse_decision
 from jeve.llm.protocol import Answer, Usage
 
 CALL_TIMEOUT_S = 180.0
+FAILED = ":failed"
+UNRESOLVABLE = ":unresolvable"
+MARKS = (FAILED, UNRESOLVABLE)
+"""Suffixes of the keys a tier-1 give-up is recorded under (DECIDE-0005)."""
 SHADOW_BUDGET_S = 45.0
-"""All of a batch's shadow second opinions, every model tried, share this.
-Measurement may slow a tick by this much and no more: it holds up a world that
-does not act on it (DECIDE-0005)."""
+"""All of a tick's shadow second opinions, every batch and every model tried,
+share this. Measurement may slow a tick by this much and no more: it holds up a
+world that does not act on it (DECIDE-0005)."""
 
 
 class _Bridge:
@@ -161,6 +165,9 @@ class JevPolicy:
         self._settings = settings
         self._tier1 = tier1 or escalation.Config()
         self._bridge: _Bridge | None = None
+        self._tick_escalated = 0
+        self._tick_acting = 0
+        self._shadow_left = SHADOW_BUDGET_S
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -186,6 +193,15 @@ class JevPolicy:
         return self._recorder
 
     # -- deciding ----------------------------------------------------------
+
+    def begin_tick(self, sim_time: int) -> None:
+        """A tick, or its retry, starts with tier 1's per-tick allowances
+        whole (DECIDE-0005): a retried tick then decides exactly as a replay
+        of it does, and batches within one share them in the order asked."""
+
+        self._tick_escalated = 0
+        self._tick_acting = 0
+        self._shadow_left = SHADOW_BUDGET_S
 
     def decide(self, ctx: DecisionContext) -> Decision:
         return self.decide_many([ctx])[0]
@@ -413,13 +429,16 @@ class JevPolicy:
         """Ask tier 1 about the answers Jev was unsure of, within today's room.
 
         Every model in the preference order is looked up before any is called,
-        so a run that recorded its answer from the second model reads the same
-        answer back, even once the first is reachable again.
+        and a model whose reply is on record, usable or not, is never asked the
+        same thing again: nothing is paid for twice, and a replay reads back
+        what the recording saw. A second opinion that acts is chosen and
+        answered by rules that do not depend on the clock on the wall; shadow's
+        may, and its rows are measurement only.
         """
 
         if self._tier1.mode == "off":
             return {}
-        wanted: list[_Wanted] = []
+        candidates: list[_Wanted] = []
         for index, (ctx, item, jev) in enumerate(
             zip(contexts, prepared, answers, strict=True)
         ):
@@ -436,33 +455,52 @@ class JevPolicy:
             else:
                 continue
             if keys:
-                wanted.append(_Wanted(index, ctx, item, keys, tuple(fired)))
-        if not wanted:
+                # Only an answer Jev was unsure of may act: the uniform sample
+                # is there to measure where Jev was sure, never to overrule it.
+                acts = self._tier1.applies(ctx.kind) and bool(fired)
+                candidates.append(_Wanted(index, ctx, item, keys, tuple(fired), acts))
+        if not candidates:
             return {}
 
-        # Triggered before sampled, higher stakes first, then batch order.
-        wanted.sort(key=lambda w: (not w.fired, -escalation.rank(w.ctx.kind), w.index))
-        room = escalation.room(self._recorder.connection(), wanted[0].ctx.sim_time)
-        chosen = wanted[:room]
+        # In the order asked, against what is left of today's room once this
+        # tick's earlier batches are counted: one batch of five decides exactly
+        # as five batches of one would (the Policy contract).
+        room = escalation.room(self._recorder.connection(), candidates[0].ctx.sim_time)
+        chosen: list[_Wanted] = []
+        for want in candidates:
+            if want.acts:
+                if room.acting - self._tick_acting <= 0:
+                    continue
+                self._tick_acting += 1
+            elif room.any - self._tick_escalated <= 0 or self._shadow_left <= 0:
+                continue
+            self._tick_escalated += 1
+            chosen.append(want)
+        if not chosen:
+            return {}
 
-        found = self._look_up(chosen, GENERATIVE_PREFERENCE)
+        found, heard = self._look_up(chosen)
         unanswered = [w for w in chosen if w.index not in found]
         if unanswered and self._recorder.mode == "record":
             try:
-                found |= self._ask_tier1(unanswered)
+                found |= self._ask_tier1(unanswered, heard)
             except JeveError, TimeoutError:
                 # Shadow is measurement: no gateway, no budget or no model is
-                # a missing row, never a stopped world. A live set is a
-                # decision, and waits like one (SIM-0002).
-                if any(self._tier1.applies(w.ctx.kind) for w in unanswered):
+                # a missing row, never a stopped world. An answer that acts is
+                # a decision, and waits like one (SIM-0002).
+                if any(w.acts for w in unanswered):
                     raise
 
         opinions: dict[int, _Opinion] = {}
         for want in chosen:
-            live = self._tier1.applies(want.ctx.kind)
             if want.index not in found:
-                if not live:
+                if not want.acts:
                     continue  # shadow is measurement: a missing answer is no row
+                if all((want.index, m) in heard for m in GENERATIVE_PREFERENCE):
+                    # Every model's reply is on record and none can be read: so
+                    # it will be on every retry and every replay, and Jev's
+                    # answer stands, the same way each time.
+                    continue
                 if self._recorder.mode == "replay":
                     raise ReplayMissError(
                         f"strict replay: no tier-1 answer for live set "
@@ -474,12 +512,12 @@ class JevPolicy:
             model, call_hash, llm = found[want.index]
             jev = answers[want.index]
             assert jev is not None
-            asks = [a for a in want.item.asks if a.key in want.keys]
+            asks = want.asks
             opinions[want.index] = _Opinion(
                 answers=llm,
-                applied=live,
+                applied=want.acts,
                 record=Escalated(
-                    mode="live" if live else "shadow",
+                    mode="live" if want.acts else "shadow",
                     sampled=not want.fired,
                     triggers=[t.row() for t in want.fired],
                     asks=list(want.keys),
@@ -493,69 +531,130 @@ class JevPolicy:
         return opinions
 
     def _look_up(
-        self, wanted: Sequence[_Wanted], models: Sequence[str]
-    ) -> dict[int, tuple[str, str, dict[str, Answer]]]:
-        requests = {
-            (want.index, model): escalation.request_for(want.item, want.keys, model)
-            for want in wanted
-            for model in models
+        self, wanted: Sequence[_Wanted], models: Sequence[str] = GENERATIVE_PREFERENCE
+    ) -> tuple[dict[int, tuple[str, str, dict[str, Answer]]], set[tuple[int, str]]]:
+        """The first usable answer per question in model order, and every
+        (question, model) whose reply is on record, usable or not."""
+
+        keys = {
+            (want.index, model): want.key(model) for want in wanted for model in models
         }
-        keys = {slot: escalation.request_key(r) for slot, r in requests.items()}
-        stored = self._recorder.lookup(keys.values())
+        stored = self._recorder.lookup(
+            [key + mark for key in keys.values() for mark in ("", *MARKS)]
+        )
+        by_index = {want.index: want for want in wanted}
+        heard = {
+            slot
+            for slot, key in keys.items()
+            if key in stored
+            or f"{key}{UNRESOLVABLE}" in stored
+            # A failure keeps shadow from paying for it again; it never keeps
+            # an answer that acts from being asked again.
+            or (not by_index[slot[0]].acts and f"{key}{FAILED}" in stored)
+        }
         found: dict[int, tuple[str, str, dict[str, Answer]]] = {}
         for want in wanted:
             for model in models:
                 call = stored.get(keys[(want.index, model)])
-                if call is None:
-                    continue
-                parsed = _parsed(call, want.asks)
-                if parsed is not None:
+                parsed = _parsed(call, want.asks) if call is not None else None
+                if call is not None and parsed is not None:
                     found[want.index] = (model, call.hash, parsed)
                     break
-        return found
+        return found, heard
 
     def _ask_tier1(
-        self, wanted: Sequence[_Wanted]
+        self, wanted: Sequence[_Wanted], heard: set[tuple[int, str]]
     ) -> dict[int, tuple[str, str, dict[str, Answer]]]:
         """Walk the generative order, a round per model, until each question
-        has a usable answer or the models run out. Every reply is stored before
-        it is read, as every Jev reply is: it was paid for."""
+        has a usable answer or the models run out.
+
+        Every reply is stored before it is read, as every Jev reply is: it was
+        paid for. A shadow question a model failed on is marked as unanswered
+        by that model, so it is not paid for again; one that acts is not
+        marked, because it failed and its tick will be tried again. A model the
+        catalogue cannot resolve is marked for everyone: it is not coming back
+        within this run, and a replay has to know it was never an option.
+        """
 
         bridge = self._live()
+        reachable = bridge.generative_models
+        for want in wanted:
+            for model in GENERATIVE_PREFERENCE:
+                if model not in reachable and (want.index, model) not in heard:
+                    self._mark(want, model, UNRESOLVABLE)
+                    heard.add((want.index, model))
         found: dict[int, tuple[str, str, dict[str, Answer]]] = {}
         failure: BaseException | None = None
         remaining = list(wanted)
-        live = any(self._tier1.applies(w.ctx.kind) for w in wanted)
-        deadline = time.monotonic() + SHADOW_BUDGET_S
-        for model in bridge.generative_models:
-            left = deadline - time.monotonic()
-            if not remaining or (not live and left <= 0):
+        for model in reachable:
+            pending = [w for w in remaining if (w.index, model) not in heard]
+            if not pending:
+                continue
+            acting = any(w.acts for w in pending)
+            if not acting and self._shadow_left <= 0:
                 break
-            requests = [
-                escalation.request_for(w.item, w.keys, model) for w in remaining
+            # Two people in the same situation share one call, as they share
+            # one Jev call.
+            by_key: dict[str, list[_Wanted]] = {}
+            for want in pending:
+                by_key.setdefault(want.key(model), []).append(want)
+            requests: list[tuple[ChatRequest, Purpose]] = [
+                (
+                    escalation.request_for(group[0].item, group[0].keys, model),
+                    "gate" if any(w.acts for w in group) else "explore",
+                )
+                for group in by_key.values()
             ]
-            purposes: list[Purpose] = [
-                "gate" if self._tier1.applies(w.ctx.kind) else "explore"
-                for w in remaining
-            ]
-            replies = bridge.complete(
-                list(zip(requests, purposes, strict=True)),
-                timeout=CALL_TIMEOUT_S if live else left,
-            )
-            for request, reply in zip(requests, replies, strict=True):
+            started = time.monotonic()
+            try:
+                replies = bridge.complete(
+                    requests,
+                    timeout=CALL_TIMEOUT_S if acting else self._shadow_left,
+                )
+            except TimeoutError as error:
+                if acting:
+                    raise
+                # Out of shadow time: the round was given all that was left.
+                # What earlier rounds found is kept, and this round's questions
+                # stay open for a later tick.
+                replies = [error] * len(requests)
+                self._shadow_left = 0.0
+            finally:
+                if not acting:
+                    self._shadow_left -= time.monotonic() - started
+            for group, (request, _), reply in zip(
+                by_key.values(), requests, replies, strict=True
+            ):
                 if isinstance(reply, ChatResponse):
                     self._keep(request, reply)
-                else:
+                elif any(w.acts for w in group):
                     failure = failure or reply
-            found |= self._look_up(remaining, (model,))
+                elif not isinstance(reply, TimeoutError):
+                    for want in group:
+                        self._mark(want, model, FAILED)
+            now_found, now_heard = self._look_up(pending, (model,))
+            found |= now_found
+            heard |= now_heard
             remaining = [w for w in remaining if w.index not in found]
-        if failure is not None and any(
-            self._tier1.applies(w.ctx.kind) for w in remaining
-        ):
-            if isinstance(failure, JeveError):
+        if failure is not None and any(w.acts for w in remaining):
+            if isinstance(failure, JeveError | TimeoutError):
                 raise failure
             raise TransportError(f"tier-1 call failed: {failure!r}") from failure
         return found
+
+    def _mark(self, want: _Wanted, model: str, why: str) -> None:
+        """Beside the answer's own key, never on it: a mark must not stop a
+        real answer being stored there later."""
+
+        request = escalation.request_for(want.item, want.keys, model)
+        body = request.model_dump(mode="json")
+        self._recorder.mark_unanswered(
+            escalation.request_key(request) + why,
+            kind=escalation.KIND,
+            model=model,
+            request=body,
+            wire=json.dumps(body, ensure_ascii=False, separators=(",", ":")),
+        )
 
     def _keep(self, request: ChatRequest, reply: ChatResponse) -> None:
         body = request.model_dump(mode="json")
@@ -582,6 +681,13 @@ class _Wanted:
     item: Prepared
     keys: tuple[str, ...]
     fired: tuple[escalation.Trigger, ...]
+    acts: bool
+    """Its answer decides: a live set, and a question Jev was unsure of."""
+
+    def key(self, model: str) -> str:
+        return escalation.request_key(
+            escalation.request_for(self.item, self.keys, model)
+        )
 
     @property
     def asks(self) -> list[Ask]:

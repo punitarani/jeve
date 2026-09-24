@@ -469,8 +469,10 @@ class Gateway:
                 type="function",
                 metadata={"call_id": call_id, "model": model, "path": path},
             ) as attempt:
+                sent = False
                 try:
                     async with self._permits:
+                        sent = True
                         if isinstance(body, bytes):
                             # Already serialised: these exact bytes are the
                             # cache key (DECIDE-0004), so they must be what is
@@ -498,6 +500,23 @@ class Gateway:
                     raise _Retryable(
                         TransportError(f"{path} failed: {error}"), None
                     ) from error
+                except asyncio.CancelledError:
+                    # The caller stopped waiting (a batch past its deadline).
+                    # A reservation left open is counted as spend for ever, so
+                    # it is closed either way: given back if nothing was sent,
+                    # kept as spend if it was, since it may have been billed.
+                    if sent:
+                        self._ledger.settle(
+                            call_id,
+                            worst_case_usd,
+                            estimated=True,
+                            model=model,
+                            outcome="cancelled-in-flight",
+                        )
+                        self._run_spent_usd += worst_case_usd
+                    else:
+                        self._ledger.release(call_id, reason="cancelled-before-send")
+                    raise
 
                 latency = time.perf_counter() - started
 

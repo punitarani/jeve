@@ -57,7 +57,7 @@ more than an afternoon wants the same, plus an account cap at OpenRouter.
 | `JEVE_ESCALATION_LIVE` | empty | Comma-separated question sets whose second opinion decides, e.g. `credit.decision,close.signoff`. Read `make escalation-report` first: a set earns this with at least 200 shadow rows and disagreement concentrated in the band. |
 
 Tier 1 is capped at 5% of the previous sim-day's decisions (at least 25 a day).
-Shadow calls are `explore` purpose and share 45 seconds a batch; a failure in
+Shadow calls are `explore` purpose and share 45 seconds a tick; a failure in
 shadow records nothing and never stops the world. A live set that gets no usable
 answer waits like any other decision (SIM-0002).
 

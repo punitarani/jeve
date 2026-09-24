@@ -45,7 +45,7 @@ primary_region = "iad"  # Washington D.C. — closest to us-east-1
   # asked again of a flash model and both are kept; nothing in the world acts
   # on the second opinion until a set is named in JEVE_ESCALATION_LIVE, after
   # `make escalation-report` says it has earned it. Capped at 5% of a day's
-  # decisions and 45s of a tick; refused first by the budget ladder.
+  # decisions and 45 seconds of a tick; refused first by the budget ladder.
   JEVE_ESCALATION = "shadow"
   # SIM-0004: dead time is skipped this much faster than the open hours. It
   # calls no model, so the only thing a long night buys is a hole in the graph.

@@ -91,6 +91,9 @@ class Scripted:
         """Every context this policy was handed, in order — what each person
         was told, which is what the round-memory tests read back."""
 
+    def begin_tick(self, sim_time: int) -> None:
+        return None
+
     def decide(self, ctx: DecisionContext) -> Decision:
         self.asked.append(ctx)
         if ctx.kind != "episode.round":

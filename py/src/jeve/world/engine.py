@@ -552,6 +552,7 @@ class Engine:
                     # Logged once known: the clock is read inside the
                     # transaction, never before it.
                     span.log(input=report.clock())
+                    self._policy.begin_tick(report.sim_time)
                     self._advance(report, SimTime(report.sim_time))
                     # Summarised inside the transaction, so nothing after the
                     # commit can fail and reach the daemon as a tick that had

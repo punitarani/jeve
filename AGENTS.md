@@ -270,7 +270,7 @@ This decision is immutable. To change it, write a new record and set `superseded
 ### DECIDE-0005: Tier 1 runs in shadow inside the tick, and a set goes live by name
 
 **Status**: accepted (2026-09-24)  
-**Scope**: `py/src/jeve/decide/escalation.py`, `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/sim/escalations.py`, `py/src/jeve/sim/panel.py`, `py/src/jeve/gen/ontology.py`, `py/migrations/0013_escalations.sql`, `py/tests/test_escalation.py`, `py/tests/test_measurement.py`  
+**Scope**: `py/src/jeve/decide/escalation.py`, `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/decide/policy.py`, `py/src/jeve/decide/recorder.py`, `py/src/jeve/sim/escalations.py`, `py/src/jeve/sim/panel.py`, `py/src/jeve/gen/ontology.py`, `py/migrations/0013_escalations.sql`, `py/tests/test_escalation.py`, `py/tests/test_measurement.py`  
 **Tags**: escalation, confidence, llm, agent-decided
 
 Tier 1 is asked inside `JevPolicy.decide_many`, between Jev's answer and the draw, off unless `JEVE_ESCALATION` says `shadow` or `live`; it acts only for sets named in `JEVE_ESCALATION_LIVE`.

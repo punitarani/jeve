@@ -290,11 +290,13 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
     # A complaint passed to support or the account manager is decided on, not
     # parked: a handoff still queued an hour after it was due is one lost
     # (WORLD-0012).
+    # Measured from the last tick that ran, not the end of the horizon: a
+    # complaint made at the last open tick is due after it, and is not lost.
     parked = _one(
         conn,
         "SELECT count(*) FROM scheduled WHERE kind = 'escalation.handoff' "
-        "AND due_sim_time < %s",
-        (end - HOUR,),
+        "AND due_sim_time < (SELECT max(sim_time) FROM events) - %s",
+        (HOUR,),
     )
     handed = _one(
         conn,

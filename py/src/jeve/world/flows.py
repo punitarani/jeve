@@ -579,7 +579,7 @@ def plan_closes(
 def _overdue_bills(engine: Engine, org_id: str, report: TickReport) -> int:
     row = engine.conn.execute(
         "SELECT count(*) AS n FROM invoices WHERE to_org_id = %s "
-        "AND paid_sim IS NULL AND due_sim < %s",
+        "AND paid_sim IS NULL AND written_off_sim IS NULL AND due_sim < %s",
         (org_id, report.sim_time),
     ).fetchone()
     return int(row["n"]) if row else 0

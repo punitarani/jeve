@@ -531,7 +531,9 @@ def test_no_room_left_today_means_no_second_opinion(
     policy = _policy(monkeypatch, mode="shadow", flash=flash)
     ctx = _ctx("dispute.resolution")
     _teach_jev(conn, policy, ctx, **UNSURE)
-    monkeypatch.setattr(escalation, "room", lambda conn, now: 0)
+    monkeypatch.setattr(
+        escalation, "room", lambda conn, now: escalation.Room(any=0, acting=0)
+    )
     assert policy.decide(ctx).escalation is None
     assert flash.asked == []
 
@@ -617,7 +619,10 @@ def test_the_engine_keeps_a_second_opinion_beside_its_decision_and_it_counts(
     used = sum(1 for row in kept if day <= int(row["sim_time"]) < day + DAY)
     assert before is not None
     allowance = max(escalation.DAILY_FLOOR, -(-int(before["n"]) // 20))
-    assert escalation.room(world, day + 10 * 3600) == max(0, allowance - used)
+    # Shadow rows use the room; only rows that acted use the live room.
+    assert escalation.room(world, day + 10 * 3600) == escalation.Room(
+        any=max(0, allowance - used), acting=allowance
+    )
 
     text = report.render(world)
     assert "payment.timing" in text
@@ -629,3 +634,176 @@ def test_the_engine_keeps_a_second_opinion_beside_its_decision_and_it_counts(
     left = world.execute("SELECT count(*) AS n FROM escalations").fetchone()
     assert left is not None and left["n"] == 0
     world.commit()
+
+
+# -- what the review found (each would fail on the first version of tier 1) ------
+
+
+def _two_unsure(conn: Connection[DictRow], policy: JevPolicy) -> list[DecisionContext]:
+    """Two uncertain decisions in different situations, in one batch."""
+
+    first = _ctx("dispute.resolution", "p1")
+    second = _ctx(
+        "dispute.resolution",
+        "p2",
+        facts={**ASKING["dispute.resolution"], "large": False},
+    )
+    for ctx in (first, second):
+        _teach_jev(conn, policy, ctx, **UNSURE)
+    return [first, second]
+
+
+class _PerRequest(_Flash):
+    """Replies by model and by whether the situation was a large bill."""
+
+    def __init__(self, replies: dict[tuple[str, bool], dict[str, Any] | Exception]):
+        super().__init__({})
+        self.by = replies
+
+    def complete(
+        self,
+        requests: Sequence[tuple[ChatRequest, Purpose]],
+        *,
+        parent: str | None = None,
+        timeout: float = 180.0,
+    ) -> list[ChatResponse | BaseException]:
+        out: list[ChatResponse | BaseException] = []
+        for request, purpose in requests:
+            self.asked.append((request.model, purpose))
+            large = "larger bills" in request.messages[1].content
+            reply = self.by[(request.model, large)]
+            if isinstance(reply, TimeoutError):
+                raise reply
+            if isinstance(reply, Exception):
+                out.append(reply)
+                continue
+            out.append(
+                ChatResponse(
+                    model=request.model,
+                    text=json.dumps(reply),
+                    usage=Usage(cost_usd=0.0001),
+                    latency_s=1.0,
+                )
+            )
+        return out
+
+
+def test_a_later_round_timing_out_keeps_what_an_earlier_round_found(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flash = _PerRequest(
+        {
+            (FIRST, True): FLASH_SAYS,
+            (FIRST, False): {"verdict": "garbled"},
+            (SECOND, False): TimeoutError(),
+        }
+    )
+    policy = _policy(monkeypatch, mode="shadow", flash=flash)
+    contexts = _two_unsure(conn, policy)
+    made = policy.decide_many(contexts)
+    assert made[0].escalation is not None and made[0].escalation.model == FIRST
+    assert made[1].escalation is None
+    # And a replay of the same moment sees exactly that.
+    again = _policy(monkeypatch, mode="shadow", calls="replay").decide_many(contexts)
+    assert [d.escalation for d in again] == [d.escalation for d in made]
+
+
+def test_nothing_is_paid_for_twice(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _ctx("dispute.resolution")
+    dead = _Flash({FIRST: TransportError("down"), SECOND: TransportError("down")})
+    shadow = _policy(monkeypatch, mode="shadow", flash=dead)
+    _teach_jev(conn, shadow, ctx, **UNSURE)
+    assert shadow.decide(ctx).escalation is None
+    assert len(dead.asked) == 2
+    # The same situation again: both failures are on record for shadow.
+    again = _Flash({FIRST: FLASH_SAYS, SECOND: FLASH_SAYS})
+    assert (
+        _policy(monkeypatch, mode="shadow", flash=again).decide(ctx).escalation is None
+    )
+    assert again.asked == []
+
+
+def test_a_live_set_whose_every_reply_is_unreadable_keeps_jevs_answer(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _ctx("dispute.resolution")
+    live = frozenset({"dispute.resolution"})
+    garbled = _Flash({FIRST: {"verdict": "x"}, SECOND: TransportError("down")})
+    policy = _policy(monkeypatch, mode="live", live=live, flash=garbled)
+    _teach_jev(conn, policy, ctx, **UNSURE)
+    with pytest.raises(TransportError):
+        policy.decide(ctx)  # the second model may yet answer: the tick waits
+
+    # The retry asks only the model that has not answered. It garbles too:
+    # every reply is on record and unreadable, so Jev's answer stands, and
+    # stands the same way in a replay.
+    retry = _Flash({FIRST: FLASH_SAYS, SECOND: {"verdict": "y"}})
+    made = _policy(monkeypatch, mode="live", live=live, flash=retry).decide(ctx)
+    assert retry.asked == [(SECOND, "gate")]
+    assert made.source == "jev" and made.escalation is None
+    replayed = _policy(monkeypatch, mode="live", live=live, calls="replay")
+    assert replayed.decide(ctx).chosen == made.chosen
+
+
+def test_the_sample_measures_and_never_acts(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    person = next(
+        f"p{n}"
+        for n in range(1000)
+        if escalation.sampled(ROOT_SEED, f"p{n}", 0, "dispute.resolution")
+    )
+    ctx = _ctx("dispute.resolution", person)
+    sure = {
+        "resolution": {
+            "type": "choice",
+            "choice": "discount",
+            "probabilities": {
+                "stand_firm": 0.05,
+                "discount": 0.9,
+                "write_off": 0.05,
+                "other": 0.0,
+            },
+        }
+    }
+    flash = _Flash({FIRST: FLASH_SAYS})
+    policy = _policy(
+        monkeypatch, mode="live", live=frozenset({"dispute.resolution"}), flash=flash
+    )
+    _teach_jev(conn, policy, ctx, **sure)
+    made = policy.decide(ctx)
+    assert made.escalation is not None and made.escalation.mode == "shadow"
+    assert made.source == "jev"
+    assert flash.asked == [(FIRST, "explore")]
+
+
+def test_a_batch_decides_as_the_same_decisions_one_at_a_time(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        escalation, "room", lambda conn, now: escalation.Room(any=1, acting=1)
+    )
+    flash = _Flash({FIRST: FLASH_SAYS})
+    batch = _policy(monkeypatch, mode="shadow", flash=flash)
+    contexts = _two_unsure(conn, batch)
+    together = [d.escalation is not None for d in batch.decide_many(contexts)]
+    single = _policy(monkeypatch, mode="shadow", flash=flash)
+    apart = [single.decide(ctx).escalation is not None for ctx in contexts]
+    assert together == apart == [True, False]
+    # A new tick, or a retry of this one, starts with the room whole again.
+    single.begin_tick(contexts[1].sim_time)
+    assert single.decide(contexts[1]).escalation is not None
+
+
+def test_the_same_situation_twice_in_a_batch_is_one_call(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flash = _Flash({FIRST: FLASH_SAYS})
+    policy = _policy(monkeypatch, mode="shadow", flash=flash)
+    one, two = _ctx("dispute.resolution", "p1"), _ctx("dispute.resolution", "p2")
+    _teach_jev(conn, policy, one, **UNSURE)
+    made = policy.decide_many([one, two])
+    assert all(d.escalation is not None for d in made)
+    assert flash.asked == [(FIRST, "explore")]

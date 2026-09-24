@@ -100,13 +100,19 @@ def load(
 
     wanted = sorted(set(kinds) if kinds else set(QUESTION_SETS))
     rows = conn.execute(
-        "SELECT hash, kind, request, response FROM model_calls "
+        "SELECT hash, kind, request, wire, response FROM model_calls "
         "WHERE kind = ANY(%s) ORDER BY kind, hash",
         (wanted,),
     ).fetchall()
     found: list[Context] = []
     for row in rows:
-        request = dict(row["request"] or {})
+        # The wire, not the jsonb column: jsonb reorders keys, and the order of
+        # a state and of a choice's options is part of the question
+        # (DECIDE-0004). Rebuilt from it, the panel's request is byte for byte
+        # tier 1's, so an answer tier 1 already paid for is read, not bought.
+        request = (
+            json.loads(str(row["wire"])) if row["wire"] else dict(row["request"] or {})
+        )
         state, questions = request.get("state"), request.get("questions")
         if not isinstance(state, dict) or not isinstance(questions, dict):
             continue

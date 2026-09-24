@@ -991,6 +991,9 @@ def _context(
             "refused": local.refused,
             "tension": local.tension,
             "tellable_topic": news.fact.topic if news else None,
+            # Which firm the news is about, so the question can say so
+            # (MEM-0003): "that the software company cannot make payroll".
+            "tellable_about": news.fact.about_org_id if news else None,
         },
         traits=agent.traits,
     )

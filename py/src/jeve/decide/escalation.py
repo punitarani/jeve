@@ -226,25 +226,40 @@ def sampled(root_seed: int, person_id: str, decision_seq: int, kind: str) -> boo
     return rng.random() < SHADOW_SAMPLE
 
 
-def room(conn: Connection[DictRow], now: int) -> int:
+@dataclass(frozen=True, slots=True)
+class Room:
+    """What is left of today's allowance: for any second opinion, and for one
+    that acts. They are counted apart so that shadow's rows, which depend on
+    how fast the network was, can never change which live answers the world
+    gets."""
+
+    any: int
+    acting: int
+
+
+def room(conn: Connection[DictRow], now: int) -> Room:
     """How many more decisions may be escalated today.
 
     Five percent of yesterday's decisions, less what today has already used,
-    counted from committed rows. So a tick sees the same room on a retry as on
-    its first attempt, and a tick where the cap binds may overshoot it by its
-    own batches, never by more.
+    counted from committed rows, so a tick sees the same room on a retry as on
+    its first attempt. The caller subtracts what the tick itself has used.
     """
 
     day = now - now % DAY
     row = conn.execute(
         "SELECT (SELECT count(*) FROM decisions WHERE sim_time >= %s "
         "AND sim_time < %s) AS yesterday, (SELECT count(*) FROM escalations "
-        "WHERE sim_time >= %s AND sim_time < %s) AS used",
-        (day - DAY, day, day, day + DAY),
+        "WHERE sim_time >= %s AND sim_time < %s) AS used, (SELECT count(*) "
+        "FROM escalations WHERE applied AND sim_time >= %s AND sim_time < %s) "
+        "AS used_live",
+        (day - DAY, day, day, day + DAY, day, day + DAY),
     ).fetchone()
     assert row is not None
     allowance = max(DAILY_FLOOR, math.ceil(DAILY_SHARE * int(row["yesterday"])))
-    return max(0, allowance - int(row["used"]))
+    return Room(
+        any=max(0, allowance - int(row["used"])),
+        acting=max(0, allowance - int(row["used_live"])),
+    )
 
 
 # -- the request ---------------------------------------------------------------
