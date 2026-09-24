@@ -127,10 +127,18 @@ OpenRouter key of its own, and database URLs for a role that inherits only
 `pg_read_all_data`. The session gets it as `DOPPLER_TOKEN_AGENT`, never as a
 bare `DOPPLER_TOKEN`.
 
-`scripts/provision-agents.sh` stores the read-only URLs there once it has
-proven they cannot write, and then mints the token.
-`scripts/provision-agents.sh --audit` checks that `agent/prd` holds no value
-from `worker` or `infra`. Re-run it after any hand copy between them.
+To fill it in: in PlanetScale, create a role `agents_ro` on branch `main`
+that inherits only `pg_read_all_data`. Set its URL as `JEVE_DATABASE_URL`
+in `agent/prd`, and the same URL on port 6432 as `JEVE_DATABASE_POOLED_URL`.
+Then mint the session's token:
+
+```bash
+doppler configs tokens create claude-cloud -p agent -c prd --plain
+fly tokens create readonly --org jeve-411 --name claude-cloud-agents --expiry 2160h
+```
+
+Never copy a key, token or password-bearing URL into `agent/prd` from
+`worker` or `infra`.
 
 ```bash
 DOPPLER_TOKEN="$DOPPLER_TOKEN_AGENT" doppler run -p agent -c prd -- make api

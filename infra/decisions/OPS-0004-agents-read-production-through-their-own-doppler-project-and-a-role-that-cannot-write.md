@@ -4,7 +4,7 @@ title: "Agents read production through their own Doppler project and a role that
 status: "proposed"
 date: 2026-09-23
 deciders: ["punitarani", "claude"]
-scope: [".claude/setup-cloud.sh", "scripts/provision-agents.sh", "scripts/check_readonly_db.py"]
+scope: [".claude/setup-cloud.sh", "docs/environment-variables.md"]
 tags: ["deployment", "doppler", "agents", "security", "agent-decided"]
 supersedes: []
 superseded-by: null
@@ -42,12 +42,17 @@ name a role inheriting only `pg_read_all_data`, and its OpenRouter key is its
 own, not production's.
 
 A separate project fails closed. Its cost is that knobs are copied by hand,
-and a hand copy is also how a credential gets in.
-`scripts/provision-agents.sh --audit` checks for exactly that. It compares
-every value in `agent/prd` against every credential in `worker/prd`,
-`infra/prd` and `infra/ci`, and asks the database whether each URL can write.
-`.claude/setup-cloud.sh` repeats the database half of that check on every
-session start. The check reads `has_table_privilege`, not the role's name.
+and a hand copy is also how a credential gets in. So nothing is copied into
+`agent/prd` from `worker` or `infra` whose name ends in `_KEY`, `_TOKEN` or
+`_URL` with a password in it. The database URLs are the read-only role's,
+set by hand from PlanetScale. The role, not the config, is what enforces
+read-only: pointed at production's app role, `has_table_privilege` reports
+26 writable tables; pointed at `agents_ro`, it must report none.
+
+Cloud sessions reach the internet through an HTTP/HTTPS proxy, so the
+Postgres wire protocol does not get out of them. There, production is read
+through the PlanetScale connector or the public API. The `agent/prd` URLs
+serve sessions that can reach Postgres.
 
 ### Consequences
 

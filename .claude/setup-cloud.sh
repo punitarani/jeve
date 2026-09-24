@@ -243,15 +243,6 @@ elif ! DOPPLER_TOKEN="$DOPPLER_TOKEN_AGENT" doppler secrets -p agent -c prd --on
   say "  doppler agent/prd            FAIL: token rejected or doppler missing"; FAILED=1
 else
   say "  doppler agent/prd            ok"
-  # Asks the database whether the URL can write (OPS-0004). Exit 2 here is the
-  # proxy refusing Postgres, which is expected, not a setup failure.
-  RO_URL="$(DOPPLER_TOKEN="$DOPPLER_TOKEN_AGENT" doppler secrets get JEVE_DATABASE_URL -p agent -c prd --plain 2>/dev/null)" \
-    timeout 30 uv run --directory py python ../scripts/check_readonly_db.py >/tmp/setup-ro.log 2>&1
-  case $? in
-    0) say "  prod database                ok, $(tail -1 /tmp/setup-ro.log)" ;;
-    1) say "  prod database                FAIL: $(tail -1 /tmp/setup-ro.log). Revoke DOPPLER_TOKEN_AGENT."; FAILED=1 ;;
-    *) say "  prod database                unreachable from here (HTTP-only proxy); use the PlanetScale connector" ;;
-  esac
 fi
 if [ -z "${FLY_API_TOKEN:-}" ]; then
   say "  flyctl                       not configured (no FLY_API_TOKEN)"
