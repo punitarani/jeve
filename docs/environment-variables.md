@@ -137,25 +137,51 @@ DOPPLER_TOKEN="$DOPPLER_TOKEN_AGENT" doppler run -p agent -c prd -- make api
 ```
 
 Network access is **Custom**, with "Also include default list" checked. The
-default list already covers npm, PyPI, GitHub release assets (uv, Python,
-flyctl, Doppler), nodejs.org, Docker Hub and its CDN, the Ubuntu archive and
-Google Fonts. Add these:
+default list already covers npm, PyPI, GitHub and its release assets,
+nodejs.org, Docker Hub and its CDN, the Ubuntu archive and Google Fonts. Add
+these:
 
 ```text
+astral.sh
+*.astral.sh
+mise.run
+*.jdx.dev
+get.pnpm.io
 cdn.playwright.dev
 playwright.download.prss.microsoft.com
 playwright.azureedge.net
-cli.doppler.com
-api.doppler.com
+*.doppler.com
 fly.io
-api.fly.io
+*.fly.io
+*.fly.dev
 api.machines.dev
+planetscale.com
+*.planetscale.com
+*.psdb.cloud
+openrouter.ai
+braintrust.dev
+*.braintrust.dev
 jeve.punitarani.com
 jeve-api.punitarani.com
 ```
 
-The session reaches the internet through an HTTP/HTTPS proxy, so production's
-Postgres (`*.pg.psdb.cloud`) cannot be reached from it at all. Read it through
+| Hosts | For |
+|---|---|
+| `astral.sh`, `*.astral.sh` | uv's installer and docs |
+| `mise.run`, `*.jdx.dev` | mise's installer, binaries and version lookups |
+| `get.pnpm.io` | pnpm's standalone installer |
+| `cdn.playwright.dev`, `playwright.*` | Chromium for the Playwright specs |
+| `*.doppler.com` | the Doppler CLI and `agent/prd` |
+| `fly.io`, `*.fly.io`, `*.fly.dev`, `api.machines.dev` | flyctl, `fly status` / `fly logs`, the app's own hostname |
+| `planetscale.com`, `*.planetscale.com`, `*.psdb.cloud` | the PlanetScale API and CLI, and the database hosts |
+| `openrouter.ai` | live model calls (`make smoke`, `LIVE=1 make e2e`) with `agent/prd`'s key |
+| `braintrust.dev`, `*.braintrust.dev` | tracing, when a run has `BRAINTRUST_API_KEY` |
+| `jeve.punitarani.com`, `jeve-api.punitarani.com` | the live site and API |
+
+The session reaches the internet through an HTTP/HTTPS proxy, so the
+Postgres wire protocol does not get out even with `*.psdb.cloud` allowed: a
+cloud smoke test timed out connecting to production. Read production through
 the PlanetScale connector, whose traffic does not use the session's network,
-or through `jeve-api.punitarani.com`. `openrouter.ai` is left off on purpose:
-without it, no cloud session can spend.
+or through `jeve-api.punitarani.com`. With `openrouter.ai` allowed, a session
+can spend, but only from `agent/prd`'s key, and only as far as that key's
+credit limit at OpenRouter.
