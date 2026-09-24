@@ -29,6 +29,12 @@ if [ "${LIVE:-0}" = "1" ]; then
 else
   CALLS=replay
   UVRUN=(uv run --directory py)
+  # Strict replay of a cassette that is not there fails on its first call,
+  # minutes in. Between a rewording and the recording that follows it the file
+  # is absent on purpose (py/fixtures/cassettes/README.md): say so now.
+  if [ ! -f py/fixtures/cassettes/golden.jsonl ]; then
+    echo "no golden cassette to replay; record one with LIVE=1 make e2e"; exit 2
+  fi
 fi
 
 cleanup() {

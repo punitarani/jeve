@@ -64,8 +64,6 @@ TABLES = {
 
 @pytest.fixture(scope="module")
 def conn() -> Iterator[Connection[DictRow]]:
-    if not CASSETTE.exists():
-        pytest.skip(f"no cassette at {CASSETTE}")
     try:
         # Autocommit: this connection only *watches* a world another process
         # writes. A plain SELECT would otherwise leave a transaction open, and
@@ -110,6 +108,11 @@ def sim(*extra: str, policy: str, die_at: int = 0) -> subprocess.CompletedProces
 def test_a_killed_run_restarted_is_byte_identical_to_one_never_interrupted(
     conn: Connection[DictRow], policy: str
 ) -> None:
+    if policy == "jev" and not CASSETTE.exists():
+        # Only the Jev arm needs recorded answers. The whole module used to
+        # skip without them, rules arm included — the arm this docstring says
+        # keeps the guarantee tested between recordings.
+        pytest.skip(f"no cassette at {CASSETTE}; record one with LIVE=1 make e2e")
     clean = sim("--seed-world", policy=policy)
     assert clean.returncode == 0, clean.stderr
     expected = world_hash(conn)
