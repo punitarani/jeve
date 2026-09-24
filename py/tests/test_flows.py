@@ -19,7 +19,7 @@ from jeve import db
 from jeve.core.clock import DAY, SimTime, at
 from jeve.decide.policy import RulesPolicy
 from jeve.sim import advance
-from jeve.world import flows
+from jeve.world import episodes, flows
 from jeve.world.engine import Engine
 from jeve.world.flows import WEEKLY_WAGE_CENTS
 from jeve.world.map import ORG_ZONE
@@ -132,12 +132,16 @@ def test_a_conversation_in_the_cafe_reaches_money(conn: Connection[DictRow]) -> 
     the other, the outage ends sooner, and a credit moves on the ledger."""
 
     run(conn, days=5)
+    # Straight to an engineer, or through whoever was cornered deciding to pass
+    # it on (WORLD-0011); in one shot or over rounds (WORLD-0007). Either way
+    # the chain starts at a conversation.
     reached = conn.execute(
         """
         WITH RECURSIVE downstream AS (
             SELECT seq, kind, 0 AS depth FROM events
-            WHERE kind = 'encounter' AND seq IN (
-                SELECT unnest(causes) FROM events WHERE kind = 'ticket.escalated')
+            WHERE kind IN ('encounter', 'episode.closed') AND seq IN (
+                SELECT unnest(causes) FROM events
+                WHERE kind IN ('ticket.escalated', 'escalation.relayed'))
             UNION
             SELECT e.seq, e.kind, d.depth + 1
             FROM events e JOIN downstream d ON d.seq = ANY(e.causes)
@@ -149,9 +153,9 @@ def test_a_conversation_in_the_cafe_reaches_money(conn: Connection[DictRow]) -> 
         """
     ).fetchall()
     depth = {str(r["kind"]): int(r["depth"]) for r in reached}
-    assert depth["ticket.escalated"] == 1
-    assert depth["incident.ended"] == 2
-    assert depth["credit.issued"] == 3
+    assert depth["ticket.escalated"] in (1, 2)
+    assert depth["incident.ended"] == depth["ticket.escalated"] + 1
+    assert depth["credit.issued"] == depth["incident.ended"] + 1
     postings = {str(r["kind"]): int(r["postings"]) for r in reached}
     assert postings["credit.issued"] > 0
 
@@ -300,12 +304,18 @@ def test_books_close_when_the_month_can_be_stated(conn: Connection[DictRow]) -> 
 
 
 def test_an_outage_nobody_chased_delays_the_close_and_the_fee(
-    conn: Connection[DictRow],
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The second thing space changes. With encounters, someone presses the
     vendor, the invoices go out on Thursday, and Halloran's books close on
-    Friday morning. Without, the invoices are still stuck on Friday, the close
-    is put off, and Ledgerline bills for it days later."""
+    Friday morning. Without anybody chasing it, the invoices are still stuck on
+    Friday, the close is put off, and Ledgerline bills for it days later.
+
+    "Anybody" is more people than it was: support's own queue and a customer's
+    call to the account manager prioritise an outage too (WORLD-0011), and
+    either would clear this one by Friday. The unchased arm switches them off,
+    so what it measures is still the outage nobody chased.
+    """
 
     def halloran_close() -> tuple[int, int]:
         done = conn.execute(
@@ -321,7 +331,9 @@ def test_an_outage_nobody_chased_delays_the_close_and_the_fee(
 
     run(conn, days=8, encounters=True)
     chased_at, chased_deferrals = halloran_close()
-    run(conn, days=8, encounters=False)
+    with monkeypatch.context() as patch:
+        patch.setattr(episodes, "prioritise", lambda *args, **kwargs: None)
+        run(conn, days=8, encounters=False, variant="no-queue")
     unchased_at, unchased_deferrals = halloran_close()
 
     assert chased_deferrals == 0 and chased_at == at(4, 9)

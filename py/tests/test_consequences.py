@@ -66,7 +66,7 @@ def drain(engine: Engine, org: str, keep: int = 0) -> None:
 
 
 def count(conn: Connection[DictRow], query: str, *params: object) -> int:
-    row = conn.execute(query, params).fetchone()
+    row = conn.execute(query, params or None).fetchone()
     assert row is not None
     return int(next(iter(row.values())) or 0)
 

@@ -20,29 +20,39 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from collections.abc import Coroutine, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from jeve import tracing
 from jeve.config import Settings, load_settings
 from jeve.core.seed import derive_rng, path_of
-from jeve.decide import gates
-from jeve.decide.policy import Decision, DecisionContext, Source
-from jeve.decide.questions import QUESTION_SETS, Prepared, Resolved
+from jeve.decide import escalation, gates
+from jeve.decide.policy import Decision, DecisionContext, Escalated, Source
+from jeve.decide.questions import QUESTION_SETS, Ask, Prepared, Resolved
 from jeve.decide.recorder import Recorder, ReplayMissError, StoredCall, call_key
 from jeve.decide.sampling import resolve
 from jeve.errors import JeveError, ModelVersionDriftError, TransportError
 from jeve.llm import (
     DECISION_PIN,
     DECISION_PREFERENCE,
+    GENERATIVE_PREFERENCE,
+    ChatRequest,
+    ChatResponse,
     DecisionRequest,
     Gateway,
+    Purpose,
     RawDecision,
 )
 from jeve.llm.gateway import parse_decision
-from jeve.llm.protocol import Usage
+from jeve.llm.protocol import Answer, Usage
 
 CALL_TIMEOUT_S = 180.0
+SHADOW_BUDGET_S = 45.0
+"""All of a batch's shadow second opinions, every model tried, share this.
+Measurement may slow a tick by this much and no more: it holds up a world that
+does not act on it (DECIDE-0005)."""
 
 
 class _Bridge:
@@ -91,6 +101,36 @@ class _Bridge:
 
         return self.run(self._fetch(requests, parent), timeout=CALL_TIMEOUT_S)
 
+    async def _complete(
+        self,
+        requests: Sequence[tuple[ChatRequest, Purpose]],
+        parent: str | None,
+    ) -> list[ChatResponse | BaseException]:
+        return await asyncio.gather(
+            *(
+                self._gateway.complete(request, purpose=purpose, parent=parent)
+                for request, purpose in requests
+            ),
+            return_exceptions=True,
+        )
+
+    def complete(
+        self,
+        requests: Sequence[tuple[ChatRequest, Purpose]],
+        *,
+        parent: str | None = None,
+        timeout: float = CALL_TIMEOUT_S,
+    ) -> list[ChatResponse | BaseException]:
+        """Tier-1 second opinions (DECIDE-0005), concurrently, each under its
+        own purpose: shadow work is `explore`, and the first thing the budget
+        ladder refuses."""
+
+        return self.run(self._complete(requests, parent), timeout=timeout)
+
+    @property
+    def generative_models(self) -> tuple[str, ...]:
+        return self._gateway.generative_models
+
     @property
     def run_spent_usd(self) -> float:
         return self._gateway.run_spent_usd
@@ -116,12 +156,14 @@ class JevPolicy:
         model: str = DECISION_PREFERENCE[0],
         pin: str = DECISION_PIN,
         settings: Settings | None = None,
+        tier1: escalation.Config | None = None,
     ) -> None:
         self._root = root_seed
         self._recorder = recorder
         self._model = model
         self._pin = pin
         self._settings = settings
+        self._tier1 = tier1 or escalation.Config()
         self._bridge: _Bridge | None = None
 
     # -- lifecycle ---------------------------------------------------------
@@ -199,9 +241,19 @@ class JevPolicy:
                 # Exported on this thread, because the gateway is not on it.
                 stored |= self._fill(missing, requests, parent=span.export() or None)
 
+            calls = [stored[maybe] if maybe else None for maybe in hashes]
+            answers = [
+                self._answers(item, call) if call is not None else None
+                for item, call in zip(prepared, calls, strict=True)
+            ]
+            opinions = self._second_opinions(
+                contexts, prepared, answers, parent=span.export() or None
+            )
             return [
-                self._decide_one(ctx, item, stored[maybe] if maybe else None)
-                for ctx, item, maybe in zip(contexts, prepared, hashes, strict=True)
+                self._decide_one(ctx, item, call, jev, opinions.get(index))
+                for index, (ctx, item, call, jev) in enumerate(
+                    zip(contexts, prepared, calls, answers, strict=True)
+                )
             ]
 
     def _prepare(self, ctx: DecisionContext) -> Prepared:
@@ -290,16 +342,9 @@ class JevPolicy:
             raise TransportError(f"decision call failed: {failure!r}") from failure
         return self._recorder.lookup(missing)
 
-    def _decide_one(
-        self, ctx: DecisionContext, item: Prepared, call: StoredCall | None
-    ) -> Decision:
-        path = path_of("person", ctx.person_id, "decision", ctx.decision_seq, ctx.kind)
-        if call is None:
-            assert item.gated is not None
-            # Settled by a code gate: no model was consulted, so none is credited.
-            return Decision(chosen=dict(item.gated), source="rules", prng_path=path)
-
-        response = parse_decision(
+    @staticmethod
+    def _answers(item: Prepared, call: StoredCall) -> dict[str, Answer]:
+        return parse_decision(
             call.response,
             expected={ask.key for ask in item.asks},
             fallback_model=call.model,
@@ -309,22 +354,248 @@ class JevPolicy:
                 cost_usd=call.cost_usd,
                 cost_is_estimated=False,
             ),
-        )
+        ).answers
+
+    def _decide_one(
+        self,
+        ctx: DecisionContext,
+        item: Prepared,
+        call: StoredCall | None,
+        jev: dict[str, Answer] | None,
+        opinion: _Opinion | None,
+    ) -> Decision:
+        path = path_of("person", ctx.person_id, "decision", ctx.decision_seq, ctx.kind)
+        if call is None or jev is None:
+            assert item.gated is not None
+            # Settled by a code gate: no model was consulted, so none is credited.
+            return Decision(chosen=dict(item.gated), source="rules", prng_path=path)
+
+        used = dict(jev)
+        if opinion is not None and opinion.applied:
+            for ask in item.asks:
+                if ask.key in opinion.answers:
+                    used[ask.key] = escalation.applied(
+                        ask, jev[ask.key], opinion.answers[ask.key]
+                    )
+        # The same path whichever tier answered: a live escalation changes what
+        # is drawn from, never the draws themselves.
         rng = derive_rng(self._root, path)
         resolved: dict[str, Resolved] = {
-            ask.key: resolve(ask, response.answers[ask.key], rng.random)
-            for ask in item.asks
+            ask.key: resolve(ask, used[ask.key], rng.random) for ask in item.asks
         }
         outcome = QUESTION_SETS[ctx.kind].interpret(ctx, resolved, rng.random)
         draws = {k: r.draw for k, r in resolved.items() if r.draw is not None}
         return Decision(
             chosen=outcome.chosen,
-            source=self.source,
+            source="llm" if opinion is not None and opinion.applied else self.source,
             distributions={k: r.distribution for k, r in resolved.items()},
             draws=draws | outcome.extra_draws,
             prng_path=path,
             model_call=call.hash,
+            escalation=opinion.record if opinion is not None else None,
         )
+
+    # -- tier 1 (DECIDE-0005) ------------------------------------------------
+
+    def _second_opinions(
+        self,
+        contexts: Sequence[DecisionContext],
+        prepared: Sequence[Prepared],
+        answers: Sequence[dict[str, Answer] | None],
+        *,
+        parent: str | None,
+    ) -> dict[int, _Opinion]:
+        """Ask tier 1 about the answers Jev was unsure of, within today's room.
+
+        Every model in the preference order is looked up before any is called,
+        so a run that recorded its answer from the second model reads the same
+        answer back, even once the first is reachable again.
+        """
+
+        if self._tier1.mode == "off":
+            return {}
+        wanted: list[_Wanted] = []
+        for index, (ctx, item, jev) in enumerate(
+            zip(contexts, prepared, answers, strict=True)
+        ):
+            if jev is None or escalation.stakes(ctx.kind) == "low":
+                continue
+            fired = escalation.triggers(ctx.kind, item.asks, jev)
+            if fired:
+                keys = tuple(dict.fromkeys(t.ask for t in fired))
+            elif escalation.sampled(
+                self._root, ctx.person_id, ctx.decision_seq, ctx.kind
+            ):
+                high = escalation.stakes(ctx.kind) == "high"
+                keys = tuple(a.key for a in item.asks if a.mode == "J" or high)
+            else:
+                continue
+            if keys:
+                wanted.append(_Wanted(index, ctx, item, keys, tuple(fired)))
+        if not wanted:
+            return {}
+
+        # Triggered before sampled, higher stakes first, then batch order.
+        wanted.sort(key=lambda w: (not w.fired, -escalation.rank(w.ctx.kind), w.index))
+        room = escalation.room(self._recorder.connection(), wanted[0].ctx.sim_time)
+        chosen = wanted[:room]
+
+        found = self._look_up(chosen, GENERATIVE_PREFERENCE)
+        unanswered = [w for w in chosen if w.index not in found]
+        if unanswered and self._recorder.mode == "record":
+            try:
+                found |= self._ask_tier1(unanswered, parent=parent)
+            except JeveError, TimeoutError:
+                # Shadow is measurement: no gateway, no budget or no model is
+                # a missing row, never a stopped world. A live set is a
+                # decision, and waits like one (SIM-0002).
+                if any(self._tier1.applies(w.ctx.kind) for w in unanswered):
+                    raise
+
+        opinions: dict[int, _Opinion] = {}
+        for want in chosen:
+            live = self._tier1.applies(want.ctx.kind)
+            if want.index not in found:
+                if not live:
+                    continue  # shadow is measurement: a missing answer is no row
+                if self._recorder.mode == "replay":
+                    raise ReplayMissError(
+                        f"strict replay: no tier-1 answer for live set "
+                        f"{want.ctx.kind!r}; re-record with `LIVE=1 make e2e`."
+                    )
+                raise TransportError(
+                    f"no tier-1 model gave a usable answer for {want.ctx.kind!r}"
+                )
+            model, call_hash, llm = found[want.index]
+            jev = answers[want.index]
+            assert jev is not None
+            asks = [a for a in want.item.asks if a.key in want.keys]
+            opinions[want.index] = _Opinion(
+                answers=llm,
+                applied=live,
+                record=Escalated(
+                    mode="live" if live else "shadow",
+                    sampled=not want.fired,
+                    triggers=[t.row() for t in want.fired],
+                    asks=list(want.keys),
+                    jev=escalation.distributions(asks, jev),
+                    llm=escalation.distributions(asks, llm),
+                    model=model,
+                    call_hash=call_hash,
+                    agrees=escalation.agrees(asks, jev, llm),
+                ),
+            )
+        return opinions
+
+    def _look_up(
+        self, wanted: Sequence[_Wanted], models: Sequence[str]
+    ) -> dict[int, tuple[str, str, dict[str, Answer]]]:
+        requests = {
+            (want.index, model): escalation.request_for(want.item, want.keys, model)
+            for want in wanted
+            for model in models
+        }
+        keys = {slot: escalation.request_key(r) for slot, r in requests.items()}
+        stored = self._recorder.lookup(keys.values())
+        found: dict[int, tuple[str, str, dict[str, Answer]]] = {}
+        for want in wanted:
+            for model in models:
+                call = stored.get(keys[(want.index, model)])
+                if call is None:
+                    continue
+                parsed = _parsed(call, want.asks)
+                if parsed is not None:
+                    found[want.index] = (model, call.hash, parsed)
+                    break
+        return found
+
+    def _ask_tier1(
+        self, wanted: Sequence[_Wanted], *, parent: str | None
+    ) -> dict[int, tuple[str, str, dict[str, Answer]]]:
+        """Walk the generative order, a round per model, until each question
+        has a usable answer or the models run out. Every reply is stored before
+        it is read, as every Jev reply is: it was paid for."""
+
+        bridge = self._live()
+        found: dict[int, tuple[str, str, dict[str, Answer]]] = {}
+        failure: BaseException | None = None
+        remaining = list(wanted)
+        live = any(self._tier1.applies(w.ctx.kind) for w in wanted)
+        deadline = time.monotonic() + SHADOW_BUDGET_S
+        for model in bridge.generative_models:
+            left = deadline - time.monotonic()
+            if not remaining or (not live and left <= 0):
+                break
+            requests = [
+                escalation.request_for(w.item, w.keys, model) for w in remaining
+            ]
+            purposes: list[Purpose] = [
+                "gate" if self._tier1.applies(w.ctx.kind) else "explore"
+                for w in remaining
+            ]
+            replies = bridge.complete(
+                list(zip(requests, purposes, strict=True)),
+                parent=parent,
+                timeout=CALL_TIMEOUT_S if live else left,
+            )
+            for request, reply in zip(requests, replies, strict=True):
+                if isinstance(reply, ChatResponse):
+                    self._keep(request, reply)
+                else:
+                    failure = failure or reply
+            found |= self._look_up(remaining, (model,))
+            remaining = [w for w in remaining if w.index not in found]
+        if failure is not None and any(
+            self._tier1.applies(w.ctx.kind) for w in remaining
+        ):
+            if isinstance(failure, JeveError):
+                raise failure
+            raise TransportError(f"tier-1 call failed: {failure!r}") from failure
+        return found
+
+    def _keep(self, request: ChatRequest, reply: ChatResponse) -> None:
+        body = request.model_dump(mode="json")
+        self._recorder.store(
+            escalation.request_key(request),
+            kind=escalation.KIND,
+            model=request.model,
+            provider=reply.provider,
+            request=body,
+            wire=json.dumps(body, ensure_ascii=False, separators=(",", ":")),
+            response={"text": reply.text, "model": reply.model},
+            input_tokens=reply.usage.input_tokens,
+            output_tokens=reply.usage.output_tokens,
+            cost_usd=reply.usage.cost_usd,
+            cost_estimated=reply.usage.cost_is_estimated,
+            latency_s=reply.latency_s,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _Wanted:
+    index: int
+    ctx: DecisionContext
+    item: Prepared
+    keys: tuple[str, ...]
+    fired: tuple[escalation.Trigger, ...]
+
+    @property
+    def asks(self) -> list[Ask]:
+        return [ask for ask in self.item.asks if ask.key in self.keys]
+
+
+@dataclass(frozen=True, slots=True)
+class _Opinion:
+    answers: dict[str, Answer]
+    applied: bool
+    record: Escalated
+
+
+def _parsed(call: StoredCall, asks: Sequence[Ask]) -> dict[str, Answer] | None:
+    try:
+        return escalation.parse(str(call.response.get("text", "")), asks)
+    except ValueError:
+        return None
 
 
 def _provider(payload: dict[str, Any]) -> str | None:

@@ -101,6 +101,18 @@ census: ## What would a run cost Jev? Distinct requests per question set, on rul
 calibrate: ## Where does the money go? Cash by week and every consequence, on rules, free. DAYS= SEED=
 	$(UV) python scripts/calibrate.py $(if $(DAYS),--days $(DAYS)) $(if $(SEED),--seed $(SEED))
 
+.PHONY: escalation-report
+escalation-report: ## What did tier 1 say in shadow? Agreement by set and rule, cost, latency: ops/escalation.md, free
+	$(UV) python scripts/escalation_report.py
+
+.PHONY: judge-panel
+judge-panel: ## Does another model read situations as Jev does? Free from the cache; LIVE=1 asks three models (<$1)
+	$(UV) python scripts/judge_panel.py $(if $(LIVE),--live)
+
+.PHONY: ontology-gaps
+ontology-gaps: ## Where did `other` win? ops/ontology-gaps.md, free; PROPOSE=1 asks a model what to add
+	$(UV) python scripts/ontology_gaps.py $(if $(PROPOSE),--propose)
+
 .PHONY: episodes
 episodes: ## Does giving a meeting rounds change anything? Two arms, one seed, free. DAYS= SEEDS=
 	$(UV) python scripts/episodes_report.py $(if $(DAYS),--days $(DAYS)) $(if $(SEEDS),--seeds $(SEEDS))

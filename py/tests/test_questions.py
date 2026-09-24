@@ -23,7 +23,12 @@ from jeve.llm.protocol import Choice, Score
 
 # One context per kind that gets past every code gate, so a question is asked.
 ASKING: dict[str, dict[str, object]] = {
-    "file.ticket": {"module_down": True, "already_open": False},
+    "file.ticket": {
+        "module_down": True,
+        "already_open": False,
+        "module": "invoicing",
+        "month_end": True,
+    },
     "ticket.triage": {"subject": "exports fail", "module_down": True, "backlog": 12},
     "ticket.answer": {"backlog": 12},
     "payment.timing": {"days_until_due": -4, "can_afford": True, "runway_days": 9},
@@ -37,7 +42,12 @@ ASKING: dict[str, dict[str, object]] = {
         "escalated": True,
         "blocked_billing": True,
     },
-    "close.signoff": {"client": "halloran", "invoices_stuck": True, "overdue_bills": 3},
+    "close.signoff": {
+        "client": "halloran",
+        "invoices_stuck": True,
+        "overdue_bills": 3,
+        "attempt": 2,
+    },
     "catering.order": {"org": "tallybird", "can_afford": True, "team_mood": 1.2},
     "payroll.release": {
         "employer": "thirdrail",
@@ -70,6 +80,54 @@ ASKING: dict[str, dict[str, object]] = {
         "tellable_topic": "price_rise",
     },
     "leave.consider": {"org": "tallybird", "weeks_behind": 2},
+    "eng.allocation": {
+        "debt_level": 1.3,
+        "incidents_last_week": 2,
+        "backlog": 25,
+        "churned_last_month": 1,
+        "runway_days": 30,
+    },
+    "deploy.decision": {"debt_level": 1.0, "incidents_last_week": 0},
+    "vendor.trust": {
+        "trust": 3,
+        "module": "invoicing",
+        "minutes": 300,
+        "reported": True,
+        "answered": False,
+        "escalated": False,
+        "repeat": True,
+        "tried_another_tool": True,
+    },
+    "subscription.renew": {
+        "trust": 1,
+        "heard_bad_news": True,
+        "price_rise": True,
+        "offered_discount": True,
+        "relies_on_it": True,
+    },
+    "retention.offer": {
+        "trust": 1,
+        "large": True,
+        "runway_days": 40,
+        "heard_bad_news": True,
+    },
+    "invoice.dispute": {
+        "issuer": "halloran",
+        "large": True,
+        "price_rise": True,
+        "firm": False,
+    },
+    "dispute.resolution": {
+        "org": "halloran",
+        "large": True,
+        "runway_days": 40,
+        "client_firm": False,
+    },
+    "escalation.handoff": {"by_phone": True, "backlog": 12},
+    "time.log": {"pending_days": 3, "timetrack_down": True, "on_paper": True},
+    "cover.shift": {"absent_role": "barista", "runway_days": 20},
+    "supplier.order": {"trend": 1.3, "pos_down": False, "runway_days": 20},
+    "catering.accept": {"size": "large", "short_staffed": True},
     "founder.review": {
         "org": "tallybird",
         "runway_days": 10,
@@ -427,3 +485,39 @@ def test_catering_sees_the_money_and_a_held_payroll_orders_nothing() -> None:
         facts={"org": "tallybird", "can_afford": True, "payroll_held": True},
     )
     assert gates.settle(held) == {"order": "none"}
+
+
+def test_the_same_outage_offers_every_way_of_working_around_it() -> None:
+    """The scenario's behaviour #5, "the most direct test of the research
+    question": one request asks both whether to report it and how to get the
+    work done meanwhile (DECIDE-0001)."""
+
+    prepared = _prepare("file.ticket")
+    assert [ask.key for ask in prepared.asks] == ["file", "workaround"]
+    workaround = prepared.asks[1].question
+    assert isinstance(workaround, Choice)
+    assert set(workaround.criteria) >= {"wait", "by_hand", "call_account_manager"}
+    assert prepared.state is not None
+    assert "invoices" in str(prepared.state["what_it_stops"])
+    assert "month-end" in str(prepared.state["calendar"])
+    quiet = _prepare("file.ticket", {"module_down": True, "module": "pos"})
+    assert quiet.state is not None and "calendar" not in quiet.state
+
+
+def test_a_late_close_asks_what_to_do_about_it_only_when_it_is_late() -> None:
+    late = _prepare("close.signoff")
+    assert [ask.key for ask in late.asks] == ["readiness", "if_not_ready"]
+    on_time = _prepare(
+        "close.signoff", {**ASKING["close.signoff"], "invoices_stuck": False}
+    )
+    assert [ask.key for ask in on_time.asks] == ["readiness"]
+
+
+def test_news_about_a_firm_names_the_firm() -> None:
+    from jeve.decide.questions import TELLABLE_WORDS, tellable_words
+
+    # The two sentences recorded before WORLD-0010 are unchanged.
+    assert tellable_words("price_rise", "tallybird") == TELLABLE_WORDS["price_rise"]
+    assert tellable_words("outage", None) == TELLABLE_WORDS["outage"]
+    assert "the software company" in tellable_words("insolvency", "tallybird")
+    assert "the cafe" in tellable_words("payroll_late", "thirdrail")

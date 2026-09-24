@@ -92,6 +92,12 @@ class Recorder:
         if self._conn is not None and not self._conn.closed:
             self._conn.close()
 
+    def connection(self) -> Connection[DictRow]:
+        """The recorder's own autocommit connection: it sees committed rows
+        only, which is what tier 1's daily room is counted from (DECIDE-0005)."""
+
+        return self._connection()
+
     # -- reads -------------------------------------------------------------
 
     def lookup(self, hashes: Iterable[str]) -> dict[str, StoredCall]:

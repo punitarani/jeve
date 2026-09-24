@@ -126,7 +126,7 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
                      subscriptions, tickets, invoices, payments, cafe_sales,
                      decisions, positions, outage_notices,
                      facts, knowledge, episodes, episode_participants,
-                     commitments
+                     commitments, timesheets, rota, escalations
                      RESTART IDENTITY CASCADE
             """
         )

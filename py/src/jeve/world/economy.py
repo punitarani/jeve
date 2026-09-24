@@ -53,7 +53,7 @@ MONTH = 28 * DAY
 RENT_MONTHLY_CENTS: dict[str, int] = {
     "tallybird": 4_000_00,
     "halloran": 5_500_00,
-    "ledgerline": 4_500_00,
+    "ledgerline": 3_500_00,
     "thirdrail": 4_000_00,
 }
 """Premises, and for the software company its hosting. A rule, like every price."""
@@ -109,6 +109,15 @@ HEADS: dict[str, str] = {
 """Who runs each firm: reviews its position, decides to hire, and never quits."""
 
 REVIEW_CHOICES = ("raise_prices", "cut_costs", "chase_debts", "borrow", "hold_course")
+
+
+AT_WORK = (
+    "NOT EXISTS (SELECT 1 FROM rota r, sim_meta m WHERE r.person_id = persons.id "
+    "AND r.kind = 'absent' AND r.starts_sim <= m.sim_time AND r.ends_sim > m.sim_time)"
+)
+"""Not off sick right now (WORLD-0010), for a query over `persons`: a job whose
+holder is away is done by whoever covers it, which is how an absence reaches a
+flow."""
 
 
 # -- accounts -------------------------------------------------------------------
@@ -232,12 +241,14 @@ def _pay_out(
     memo: str,
     payload: dict[str, object],
     causes: list[int] | None = None,
+    decision_id: int | None = None,
 ) -> int:
     seq = engine.emit(
         report,
         kind,
         org_id=org_id,
         causes=causes or [],
+        decision_id=decision_id,
         payload={"org_id": org_id, "amount_cents": amount, **payload},
     )
     engine.post(
@@ -364,30 +375,72 @@ def households_week(
         )
 
 
+ORDER_FACTORS: dict[str, float] = {"usual": 1.0, "more": 1.25, "less": 0.8}
+SHORT_OF_STOCK = 0.25
+"""Share of customers who find nothing they want when the cafe could not pay
+for its stock."""
+ORDERED_LIGHT = 0.1
+"""The same, when the owner chose to order light."""
+
+
 @scheduler.job("supplier.order")
 def supplier_order(
     engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
 ) -> None:
-    """The cafe's weekly stock: a third of what it sold last week.
+    """The cafe's weekly stock, about a third of what it sold last week.
 
-    Paid on the spot. A cafe that cannot pay for all of it buys what it can, and
-    runs short (`stock_short_until`), which the till feels as customers finding
-    nothing they want.
+    How much is the owner's call (WORLD-0010): the usual, more, or less, from
+    how last week compared with the one before — and with the card reader down
+    the till's records are not there to compare. Paid on the spot; a cafe that
+    cannot pay for all of it buys what it can and runs short, which the till
+    feels as customers finding nothing they want.
     """
 
     engine.schedule(report.sim_time + WEEK, "supplier.order", org_id, {})
     if failed(engine, org_id):
         return
-    wanted = max(
-        SUPPLIER_FLOOR_CENTS, int(SUPPLIER_SHARE * _sales(engine, report.sim_time, 7))
-    )
+    last = _sales(engine, report.sim_time, 7)
+    before = _sales(engine, report.sim_time - WEEK, 7)
+    choice = "usual"
+    made = None
+    head = head_of(engine, org_id)
+    if head is not None:
+        pos = engine.conn.execute(
+            "SELECT status FROM modules WHERE id = 'pos'"
+        ).fetchone()
+        made = engine.decide(
+            report,
+            DecisionContext(
+                person_id=str(head["id"]),
+                role=str(head["role"]),
+                sim_time=report.sim_time,
+                kind="supplier.order",
+                facts={
+                    "trend": last / before if before else 1.0,
+                    "pos_down": pos is not None and pos["status"] == "down",
+                    "runway_days": engine.runway_days(org_id),
+                },
+                traits=dict(head["traits"] or {}),
+            ),
+        )
+        choice = str(made.chosen.get("order", "usual"))
+    wanted = max(SUPPLIER_FLOOR_CENTS, int(SUPPLIER_SHARE * last))
+    wanted = int(wanted * ORDER_FACTORS.get(choice, 1.0))
+    rules = policy(engine, org_id)
+    if report.sim_time < int(rules.get("supplier_markup_until", 0)):
+        wanted = int(wanted * float(rules.get("supplier_markup", 1.0)))
     if frugal(engine, org_id, report.sim_time):
         wanted = int(wanted * 0.9)
     cash = engine.cash_of(f"{org_id}.cash")
     amount = min(wanted, max(0, cash))
     short = amount < wanted
-    if short:
-        set_policy(engine, org_id, stock_short_until=report.sim_time + WEEK)
+    share = SHORT_OF_STOCK if short else ORDERED_LIGHT if choice == "less" else 0.0
+    set_policy(
+        engine,
+        org_id,
+        stock_short_until=report.sim_time + WEEK if share else 0,
+        stock_short_share=share,
+    )
     if amount <= 0:
         engine.emit(
             report,
@@ -403,7 +456,8 @@ def supplier_order(
         amount=amount,
         kind="supplier.paid",
         memo=f"{org_id} weekly stock",
-        payload={"wanted_cents": wanted, "short": short},
+        payload={"wanted_cents": wanted, "short": short, "order": choice},
+        decision_id=made.id if made is not None else None,
     )
 
 
@@ -498,6 +552,8 @@ def head_of(engine: Engine, org_id: str) -> DictRow | None:
         "AND role = %s AND status <> 'left' ORDER BY id LIMIT 1",
         (org_id, HEADS[org_id]),
     ).fetchone()
+    # Whoever runs the firm runs it from their sickbed too: nobody else can
+    # decide to borrow.
 
 
 def request_review(engine: Engine, report: TickReport, org_id: str, cause: int) -> None:
@@ -1024,10 +1080,19 @@ def recurring(now: int) -> list[tuple[int, str, str | None, dict[str, object]]]:
     day = SimTime(now).day
     monday = at(day + (7 - SimTime(now).weekday) % 7)
     month_start = at(day + 1, 10)
+    # The next Tuesday or Thursday, and the next working day, from today.
+    deploy_day = next(d for d in range(day, day + 8) if d % 7 in (1, 3))
+    workday = next(d for d in range(day, day + 8) if d % 7 < 5)
     jobs: list[tuple[int, str, str | None, dict[str, object]]] = [
         (monday + 7 * HOUR, "households.week", None, {}),
         (monday + 7 * HOUR, "loans.week", None, {}),
         (monday + 7 * HOUR, "supplier.order", "thirdrail", {}),
+        # WORLD-0010: the engineering week, the deploy train, the shock deck
+        # and the law firm's timesheets.
+        (monday + 7 * HOUR, "shocks.week", None, {}),
+        (monday + 9 * HOUR + 30 * 60, "eng.allocate", None, {}),
+        (at(deploy_day, 14), "eng.deploy", None, {}),
+        (at(workday, 16, 30), "time.day", "halloran", {}),
     ]
     for org in ORGS:
         rent_due = at(day + 1, 9)

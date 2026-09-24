@@ -46,6 +46,10 @@ def _file_ticket(ctx: DecisionContext) -> Settled | None:
 
 
 def _payment_timing(ctx: DecisionContext) -> Settled | None:
+    if ctx.facts.get("disputed"):
+        # Queried and not yet answered: nobody pays a bill they are arguing
+        # about (WORLD-0010).
+        return {"pay": False, "reason": "disputed"}
     if not ctx.facts.get("can_afford", True):
         return {"pay": False, "reason": "insufficient_cash"}
     days_until_due = _number(ctx.facts.get("days_until_due"))
@@ -114,6 +118,13 @@ def _hire_decision(ctx: DecisionContext) -> Settled | None:
     return None
 
 
+def _time_log(ctx: DecisionContext) -> Settled | None:
+    if ctx.facts.get("timetrack_down") and not ctx.facts.get("on_paper"):
+        # The software the hours go into is down, and nobody kept a note.
+        return {"log": False, "reason": "timetrack_down"}
+    return None
+
+
 GATES: dict[str, Gate] = {
     "file.ticket": _file_ticket,
     "payment.timing": _payment_timing,
@@ -123,6 +134,7 @@ GATES: dict[str, Gate] = {
     "cafe.purchase": _cafe_purchase,
     "leave.consider": _leave_consider,
     "hire.decision": _hire_decision,
+    "time.log": _time_log,
 }
 
 

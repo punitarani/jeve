@@ -40,7 +40,7 @@ from jeve.core.clock import DAY, HOUR, TICK, SimTime
 from jeve.core.orgs import shift_for
 from jeve.core.seed import derive_seed
 from jeve.decide.policy import DecisionContext
-from jeve.world import episodes
+from jeve.world import episodes, shocks
 from jeve.world.map import ORG_ZONE, Tile, Zone, entry_for, find_path, spot_for
 
 if TYPE_CHECKING:
@@ -78,11 +78,23 @@ class Agent:
         return ORG_ZONE[self.org]
 
 
-def on_shift(agent: Agent, when: SimTime) -> bool:
+def on_shift(
+    agent: Agent,
+    when: SimTime,
+    *,
+    absent: frozenset[str] = frozenset(),
+    extra: frozenset[str] = frozenset(),
+) -> bool:
     """Whether this person is due at work now. Roles keep hours (field report
     defect 5): the cafe's weekend part-timer used to work six days a week,
-    because hours belonged to the firm and not to the job."""
+    because hours belonged to the firm and not to the job. And the rota can
+    override them (WORLD-0010): somebody off sick stays home, somebody covering
+    works their firm's open hours."""
 
+    if agent.id in absent:
+        return False
+    if agent.id in extra:
+        return when.cafe_open if agent.org == "thirdrail" else when.in_office_hours
     return shift_for(agent.org, agent.role, agent.role_index).covers(
         when.weekday, when.time_of_day
     )
@@ -422,9 +434,10 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
     taken: set[Tile] = {a.tile for a in agents if a.tile is not None}
 
     # Arrivals. Whether a workplace is open is a fact, not a judgement.
+    absent, extra = shocks.off(engine, now.seconds)
     arrived: set[str] = set()
     for agent in agents:
-        if agent.zone is Zone.HOME and on_shift(agent, now):
+        if agent.zone is Zone.HOME and on_shift(agent, now, absent=absent, extra=extra):
             _place(engine, report, agent, agent.own_zone, taken)
             arrived.add(agent.id)
     if arrived:
@@ -526,7 +539,7 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
                 "UPDATE positions SET mood = %s, mind = %s WHERE person_id = %s",
                 (int(decision.chosen.get("mood", 2)), mind, agent.id),
             )
-        if not on_shift(agent, closing):
+        if not on_shift(agent, closing, absent=absent, extra=extra):
             _place(engine, report, agent, Zone.HOME, taken)
             continue
         wanted = (

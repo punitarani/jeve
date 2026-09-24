@@ -247,6 +247,7 @@ function Report({ report: r, town, stale }: { report: FieldReport; town: TownDat
 		}));
 	const receivers = r.people.filter((p) => p.received > 0).sort((a, b) => b.received - a.received);
 	const k = r.knowledge;
+	const firing = r.detectors.filter((d) => d.fires);
 
 	return (
 		<TipProvider>
@@ -345,6 +346,43 @@ function Report({ report: r, town, stale }: { report: FieldReport; town: TownDat
 						of every card is where the number comes from.
 					</p>
 					<Findings items={findings} cats={LIVE_CATS} storageKey="jeve-live-f" />
+				</section>
+
+				<section id="health">
+					<Kicker>Is it still a world?</Kicker>
+					<h2>
+						{firing.length
+							? `${fmt(firing.length)} of ${fmt(r.detectors.length)} degeneracy detectors firing`
+							: `No degeneracy detector firing, of ${fmt(r.detectors.length)}`}
+					</h2>
+					<p className="sub">
+						Each reads the last seven sim-days and has a line past which it fires: the ruts the first field report found
+						a world falling into, made standing.
+					</p>
+					<div className="tbl" data-testid="detectors">
+						<table>
+							<thead>
+								<tr>
+									<th>detector</th>
+									<th className="n">reading</th>
+									<th className="n">line</th>
+									<th>state</th>
+									<th>from</th>
+								</tr>
+							</thead>
+							<tbody>
+								{r.detectors.map((d) => (
+									<tr key={d.name}>
+										<td>{d.label}</td>
+										<td className="n">{d.value === null ? "—" : d.value.toFixed(3)}</td>
+										<td className="n">{d.threshold}</td>
+										<td>{d.fires ? <span className="badge b-bad">firing</span> : "quiet"}</td>
+										<td>{d.detail}</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					</div>
 				</section>
 
 				<section id="run">

@@ -22,7 +22,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from jeve import memory
 from jeve.core.clock import DAY, TICK, SimTime, next_office_open
+from jeve.core.seed import derive_rng
 from jeve.decide.policy import DecisionContext
 from jeve.world import economy, scheduler
 
@@ -82,7 +84,7 @@ def _person(engine: Engine, role: str, org: str) -> dict[str, Any] | None:
     roles = [role, *COVER.get(role, ())]
     row = engine.conn.execute(
         "SELECT id, role, traits FROM persons WHERE org_id = %s AND kind = 'staff' "
-        "AND status <> 'left' AND role = ANY(%s) "
+        f"AND status <> 'left' AND role = ANY(%s) AND {economy.AT_WORK} "
         "ORDER BY array_position(%s::text[], role), id LIMIT 1",
         (org, roles, roles),
     ).fetchone()
@@ -261,6 +263,9 @@ def payroll(
             "SELECT cause_event_seq FROM incidents WHERE module_id = 'timetrack' "
             "AND ended_sim IS NULL ORDER BY id DESC LIMIT 1"
         ).fetchone()
+    # The employer kept this week's hours on paper while TimeTrack was down
+    # (WORLD-0010): the clerk can see them, and they must be reconciled later.
+    on_paper = outage is not None and engine.by_hand(org_id, "timetrack")
 
     made = engine.decide(
         report,
@@ -274,6 +279,7 @@ def payroll(
                 "can_afford": cash >= total,
                 "cash_multiple": cash / total,
                 "timesheets_available": outage is None,
+                "on_paper": on_paper,
                 "held_before": bool(payload.get("held")),
             },
             traits=dict(clerk["traits"] or {}),
@@ -305,6 +311,26 @@ def payroll(
                 },
             )
         missed = int(payload.get("missed", 0))
+        if reason == "insufficient_cash" and not payload.get("held"):
+            # That wages are late is news, and the staff are the first to know
+            # (WORLD-0010). It travels from there.
+            fact = memory.Fact.payroll_late(org_id)
+            memory.record_fact(
+                engine.conn, fact, sim_time=report.sim_time, seq=held_seq
+            )
+            memory.revive(engine.conn, fact.id)
+            for person in engine.conn.execute(
+                "SELECT id FROM persons WHERE org_id = %s AND kind = 'staff' "
+                "AND status <> 'left' ORDER BY id",
+                (org_id,),
+            ).fetchall():
+                memory.learn(
+                    engine.conn,
+                    str(person["id"]),
+                    fact.id,
+                    sim_time=report.sim_time,
+                    seq=held_seq,
+                )
         if reason == "insufficient_cash":
             # Paydays gone by unpaid, counted from this payday — or from when
             # the world came under WORLD-0009, for one that predates it.
@@ -353,6 +379,15 @@ def payroll(
             "decided_by": made.source,
         },
     )
+    # Wages are paid: late wages are no longer news, and a firm with a
+    # couple of paydays in hand is no longer short.
+    memory.make_stale(
+        engine.conn, memory.Fact.payroll_late(org_id).id, sim_time=report.sim_time
+    )
+    if cash - total >= 2 * total:
+        memory.make_stale(
+            engine.conn, memory.Fact.insolvency(org_id).id, sim_time=report.sim_time
+        )
     # Four legs: the firm's cost, and the households' income. Wages used to
     # leave the firm and arrive nowhere, so nothing anyone earned was ever
     # spent, and a late payday could not reach the cafe's till.
@@ -404,7 +439,7 @@ def _warn_of_insolvency(
         cause = "spending_exceeds_income"
     else:
         cause = "thin_reserves"
-    return engine.emit(
+    seq = engine.emit(
         report,
         "insolvency.warning",
         org_id=org_id,
@@ -419,6 +454,15 @@ def _warn_of_insolvency(
             "cause": cause,
         },
     )
+    # Whoever runs the firm, and whoever pays its bills, know it is short; the
+    # news travels from them (WORLD-0010).
+    fact = memory.Fact.insolvency(org_id)
+    memory.record_fact(engine.conn, fact, sim_time=report.sim_time, seq=seq)
+    memory.revive(engine.conn, fact.id)
+    knowers = [economy.head_of(engine, org_id), engine.payer_of(org_id)]
+    for person in sorted({str(k["id"]) for k in knowers if k is not None}):
+        memory.learn(engine.conn, person, fact.id, sim_time=report.sim_time, seq=seq)
+    return seq
 
 
 # -- flow 9: the monthly close -----------------------------------------------
@@ -485,14 +529,56 @@ def close_books(
                 "client": org_id,
                 "invoices_stuck": stuck is not None,
                 "overdue_bills": int(overdue["n"]) if overdue else 0,
+                "attempt": attempt,
             },
             traits=dict(accountant["traits"] or {}),
         ),
     )
     ready = int(made.chosen.get("readiness", 1)) >= 1
+    late = str(made.chosen.get("if_not_ready", "wait"))
+    # Close on an estimate and fix it next month (WORLD-0010): the month is
+    # closed, marked as estimated, and the true-up is billed with the next one.
+    estimated = not ready and late == "estimate"
+    ready = ready or estimated
     first_deferral = payload.get("deferred")
+    rework_fee = int(payload.get("rework_fee", 0))
+
+    if ready and attempt < CLOSE_ATTEMPTS and not payload.get("reconciled"):
+        rework = _reconcile(engine, report, org_id, int(payload.get("due") or 0))
+        if rework:
+            fee, items = rework
+            seq = engine.emit(
+                report,
+                "close.rework",
+                actor_id=str(accountant["id"]),
+                org_id=org_id,
+                decision_id=made.id,
+                payload={"client": org_id, "items": items, "fee_cents": fee},
+            )
+            engine.schedule(
+                next_office_open(report.sim_time + DAY - report.sim_time % DAY),
+                "close.run",
+                org_id,
+                {
+                    "attempt": attempt + 1,
+                    "deferred": first_deferral or seq,
+                    "due": payload.get("due"),
+                    "reconciled": True,
+                    "rework_fee": rework_fee + fee,
+                },
+            )
+            return
 
     if not ready and attempt < CLOSE_ATTEMPTS:
+        if late == "nag":
+            engine.emit(
+                report,
+                "close.nagged",
+                actor_id=str(accountant["id"]),
+                org_id=org_id,
+                decision_id=made.id,
+                payload={"client": org_id, "decided_by": made.source},
+            )
         causes = [int(first_deferral)] if first_deferral else []
         if stuck is not None:
             causes.append(stuck)
@@ -521,6 +607,8 @@ def close_books(
                 "attempt": attempt + 1,
                 "deferred": first_deferral or seq,
                 "due": payload.get("due"),
+                "reconciled": bool(payload.get("reconciled")),
+                "rework_fee": rework_fee,
             },
         )
         return
@@ -545,10 +633,14 @@ def close_books(
         payload={
             "client": org_id,
             "readiness": int(made.chosen.get("readiness", 1)),
+            "estimated": estimated,
             "days_late": max(0, report.sim_time - due) // DAY,
             "decided_by": made.source,
         },
     )
+    # A month closed on an estimate is corrected, and paid for, next month.
+    true_up = int(economy.policy(engine, org_id).get("true_up_cents", 0))
+    economy.set_policy(engine, org_id, true_up_cents=TRUE_UP_CENTS if estimated else 0)
     # The accountant's fee goes out when the work is done, and not before.
     engine.bill(
         report,
@@ -557,7 +649,9 @@ def close_books(
         amount=round(
             CLOSE_FEE_CENTS.get(org_id, 600_00)
             * economy.price_index(engine, "ledgerline")
-        ),
+        )
+        + rework_fee
+        + true_up,
         terms_days=14,
         kind="services",
         causes=[closed],
@@ -565,6 +659,50 @@ def close_books(
     # Next month's close, a month after this one was *due*: a late close does
     # not push every close after it.
     engine.schedule(due + 28 * DAY, "close.run", org_id, {"due": due + 28 * DAY})
+
+
+REWORK_FEE_CENTS = 120_00
+"""What Ledgerline charges to put right one thing done by hand that did not
+reconcile (the scenario's "manual work later fails reconciliation")."""
+TRUE_UP_CENTS = 200_00
+AUDIT_FEE_CENTS = 300_00
+RECONCILE_FAILS = 0.5
+
+
+def _reconcile(
+    engine: Engine, report: TickReport, org_id: str, due: int
+) -> tuple[int, int] | None:
+    """What the client did by hand this month, checked against the books.
+
+    Invoices sent by hand and records kept on paper while a feature was down
+    (`outage.workaround`) each fail to reconcile half the time, drawn about the
+    item (CORE-0009); an audit notice (a shock) is extra work whatever else.
+    Returns the fee and the number of items to rework, or None if nothing is.
+    """
+
+    manual = engine.conn.execute(
+        "UPDATE invoices SET reconciled = false WHERE from_org_id = %s AND manual "
+        "AND reconciled IS NULL RETURNING id",
+        (org_id,),
+    ).fetchall()
+    policy = economy.policy(engine, org_id)
+    paper = int(policy.get("paper_records", 0))
+    audit = bool(policy.get("audit_pending"))
+    economy.set_policy(engine, org_id, paper_records=0, audit_pending=False)
+    items = 0
+    for row in manual:
+        if derive_rng(engine.root_seed, "reconcile", int(row["id"])).random() < (
+            RECONCILE_FAILS
+        ):
+            items += 1
+    for index in range(paper):
+        rng = derive_rng(engine.root_seed, "reconcile", org_id, due, index)
+        if rng.random() < RECONCILE_FAILS:
+            items += 1
+    fee = items * REWORK_FEE_CENTS + (AUDIT_FEE_CENTS if audit else 0)
+    if fee <= 0:
+        return None
+    return fee, items + (1 if audit else 0)
 
 
 # -- flow 10: catering -------------------------------------------------------
@@ -629,22 +767,87 @@ def consider_catering(
     size = str(made.chosen.get("order", "none"))
     if size not in CATERING_CENTS:
         return
+    take_order(
+        engine,
+        report,
+        org_id,
+        size,
+        ordered_by=str(buyer["id"]),
+        decision_id=made.id,
+        decided_by=made.source,
+    )
+
+
+def take_order(
+    engine: Engine,
+    report: TickReport,
+    org_id: str,
+    size: str,
+    *,
+    ordered_by: str | None,
+    decision_id: int | None = None,
+    decided_by: str = "rules",
+    cause: int | None = None,
+) -> None:
+    """An office orders lunch for tomorrow, and the cafe decides whether it
+    can take it on (the scenario's "accept a catering order at capacity").
+
+    Nothing was ever declined in the field report's world: the scenario calls
+    that "runaway politeness", and it is what the acceptance rate measures.
+    """
+
+    amount = round(CATERING_CENTS[size] * economy.price_index(engine, "thirdrail"))
     seq = engine.emit(
         report,
         "catering.ordered",
-        actor_id=str(buyer["id"]),
+        actor_id=ordered_by,
         org_id=org_id,
-        decision_id=made.id,
+        causes=[cause] if cause else [],
+        decision_id=decision_id,
         payload={
             "org_id": org_id,
             "size": size,
-            "amount_cents": round(
-                CATERING_CENTS[size] * economy.price_index(engine, "thirdrail")
-            ),
-            "decided_by": made.source,
+            "amount_cents": amount,
+            "decided_by": decided_by,
         },
     )
+    taker = engine.payer_of("thirdrail")
+    if taker is None:
+        return
     tomorrow_noon = report.sim_time - report.sim_time % DAY + DAY + 12 * 3600
+    from jeve.world import shocks
+
+    absent, _ = shocks.off(engine, tomorrow_noon)
+    counter = engine.conn.execute(
+        "SELECT id FROM persons WHERE org_id = 'thirdrail' AND kind = 'staff' "
+        "AND status <> 'left' AND role = ANY(%s)",
+        (list(shocks.COUNTER_ROLES),),
+    ).fetchall()
+    made = engine.decide(
+        report,
+        DecisionContext(
+            person_id=str(taker["id"]),
+            role=str(taker["role"]),
+            sim_time=report.sim_time,
+            kind="catering.accept",
+            facts={
+                "size": size,
+                "short_staffed": any(str(p["id"]) in absent for p in counter),
+            },
+            traits=dict(taker["traits"] or {}),
+        ),
+    )
+    if not made.chosen.get("accept"):
+        engine.emit(
+            report,
+            "catering.declined",
+            actor_id=str(taker["id"]),
+            org_id="thirdrail",
+            causes=[seq],
+            decision_id=made.id,
+            payload={"to_org_id": org_id, "size": size, "decided_by": made.source},
+        )
+        return
     engine.schedule(
         tomorrow_noon, "catering.deliver", org_id, {"ordered": seq, "size": size}
     )

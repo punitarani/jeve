@@ -453,10 +453,13 @@ def test_a_promise_is_scored_either_way(conn: Connection[DictRow]) -> None:
 def test_an_episode_can_escalate_an_outage_and_still_only_once(
     conn: Connection[DictRow],
 ) -> None:
-    """The consequence a meeting has always had, reached from the other arm."""
+    """The consequence a meeting has always had, reached from the other arm.
+
+    With an engineer: pressed, they act at once. Anyone else at the vendor has
+    to decide to pass it on (WORLD-0011), which the test below covers."""
 
     asker = "halloran.office_manager.12"
-    vendor = "tallybird.support.6"
+    vendor = "tallybird.engineer.2"
     policy = Scripted(
         ROOT_SEED, {asker: [{"act": "press"}], vendor: [{"act": "explain"}]}
     )
@@ -830,6 +833,22 @@ def test_a_world_begun_before_episodes_carries_on_with_them(
         "CASCADE"
     )
     conn.execute("DELETE FROM schema_migrations WHERE name = '0009_episodes.sql'")
+    # And everything written after 0009, which that code had not seen either:
+    # left in place, 0011 would read as applied to a `facts` table that 0009 is
+    # about to create again without its columns.
+    conn.execute("DROP TABLE timesheets, rota, escalations")
+    conn.execute(
+        "ALTER TABLE outage_notices DROP COLUMN workaround; "
+        "ALTER TABLE subscriptions DROP COLUMN cancelled_sim; "
+        "ALTER TABLE invoices DROP COLUMN dispute_asked, DROP COLUMN disputed_sim, "
+        "  DROP COLUMN dispute_resolution, DROP COLUMN manual, "
+        "  DROP COLUMN reconciled; "
+        "ALTER TABLE positions DROP COLUMN mind"
+    )
+    conn.execute(
+        "DELETE FROM schema_migrations WHERE name IN "
+        "('0010_decision_points.sql', '0011_loops.sql', '0012_escalations.sql')"
+    )
     _hand_the_world_to_the_daemon(conn)
 
     assert daemon.main(["--until-day", "6", *DAEMON]) == 0

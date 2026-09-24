@@ -389,10 +389,20 @@ def compare(with_outage: Connection[DictRow], calm: Connection[DictRow]) -> list
     def invoices(
         conn: Connection[DictRow],
     ) -> dict[tuple[str, str, int], tuple[int, int]]:
+        # The law firm bills the hours it logged (WORLD-0010), and logging is
+        # behaviour, which the counterfactual is allowed to change. What is
+        # still a draw about the client and the month is everyone else's work.
+        # The work as drawn: a firm may have raised its prices, or discounted
+        # a disputed bill since, and both of those are behaviour too.
         rows = conn.execute(
-            "SELECT from_org_id, COALESCE(to_person_id, to_org_id) AS payer, "
-            " amount_cents, issued_sim FROM invoices WHERE kind = 'services' "
-            "AND issued_sim >= 0 AND to_person_id IS NOT NULL ORDER BY id"
+            "SELECT i.from_org_id, COALESCE(i.to_person_id, i.to_org_id) AS payer, "
+            " COALESCE((e.payload->>'work_cents')::bigint, "
+            "   (e.payload->>'amount_cents')::bigint, i.amount_cents) "
+            "   AS amount_cents, i.issued_sim "
+            "FROM invoices i LEFT JOIN events e ON e.seq = i.issued_seq "
+            "WHERE i.kind = 'services' AND i.issued_sim >= 0 "
+            "AND i.to_person_id IS NOT NULL AND i.from_org_id <> 'halloran' "
+            "ORDER BY i.id"
         ).fetchall()
         seen: dict[tuple[str, str, int], tuple[int, int]] = {}
         for r in rows:

@@ -93,8 +93,9 @@ def main(argv: list[str] | None = None) -> int:
             cells = []
             for day in weeks:
                 row = conn.execute(
-                    "SELECT COALESCE(sum(e.amount_cents), 0) AS c FROM ledger_entries e "
-                    "JOIN ledger_txns t ON t.id = e.txn_id WHERE e.account_id = %s "
+                    "SELECT COALESCE(sum(e.amount_cents), 0) AS c "
+                    "FROM ledger_entries e JOIN ledger_txns t ON t.id = e.txn_id "
+                    "WHERE e.account_id = %s "
                     "AND t.sim_time <= %s",
                     (account, day * DAY),
                 ).fetchone()

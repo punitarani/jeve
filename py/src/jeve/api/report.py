@@ -27,6 +27,7 @@ from typing import Any
 from psycopg import Connection
 from psycopg.rows import DictRow
 
+from jeve.api import detectors
 from jeve.core.clock import DAY, HOUR, SimTime
 from jeve.decide.questions import MIND_WORDS
 from jeve.world.map import BUILDINGS, ORG_ZONE, Zone, find_path, town
@@ -76,6 +77,7 @@ def aggregate(conn: Connection[DictRow], now: SimTime) -> dict[str, object]:
             ).fetchall()
         ],
         "knowledge": _knowledge(conn),
+        "detectors": detectors.run(conn, now),
         "answers": _answers(conn),
         "cast": cast(
             [

@@ -52,6 +52,24 @@ class Decision:
     draws: dict[str, float] = field(default_factory=dict)
     prng_path: str = ""
     model_call: str | None = None
+    escalation: Escalated | None = None
+    """Set when tier 1 was asked too (DECIDE-0005), whether or not it decided."""
+
+
+@dataclass(frozen=True, slots=True)
+class Escalated:
+    """A second opinion, kept beside the decision it was about. `jev` and `llm`
+    are both answers' distributions over the escalated questions only."""
+
+    mode: Literal["shadow", "live"]
+    sampled: bool
+    triggers: list[dict[str, object]]
+    asks: list[str]
+    jev: dict[str, dict[str, float]]
+    llm: dict[str, dict[str, float]]
+    model: str
+    call_hash: str
+    agrees: bool
 
 
 @runtime_checkable
@@ -197,8 +215,31 @@ class RulesPolicy:
         """Whether a customer who has hit a problem actually reports it."""
 
         vocality = _num(ctx.traits.get("vocality"), 0.4)
-        draw = _uniform(rng)
-        return {"file": draw < vocality}, {"file": draw}
+        patience = _num(ctx.traits.get("patience"), 0.6)
+        # Two draws on every path, in this order, so that the workaround
+        # (WORLD-0010) cannot shift the luck the report question always had.
+        draw, how = _uniform(rng), _uniform(rng)
+        if _num(ctx.facts.get("hours_down"), 0.0) < 4:
+            # It has only just gone: most people wait, the loud ring someone,
+            # and nobody starts redoing their month by hand yet.
+            if how < 0.55 + 0.35 * patience:
+                workaround = "wait"
+            elif how < 0.95:
+                workaround = "call_account_manager"
+            else:
+                workaround = "other_tool"
+        elif how < 0.2 + 0.3 * patience:
+            workaround = "wait"
+        elif how < 0.75:
+            workaround = "by_hand"
+        elif how < 0.75 + 0.2 * vocality:
+            workaround = "call_account_manager"
+        else:
+            workaround = "other_tool"
+        return {"file": draw < vocality, "workaround": workaround}, {
+            "file": draw,
+            "how": how,
+        }
 
     def _ticket_confirm(
         self, ctx: DecisionContext, rng: object
@@ -305,7 +346,10 @@ class RulesPolicy:
         """A month whose invoices have not gone out has no revenue to close on."""
 
         if ctx.facts.get("invoices_stuck"):
-            return {"readiness": 0}, {}
+            # Wait, then chase, then close on an estimate (WORLD-0010).
+            attempt = _num(ctx.facts.get("attempt"), 1.0)
+            late = "wait" if attempt <= 1 else "nag" if attempt <= 2 else "estimate"
+            return {"readiness": 0, "if_not_ready": late}, {}
         return {"readiness": 1 if _num(ctx.facts.get("overdue_bills"), 0) else 2}, {}
 
     def _episode_round(
@@ -419,6 +463,144 @@ class RulesPolicy:
         """Fill the desk if a month of costs is in the bank."""
 
         return {"hire": _num(ctx.facts.get("runway_days"), 0.0) >= 28}, {}
+
+    # -- the loops the scenario names (WORLD-0010) ------------------------------
+
+    def _eng_allocation(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """Debt first once the codebase is fragile, then fires, else features.
+
+        The other way round the rules twin walked into the firefighting trap
+        (the scenario's #4) every time and never left it: fires raise debt,
+        debt raises fires. Whether a model does is the question; the control
+        arm should not answer it by construction.
+        """
+
+        if _num(ctx.facts.get("debt_level"), 1.0) >= 1.2:
+            return {"allocation": "debt"}, {}
+        if (
+            _num(ctx.facts.get("incidents_last_week"), 0) >= 3
+            or _num(ctx.facts.get("backlog"), 0) > 20
+        ):
+            return {"allocation": "firefight"}, {}
+        return {"allocation": "roadmap"}, {}
+
+    def _deploy_decision(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        risk = _num(ctx.traits.get("risk_appetite"), 0.45)
+        debt = _num(ctx.facts.get("debt_level"), 1.0)
+        draw = _uniform(rng)
+        return {"deploy": draw < max(0.1, 0.55 + 0.4 * risk - 0.2 * debt)}, {
+            "deploy": draw
+        }
+
+    def _vendor_trust(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        """One level lost for a bad outage — long, or a second one that was not
+        short, or one reported and never answered, or one that sent them to a
+        competitor — and none for a brief one handled well."""
+
+        level = int(_num(ctx.facts.get("trust"), 3.0))
+        minutes = _num(ctx.facts.get("minutes"), 0.0)
+        bad = (
+            minutes >= 240
+            or (bool(ctx.facts.get("repeat")) and minutes >= 90)
+            or (bool(ctx.facts.get("reported")) and not ctx.facts.get("answered"))
+            or bool(ctx.facts.get("tried_another_tool"))
+        )
+        return {"trust": max(0, min(4, level - 1 if bad else level))}, {}
+
+    def _subscription_renew(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        trust = max(0.0, min(2.0, _num(ctx.facts.get("trust"), 3.0)))
+        leave = (
+            0.02
+            + 0.08 * (2.0 - trust)
+            + (0.1 if ctx.facts.get("heard_bad_news") else 0.0)
+            + (0.05 if ctx.facts.get("price_rise") else 0.0)
+            - (0.1 if ctx.facts.get("offered_discount") else 0.0)
+            - (0.08 if ctx.facts.get("relies_on_it") else 0.0)
+        )
+        draw = _uniform(rng)
+        return {"renew": draw >= max(0.0, leave)}, {"renew": draw}
+
+    def _retention_offer(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        worth = bool(ctx.facts.get("large")) or _num(ctx.facts.get("trust"), 3) <= 0
+        can = _num(ctx.facts.get("runway_days"), 60.0) >= 21
+        return {"offer": worth and can}, {}
+
+    def _invoice_dispute(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        patience = _num(ctx.traits.get("patience"), 0.6)
+        chance = (
+            0.02
+            + 0.08 * (0.9 - patience)
+            + (0.06 if ctx.facts.get("price_rise") else 0.0)
+            + (0.03 if ctx.facts.get("large") else 0.0)
+        )
+        draw = _uniform(rng)
+        return {"dispute": draw < chance}, {"dispute": draw}
+
+    def _dispute_resolution(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        if _num(ctx.facts.get("runway_days"), 60.0) < 21:
+            return {"resolution": "stand_firm"}, {}
+        if ctx.facts.get("large") or ctx.facts.get("client_firm"):
+            return {"resolution": "discount"}, {}
+        return {"resolution": "stand_firm"}, {}
+
+    def _escalation_handoff(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        diligence = _num(ctx.traits.get("diligence"), 0.6)
+        backlog = _num(ctx.facts.get("backlog"), 0.0)
+        draw = _uniform(rng)
+        return {"relay": draw < max(0.1, 0.3 + 0.6 * diligence - 0.01 * backlog)}, {
+            "relay": draw
+        }
+
+    def _time_log(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        diligence = _num(ctx.traits.get("diligence"), 0.6)
+        draw = _uniform(rng)
+        return {"log": draw < 0.25 + 0.7 * diligence}, {"log": draw}
+
+    def _cover_shift(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        if _num(ctx.facts.get("runway_days"), 60.0) < 21:
+            return {"cover": "cover_it"}, {}
+        return {"cover": "call_in"}, {}
+
+    def _supplier_order(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        trend = _num(ctx.facts.get("trend"), 1.0)
+        if ctx.facts.get("pos_down"):
+            return {"order": "usual"}, {}
+        return {
+            "order": "more" if trend > 1.1 else "less" if trend < 0.9 else "usual"
+        }, {}
+
+    def _catering_accept(
+        self, ctx: DecisionContext, rng: object
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        chance = (
+            0.95
+            - (0.4 if ctx.facts.get("short_staffed") else 0.0)
+            - (0.1 if ctx.facts.get("size") == "large" else 0.0)
+        )
+        draw = _uniform(rng)
+        return {"accept": draw < chance}, {"accept": draw}
 
     def _catering_order(
         self, ctx: DecisionContext, rng: object
