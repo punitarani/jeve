@@ -135,3 +135,27 @@ from `worker` or `infra`. Re-run it after any hand copy between them.
 ```bash
 DOPPLER_TOKEN="$DOPPLER_TOKEN_AGENT" doppler run -p agent -c prd -- make api
 ```
+
+Network access is **Custom**, with "Also include default list" checked. The
+default list already covers npm, PyPI, GitHub release assets (uv, Python,
+flyctl, Doppler), nodejs.org, Docker Hub and its CDN, the Ubuntu archive and
+Google Fonts. Add these:
+
+```text
+cdn.playwright.dev
+playwright.download.prss.microsoft.com
+playwright.azureedge.net
+cli.doppler.com
+api.doppler.com
+fly.io
+api.fly.io
+api.machines.dev
+jeve.punitarani.com
+jeve-api.punitarani.com
+```
+
+The session reaches the internet through an HTTP/HTTPS proxy, so production's
+Postgres (`*.pg.psdb.cloud`) cannot be reached from it at all. Read it through
+the PlanetScale connector, whose traffic does not use the session's network,
+or through `jeve-api.punitarani.com`. `openrouter.ai` is left off on purpose:
+without it, no cloud session can spend.
