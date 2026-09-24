@@ -53,7 +53,10 @@ CREATE INDEX events_kind_tick ON events (kind, tick_seq);
 -- engine's cash_of() sums an account before every payment. Carrying the
 -- amount in the account index makes those index-only rather than a heap fetch
 -- per entry. Same name, same leading columns, so nothing that ordered by it
--- changes.
-DROP INDEX ledger_entries_account;
-CREATE INDEX ledger_entries_account
+-- changes. Built before the old one is dropped, and last in the file: the
+-- build takes seconds and only blocks writes, while DROP's exclusive lock —
+-- which blocks /state's reads too — is held from here to the commit.
+CREATE INDEX ledger_entries_account_new
     ON ledger_entries (account_id, id) INCLUDE (amount_cents);
+DROP INDEX ledger_entries_account;
+ALTER INDEX ledger_entries_account_new RENAME TO ledger_entries_account;
