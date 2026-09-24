@@ -113,7 +113,7 @@ the codebase reads them; they authenticate the deploy jobs.
 
 ## Doppler layout
 
-Three projects, matching the `.env.*.example` files:
+Three projects matching the `.env.*.example` files, and one for agents:
 
 * **app** — `NEXT_PUBLIC_JEVE_API` (build-time only). CI does not read it
   from here: `deploy-web` builds with the GitHub repository variable
@@ -124,8 +124,85 @@ Three projects, matching the `.env.*.example` files:
   name, so `prd` holds only what production needs beyond `fly.toml` (the list
   is in `docs/deployment.md`) — never the knobs `fly.toml` sets
 * **infra** — the CI/CD credentials; CI reads them from `infra/ci`
+* **agent** — what a cloud agent may read of production (see below)
 
 ```bash
 doppler run --project worker --config dev -- make api
 doppler run --project infra  --config ci  -- make deploy
 ```
+
+## Cloud agents (OPS-0004)
+
+A Claude Code cloud environment is set up by `.claude/setup-cloud.sh`, whose
+header lists the environment variables it expects. It reads production only
+through the Doppler project `agent`, config `prd`: production's knobs, an
+OpenRouter key of its own, and database URLs for a role that inherits only
+`pg_read_all_data`. The session gets it as `DOPPLER_TOKEN_AGENT`, never as a
+bare `DOPPLER_TOKEN`.
+
+To fill it in: in PlanetScale, create a role `agents_ro` on branch `main`
+that inherits only `pg_read_all_data`. Set its URL as `JEVE_DATABASE_URL`
+in `agent/prd`, and the same URL on port 6432 as `JEVE_DATABASE_POOLED_URL`.
+Then mint the session's token:
+
+```bash
+doppler configs tokens create claude-cloud -p agent -c prd --plain
+fly tokens create readonly --org jeve-411 --name claude-cloud-agents --expiry 2160h
+```
+
+Never copy a key, token or password-bearing URL into `agent/prd` from
+`worker` or `infra`.
+
+```bash
+DOPPLER_TOKEN="$DOPPLER_TOKEN_AGENT" doppler run -p agent -c prd -- make api
+```
+
+Network access is **Custom**, with "Also include default list" checked. The
+default list already covers npm, PyPI, GitHub and its release assets,
+nodejs.org, Docker Hub and its CDN, the Ubuntu archive and Google Fonts. Add
+these:
+
+```text
+astral.sh
+*.astral.sh
+mise.run
+*.jdx.dev
+get.pnpm.io
+cdn.playwright.dev
+playwright.download.prss.microsoft.com
+playwright.azureedge.net
+*.doppler.com
+fly.io
+*.fly.io
+*.fly.dev
+api.machines.dev
+planetscale.com
+*.planetscale.com
+*.psdb.cloud
+openrouter.ai
+braintrust.dev
+*.braintrust.dev
+jeve.punitarani.com
+jeve-api.punitarani.com
+```
+
+| Hosts | For |
+|---|---|
+| `astral.sh`, `*.astral.sh` | uv's installer and docs |
+| `mise.run`, `*.jdx.dev` | mise's installer, binaries and version lookups |
+| `get.pnpm.io` | pnpm's standalone installer |
+| `cdn.playwright.dev`, `playwright.*` | Chromium for the Playwright specs |
+| `*.doppler.com` | the Doppler CLI and `agent/prd` |
+| `fly.io`, `*.fly.io`, `*.fly.dev`, `api.machines.dev` | flyctl, `fly status` / `fly logs`, the app's own hostname |
+| `planetscale.com`, `*.planetscale.com`, `*.psdb.cloud` | the PlanetScale API and CLI, and the database hosts |
+| `openrouter.ai` | live model calls (`make smoke`, `LIVE=1 make e2e`) with `agent/prd`'s key |
+| `braintrust.dev`, `*.braintrust.dev` | tracing, when a run has `BRAINTRUST_API_KEY` |
+| `jeve.punitarani.com`, `jeve-api.punitarani.com` | the live site and API |
+
+The session reaches the internet through an HTTP/HTTPS proxy, so the
+Postgres wire protocol does not get out even with `*.psdb.cloud` allowed: a
+cloud smoke test timed out connecting to production. Read production through
+the PlanetScale connector, whose traffic does not use the session's network,
+or through `jeve-api.punitarani.com`. With `openrouter.ai` allowed, a session
+can spend, but only from `agent/prd`'s key, and only as far as that key's
+credit limit at OpenRouter.
