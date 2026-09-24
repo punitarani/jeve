@@ -76,6 +76,11 @@ class Clock(BaseModel):
     )
     speed: float
     run_id: str
+    engine_sha: str = Field(
+        description="The commit the daemon running this world was built from, "
+        "or `unknown`. A change is also an `engine.changed` event, so a long "
+        "run can be split at its deploys."
+    )
 
 
 class Org(BaseModel):
@@ -626,6 +631,19 @@ class ReportKnowledge(BaseModel):
     encounters: int
 
 
+class ReportDetector(BaseModel):
+    """One degeneracy detector over the last seven sim-days (API-0004)."""
+
+    name: str
+    label: str
+    value: float | None = Field(
+        description="What was measured, or null when there is too little to tell."
+    )
+    threshold: float = Field(description="The line past which it fires.")
+    fires: bool
+    detail: str
+
+
 class ReportAnswer(BaseModel):
     """One distinct model call: the state it was asked about and its answer."""
 
@@ -675,6 +693,7 @@ class FieldReport(BaseModel):
     outages: list[ReportOutage]
     topics: list[ReportTopic]
     knowledge: ReportKnowledge
+    detectors: list[ReportDetector]
     answers: dict[str, list[ReportAnswer]]
     cast: list[CastMember]
     queue: list[tuple[int, int]]
@@ -736,6 +755,7 @@ MODELS: list[type[BaseModel]] = [
     ReportOutage,
     ReportTopic,
     ReportKnowledge,
+    ReportDetector,
     ReportAnswer,
     CastMember,
     FieldReport,

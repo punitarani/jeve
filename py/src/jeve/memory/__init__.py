@@ -24,6 +24,7 @@ from jeve.memory.store import (
     promise,
     reach_of,
     record_fact,
+    revive,
     track_record,
 )
 
@@ -42,5 +43,6 @@ __all__ = [
     "promise",
     "reach_of",
     "record_fact",
+    "revive",
     "track_record",
 ]

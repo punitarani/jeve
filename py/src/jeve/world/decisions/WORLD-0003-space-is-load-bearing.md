@@ -1,13 +1,13 @@
 ---
 id: WORLD-0003
 title: Space is load-bearing — zones, encounters, and an escalation that reaches billing
-status: accepted
+status: superseded
 date: 2026-09-20
 deciders: ["claude"]
 scope: ["py/src/jeve/world/space.py", "py/src/jeve/world/map.py", "py/migrations/0003_space.sql", "py/tests/test_space.py"]
 tags: ["space", "encounters", "causality", "jev", "agent-decided"]
 supersedes: []
-superseded-by: null
+superseded-by: "WORLD-0009"
 relates-to: ["WORLD-0001", "DECIDE-0001", "DECIDE-0003", "CORE-0003", "WEB-0001"]
 confirmation: "cd py && uv run pytest tests/test_space.py"
 ---

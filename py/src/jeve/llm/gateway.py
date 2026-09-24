@@ -66,10 +66,17 @@ def decisions_url(base_url: str) -> str:
     return f"{root}/alpha/decisions"
 
 
-# Conservative: over-estimating tokens over-reserves, which is the safe
-# direction for a ceiling.
-CHARS_PER_TOKEN = 3.0
-MIN_RESERVATION_USD = 0.0005
+# Measured, not guessed. Over 2,866 recorded Jev requests the wire ran 2.26
+# bytes a token at the median and 1.28 at the densest, so 1.25 never
+# under-reserves. The old 3.0 under-counted tokens by a quarter and was
+# rescued only by a x1.5 on top, and a $0.0005 floor then set every Jev
+# reservation at twelve times the $0.00004 the call cost: a ceiling counted in
+# reserved dollars would have refused work that fitted under it (field report,
+# "reservations run 11x high").
+CHARS_PER_TOKEN = 1.25
+MIN_RESERVATION_USD = 0.0001
+"""Just above the dearest Jev call recorded ($0.000056): a floor for a card
+that prices a model at nothing, not the usual reservation."""
 
 # Statuses where the request was rejected before any inference happened, so the
 # reservation can be given back. Anything else settles at the reserved amount:
@@ -462,8 +469,10 @@ class Gateway:
                 type="function",
                 metadata={"call_id": call_id, "model": model, "path": path},
             ) as attempt:
+                sent = False
                 try:
                     async with self._permits:
+                        sent = True
                         if isinstance(body, bytes):
                             # Already serialised: these exact bytes are the
                             # cache key (DECIDE-0004), so they must be what is
@@ -491,6 +500,23 @@ class Gateway:
                     raise _Retryable(
                         TransportError(f"{path} failed: {error}"), None
                     ) from error
+                except asyncio.CancelledError:
+                    # The caller stopped waiting (a batch past its deadline).
+                    # A reservation left open is counted as spend for ever, so
+                    # it is closed either way: given back if nothing was sent,
+                    # kept as spend if it was, since it may have been billed.
+                    if sent:
+                        self._ledger.settle(
+                            call_id,
+                            worst_case_usd,
+                            estimated=True,
+                            model=model,
+                            outcome="cancelled-in-flight",
+                        )
+                        self._run_spent_usd += worst_case_usd
+                    else:
+                        self._ledger.release(call_id, reason="cancelled-before-send")
+                    raise
 
                 latency = time.perf_counter() - started
 
@@ -579,10 +605,8 @@ class Gateway:
         body = request.wire_bytes()
 
         tokens = _approx_tokens(body)
-        worst_case = max(
-            MIN_RESERVATION_USD,
-            tokens * card.prompt_usd_per_token * 1.5,
-        )
+        # Jev is priced on input only; its answer is a few numbers.
+        worst_case = max(MIN_RESERVATION_USD, tokens * card.prompt_usd_per_token)
         call_id = self._next_call_id("decide")
         with tracing.span(
             "jev.decide",

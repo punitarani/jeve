@@ -343,4 +343,8 @@ jobs:
         # --ha=false: the default creates a spare machine per group — 2 api +
         # 2 sim for a workload that is one public reader and one writer
         # pinned singleton by its advisory lock.
-        run: flyctl deploy --config fly.toml --ha=false
+        # The build arg stamps the image with its commit, which the daemon
+        # writes to sim_meta.engine_sha (field report, defect 6).
+        run: >-
+          flyctl deploy --config fly.toml --ha=false
+          --build-arg JEVE_ENGINE_SHA=${{ github.sha }}

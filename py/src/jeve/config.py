@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,6 +41,10 @@ class Settings(BaseModel):
     # Set high in production; the daemon answers a 402 with waiting_on_budget.
     cors_origins: tuple[str, ...] = ()
     dialogue_generate: bool = True
+    # DECIDE-0005: tier 1 is off until asked for; `shadow` measures it, `live`
+    # also lets the named sets act on it.
+    escalation: Literal["off", "shadow", "live"] = "off"
+    escalation_live: tuple[str, ...] = ()
 
     # LLM-0009: observability. The key is the only switch — absent,
     # `jeve.tracing` never imports the SDK and opens no socket, which is what
@@ -109,6 +114,23 @@ def load_settings(*, ops_dir: Path | None = None) -> Settings:
         ),
         dialogue_generate=os.environ.get("JEVE_DIALOGUE_GENERATE", "on")
         not in ("off", "0", "false"),
+        escalation=_escalation(os.environ.get("JEVE_ESCALATION", "off")),
+        escalation_live=tuple(
+            name.strip()
+            for name in os.environ.get("JEVE_ESCALATION_LIVE", "").split(",")
+            if name.strip()
+        ),
         braintrust_api_key=os.environ.get("BRAINTRUST_API_KEY") or None,
         braintrust_project_id=os.environ.get("BRAINTRUST_PROJECT_ID") or None,
     )
+
+
+def _escalation(value: str) -> Literal["off", "shadow", "live"]:
+    match value.strip().lower() or "off":
+        case "off":
+            return "off"
+        case "shadow":
+            return "shadow"
+        case "live":
+            return "live"
+    raise ConfigError(f"JEVE_ESCALATION must be off, shadow or live, not {value!r}")

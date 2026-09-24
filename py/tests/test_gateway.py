@@ -752,3 +752,43 @@ async def test_closing_the_gateway_flushes(
     await gateway.aclose()
 
     assert spans.flushes == 1
+
+
+async def test_a_call_cancelled_mid_flight_leaves_nothing_reserved(
+    tmp_path: Path,
+) -> None:
+    """A batch past its deadline cancels what it was waiting on (DECIDE-0005).
+    The reservation must close either way: an open one counts as spend for
+    ever, and the ladder would climb on calls nobody paid for."""
+
+    started = asyncio.Event()
+
+    async def hang(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            wants = "decisions" in request.url.params.get("output_modalities", "")
+            return httpx.Response(
+                200, json=DECISION_MODELS if wants else DEFAULT_MODELS
+            )
+        if request.url.path.endswith("/key"):
+            return httpx.Response(200, json={"data": {"usage": 31.4}})
+        started.set()
+        await asyncio.sleep(60)
+        raise AssertionError("never answered")
+
+    gateway = Gateway(
+        settings=_settings(tmp_path),
+        transport=httpx.MockTransport(hang),
+        backoff_base_s=0.0,
+    )
+    await gateway.start()
+    call = asyncio.create_task(gateway.decide(_decision_request()))
+    await asyncio.wait_for(started.wait(), timeout=10)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    spend = gateway.guard.state().spend
+    await gateway.aclose()
+
+    assert spend.reserved_usd == 0.0
+    # Sent, so it may have been billed: kept as spend, marked estimated.
+    assert spend.settled_usd > 0 and spend.estimated_calls == 1

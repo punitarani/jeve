@@ -25,7 +25,9 @@ from typing import Literal
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-type Topic = Literal["outage", "price_rise"]
+type Topic = Literal[
+    "outage", "price_rise", "payroll_late", "insolvency", "churned", "promise_broken"
+]
 type CommitmentKind = Literal["pay_invoice"]
 type Record = Literal["kept", "broken"]
 
@@ -40,6 +42,10 @@ class Fact:
     about_org_id: str | None = None
     about_module_id: str | None = None
     incident_id: int | None = None
+    about_person_id: str | None = None
+    true_fact: bool = True
+    """False for a rumour: it travels like a fact, and nothing in the world
+    that computes money reads it (WORLD-0011)."""
 
     @staticmethod
     def outage(incident_id: int, module_id: str) -> Fact:
@@ -59,6 +65,48 @@ class Fact:
         else (the scenario's behaviour #6)."""
 
         return Fact(id=f"price_rise:{org_id}", topic="price_rise", about_org_id=org_id)
+
+    @staticmethod
+    def payroll_late(org_id: str) -> Fact:
+        """That a firm has not paid its staff. Its own staff know at once."""
+
+        return Fact(
+            id=f"payroll_late:{org_id}", topic="payroll_late", about_org_id=org_id
+        )
+
+    @staticmethod
+    def insolvency(org_id: str) -> Fact:
+        """That a firm is running out of money."""
+
+        return Fact(id=f"insolvency:{org_id}", topic="insolvency", about_org_id=org_id)
+
+    @staticmethod
+    def rumour(org_id: str, week: int) -> Fact:
+        """That a firm is running out of money, said about a firm that is not.
+        One per firm per week at most, keyed by when it started."""
+
+        return Fact(
+            id=f"rumour:insolvency:{org_id}:{week}",
+            topic="insolvency",
+            about_org_id=org_id,
+            true_fact=False,
+        )
+
+    @staticmethod
+    def churned(org_id: str) -> Fact:
+        """That a firm is losing customers."""
+
+        return Fact(id=f"churned:{org_id}", topic="churned", about_org_id=org_id)
+
+    @staticmethod
+    def promise_broken(person_id: str) -> Fact:
+        """That somebody gave their word to pay and did not."""
+
+        return Fact(
+            id=f"promise_broken:{person_id}",
+            topic="promise_broken",
+            about_person_id=person_id,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,7 +130,9 @@ class Commitment:
     due_sim: int
 
 
-_FACT_COLUMNS = "id, topic, about_org_id, about_module_id, incident_id"
+_FACT_COLUMNS = (
+    "id, topic, about_org_id, about_module_id, incident_id, about_person_id, true_fact"
+)
 
 
 def _fact_of(row: DictRow) -> Fact:
@@ -92,6 +142,8 @@ def _fact_of(row: DictRow) -> Fact:
         about_org_id=row["about_org_id"],
         about_module_id=row["about_module_id"],
         incident_id=int(row["incident_id"]) if row["incident_id"] is not None else None,
+        about_person_id=row["about_person_id"],
+        true_fact=bool(row["true_fact"]),
     )
 
 
@@ -109,14 +161,16 @@ def record_fact(
 
     conn.execute(
         "INSERT INTO facts (id, topic, about_org_id, about_module_id, incident_id, "
-        "born_sim, born_seq) VALUES (%s,%s,%s,%s,%s,%s,%s) "
-        "ON CONFLICT (id) DO NOTHING",
+        "about_person_id, true_fact, born_sim, born_seq) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
         (
             fact.id,
             fact.topic,
             fact.about_org_id,
             fact.about_module_id,
             fact.incident_id,
+            fact.about_person_id,
+            fact.true_fact,
             sim_time,
             seq,
         ),
@@ -135,6 +189,13 @@ def make_stale(conn: Connection[DictRow], fact_id: str, *, sim_time: int) -> Non
         "UPDATE facts SET stale_sim = %s WHERE id = %s AND stale_sim IS NULL",
         (sim_time, fact_id),
     )
+
+
+def revive(conn: Connection[DictRow], fact_id: str) -> None:
+    """News again. A firm short of money last month and short again now is the
+    same fact (its id is what it is about), and it travels again."""
+
+    conn.execute("UPDATE facts SET stale_sim = NULL WHERE id = %s", (fact_id,))
 
 
 # -- who knows what ---------------------------------------------------------

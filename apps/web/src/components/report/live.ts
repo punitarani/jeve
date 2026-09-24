@@ -120,7 +120,7 @@ export function liveFindings(r: FieldReport): Finding[] {
 
 	const minds = r.mood_by_mind;
 	const ordinary = minds.find((m) => m.mind === "ordinary");
-	const outages = minds.filter((m) => m.mind !== "ordinary" && m.mind !== "other");
+	const outages = minds.filter((m) => r.outages.some((o) => o.module_id === m.mind));
 	const mindTotal = minds.reduce((a, m) => a + m.decisions, 0);
 	if (ordinary && outages.length && mindTotal) {
 		const worst = outages.reduce((a, b) => (b.mood < a.mood ? b : a));

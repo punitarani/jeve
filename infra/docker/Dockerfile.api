@@ -41,6 +41,12 @@ USER python
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH="/app/src"
 
+# The commit this image was built from. An image has no .git, so the daemon
+# cannot ask git; CI passes `--build-arg JEVE_ENGINE_SHA=<sha>` and the daemon
+# writes it to sim_meta.engine_sha on start (field report, defect 6).
+ARG JEVE_ENGINE_SHA=unknown
+ENV JEVE_ENGINE_SHA=$JEVE_ENGINE_SHA
+
 EXPOSE 8000
 
 # Health check

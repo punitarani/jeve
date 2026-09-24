@@ -8,17 +8,31 @@ Two runs of one world differing in one thing: whether a meeting with a real stak
 
 The question that has to be answered first: if the cheap proxy and the expensive arm disagree about how often a conversation gets an outage escalated, then turning episodes on moves the world's base rates and every other comparison is confounded. A *chance* is a meeting at which somebody stuck with a broken module stood next to the vendor.
 
-**Read the gap as an upper bound, not an effect.** The two denominators are not the same construct and cannot be: with episodes off the world keeps no record of a stake, so the count is every conversation whose topic was the outage, while with them on it is the meetings that were *selected* into an episode — which requires a live stake, a free cooldown and room in the day's budget. Selection is therefore inside the gap along with resolution, and the honest reading is that the two arms disagree by at most this much. Separating them needs the shadow arm this harness does not yet run: episodes computed at every eligible meeting and applied at none.
+**Read the gap as an upper bound, not an effect.** The two denominators are not the same construct and cannot be: with episodes off the world keeps no record of a stake, so the count is every conversation whose topic was the outage, while with them on it is the meetings that were *selected* into an episode — which requires a live stake, a free cooldown and room in the day's budget. Selection is therefore inside the gap along with resolution, and the honest reading is that the two arms disagree by at most this much. The next table separates them.
 
 | seed | chances (off) | escalated (off) | rate (off) | chances (on) | escalated (on) | rate (on) | gap |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 20260920 | 87 | 9 | 0.10 | 16 | 9 | 0.56 | +0.46 |
-| 20260921 | 74 | 8 | 0.11 | 14 | 10 | 0.71 | +0.61 |
-| 20260922 | 49 | 9 | 0.18 | 12 | 6 | 0.50 | +0.32 |
-| 20260923 | 52 | 6 | 0.12 | 13 | 7 | 0.54 | +0.42 |
-| 20260924 | 75 | 7 | 0.09 | 13 | 8 | 0.62 | +0.52 |
+| 20260920 | 25 | 2 | 0.08 | 7 | 1 | 0.14 | +0.06 |
+| 20260921 | 31 | 3 | 0.10 | 6 | 5 | 0.83 | +0.74 |
+| 20260922 | 31 | 4 | 0.13 | 8 | 2 | 0.25 | +0.12 |
+| 20260923 | 24 | 2 | 0.08 | 7 | 3 | 0.43 | +0.35 |
+| 20260924 | 37 | 2 | 0.05 | 5 | 3 | 0.60 | +0.55 |
 
-**Mean gap: +0.47.** A gap near zero means the two resolutions agree about what a meeting is worth, and the dial is safe to turn. A large gap is not a bug in either arm — it is the finding that resolution and base rate are entangled, and the one-shot question's wording is what would have to be recalibrated.
+### The gap, split
+
+With episodes off, each encounter carries the stake an episode would have been about (its *shadow*). Counting only encounters whose shadow stake was the outage gives the off arm the on arm's denominator. Then *selection* is how much choosing those meetings moves the rate, and *resolution* is what rounds do with the same meetings. The cooldown and daily ceiling are not in the shadow, so selection is slightly understated.
+
+| seed | staked (off) | escalated | rate | selection | resolution |
+|---|---:|---:|---:|---:|---:|
+| 20260920 | 26 | 2 | 0.08 | -0.00 | +0.07 |
+| 20260921 | 24 | 3 | 0.12 | +0.03 | +0.71 |
+| 20260922 | 23 | 3 | 0.13 | +0.00 | +0.12 |
+| 20260923 | 10 | 2 | 0.20 | +0.12 | +0.23 |
+| 20260924 | 21 | 1 | 0.05 | -0.01 | +0.55 |
+
+**Mean selection: +0.03; mean resolution: +0.33.** The part of the gap that is resolution is what rounds do that one shot does not, on the same meetings.
+
+**Mean gap: +0.36.** A gap near zero means the two resolutions agree about what a meeting is worth, and the dial is safe to turn. A large gap is not a bug in either arm — it is the finding that resolution and base rate are entangled, and the one-shot question's wording is what would have to be recalibrated.
 
 ## E1 — does it reach the economy?
 
@@ -26,22 +40,22 @@ The billing timeline the one-shot encounter already moves.
 
 | measure | episodes off | episodes on | change |
 |---|---:|---:|---:|
-| first services invoice | d4 Fri 09:09 | d4 Fri 02:21 | -24,480s |
-| outage minutes, total | 2,703.0 | 2,058.0 | -645 min |
-| longest outage | 1,209.0 | 906.0 | -303 min |
+| first services invoice | d3 Thu 18:03 | d3 Thu 13:39 | -15,840s |
+| outage minutes, total | 1,419.0 | 1,149.0 | -270 min |
+| longest outage | 630.0 | 420.0 | -210 min |
 | blocked invoice runs | 2.0 | 2.0 | no change |
-| average days late, paid bills | 0.4 | 0.4 | +0.039 |
-| second-hand knowledge rows | 0.0 | 61.6 | +62 |
+| average days late, paid bills | 0.2 | 0.2 | -0.033 |
+| second-hand knowledge rows | 0.0 | 40.4 | +40 |
 
 ## What the extra resolution cost
 
 | measure | episodes off | episodes on |
 |---|---:|---:|
-| decisions | 19,122 | 19,574 |
-| of those, episode rounds | 0 | 434 |
-| extra decisions | — | +451 (+2.4%) |
+| decisions | 11,506 | 11,764 |
+| of those, episode rounds | 0 | 298 |
+| extra decisions | — | +258 (+2.2%) |
 
-On the rules twin a decision is free. The figure that matters is the *share*: against the measured $0.0000384 per distinct model call in `ops/economics.md`, and before any cache sharing between rooms in the same state, the extra rounds above would add roughly $0.0008 per sim-day.
+On the rules twin a decision is free. The figure that matters is the *share*: against the measured $0.0000384 per distinct model call in `ops/economics.md`, and before any cache sharing between rooms in the same state, the extra rounds above would add roughly $0.0005 per sim-day.
 
 ## How conversations ended, and how deep they went
 
@@ -49,52 +63,80 @@ Episodes on, every seed together. `settled`: everyone still there had had their 
 
 | ended | episodes |
 |---|---:|
-| settled | 303 |
-| stalled | 31 |
-| emptied | 23 |
-| rounds | 25 |
+| settled | 217 |
+| stalled | 17 |
+| emptied | 22 |
+| rounds | 13 |
 
 | depth | episodes |
 |---|---:|
-| 0 | 275 |
-| 1 | 71 |
-| 2 | 36 |
+| 0 | 211 |
+| 1 | 49 |
+| 2 | 9 |
 
-The daily ceiling of 12 was reached on 7 of 105 sim-days.
+The daily ceiling of 12 was reached on 1 of 105 sim-days.
 
 ## What happened, by event
 
 | event | off | on |
 |---|---:|---:|
-| `cafe.sale` | 20603 | 20560 |
-| `cafe.walkout` | 2214 | 2254 |
-| `catering.delivered` | 38 | 38 |
-| `catering.ordered` | 38 | 38 |
+| `cafe.sale` | 20904 | 20907 |
+| `cafe.walkout` | 1781 | 1798 |
+| `catering.declined` | 3 | 3 |
+| `catering.delivered` | 30 | 32 |
+| `catering.ordered` | 33 | 35 |
 | `close.completed` | 15 | 15 |
-| `close.deferred` | 1 | 0 |
-| `credit.issued` | 47 | 56 |
-| `encounter` | 5284 | 5137 |
-| `episode.closed` | 0 | 382 |
-| `episode.opened` | 0 | 382 |
-| `episode.round` | 0 | 840 |
-| `fact.passed` | 0 | 181 |
-| `incident.ended` | 76 | 76 |
-| `incident.started` | 76 | 76 |
-| `insolvency.warning` | 5 | 5 |
+| `close.queued` | 5 | 5 |
+| `credit.issued` | 25 | 28 |
+| `deploy.held` | 12 | 13 |
+| `deploy.shipped` | 18 | 17 |
+| `dispute.resolved` | 11 | 11 |
+| `encounter` | 3361 | 3121 |
+| `eng.allocated` | 15 | 15 |
+| `episode.closed` | 0 | 269 |
+| `episode.opened` | 0 | 269 |
+| `episode.round` | 0 | 564 |
+| `escalation.dropped` | 87 | 59 |
+| `escalation.relayed` | 86 | 83 |
+| `fact.passed` | 0 | 121 |
+| `firm.reviewed` | 20 | 20 |
+| `households.spent` | 60 | 60 |
+| `incident.ended` | 44 | 46 |
+| `incident.prioritised` | 39 | 33 |
+| `incident.started` | 44 | 46 |
 | `invoice.blocked` | 10 | 10 |
-| `invoice.issued` | 170 | 170 |
+| `invoice.chased` | 0 | 1 |
+| `invoice.disputed` | 12 | 13 |
+| `invoice.issued` | 162 | 164 |
 | `month.end` | 5 | 5 |
-| `outage.heard` | 0 | 101 |
-| `payment.deferred` | 172 | 189 |
-| `payment.made` | 713 | 715 |
+| `outage.heard` | 0 | 51 |
+| `outage.workaround` | 923 | 938 |
+| `payment.deferred` | 84 | 70 |
+| `payment.made` | 707 | 711 |
+| `payroll.held` | 2 | 2 |
 | `payroll.paid` | 60 | 60 |
-| `promise.made` | 0 | 38 |
-| `ticket.answered` | 516 | 503 |
-| `ticket.closed` | 502 | 485 |
-| `ticket.escalated` | 39 | 55 |
-| `ticket.opened` | 400 | 399 |
-| `ticket.reopened` | 71 | 59 |
-| `ticket.triaged` | 445 | 444 |
+| `postmortem.debt` | 6 | 7 |
+| `promise.broken` | 0 | 1 |
+| `promise.made` | 0 | 21 |
+| `rent.paid` | 20 | 20 |
+| `shift.covered` | 1 | 1 |
+| `shock.audit` | 1 | 1 |
+| `shock.client_dispute` | 5 | 5 |
+| `shock.large_catering` | 6 | 6 |
+| `shock.outage` | 6 | 6 |
+| `shock.rumour` | 1 | 1 |
+| `shock.sick` | 5 | 5 |
+| `shock.supplier_price` | 3 | 3 |
+| `supplier.paid` | 15 | 15 |
+| `ticket.answered` | 447 | 425 |
+| `ticket.closed` | 442 | 417 |
+| `ticket.escalated` | 13 | 20 |
+| `ticket.opened` | 344 | 339 |
+| `ticket.reopened` | 58 | 41 |
+| `ticket.triaged` | 389 | 384 |
+| `time.logged` | 200 | 204 |
+| `time.lost` | 7 | 6 |
+| `trust.revised` | 651 | 635 |
 
 ## How to read this
 

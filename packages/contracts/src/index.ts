@@ -24,6 +24,8 @@ export const Clock = z.object({
   status: z.enum(["running", "paused", "paused_budget", "waiting_on_model", "waiting_on_budget", "halted"]),
   speed: z.number(),
   run_id: z.string(),
+  /** The commit the daemon running this world was built from, or `unknown`. A change is also an `engine.changed` event, so a long run can be split at its deploys. */
+  engine_sha: z.string(),
 });
 export type Clock = z.infer<typeof Clock>;
 
@@ -571,6 +573,19 @@ export const ReportKnowledge = z.object({
 });
 export type ReportKnowledge = z.infer<typeof ReportKnowledge>;
 
+/** One degeneracy detector over the last seven sim-days (API-0004). */
+export const ReportDetector = z.object({
+  name: z.string(),
+  label: z.string(),
+  /** What was measured, or null when there is too little to tell. */
+  value: z.number().nullable(),
+  /** The line past which it fires. */
+  threshold: z.number(),
+  fires: z.boolean(),
+  detail: z.string(),
+});
+export type ReportDetector = z.infer<typeof ReportDetector>;
+
 /** One distinct model call: the state it was asked about and its answer. */
 export const ReportAnswer = z.object({
   uses: z.number().int(),
@@ -615,6 +630,7 @@ export const FieldReport = z.object({
   outages: z.array(ReportOutage),
   topics: z.array(ReportTopic),
   knowledge: ReportKnowledge,
+  detectors: z.array(ReportDetector),
   answers: z.record(z.string(), z.array(ReportAnswer)),
   cast: z.array(CastMember),
   queue: z.array(z.tuple([z.number().int(), z.number().int()])),

@@ -3,7 +3,7 @@
 Only variables the code actually reads are listed here — if a name is not in
 this table, setting it does nothing. Sources: `py/src/jeve/config.py`,
 `py/src/jeve/db.py`, `py/src/jeve/sim/daemon.py`, `py/src/jeve/sim/runner.py`,
-`py/src/jeve/tracing.py`.
+`py/src/jeve/tracing.py`, `py/src/jeve/decide/escalation.py`.
 
 ## Database
 
@@ -47,6 +47,19 @@ more than an afternoon wants the same, plus an account cap at OpenRouter.
 | `JEVE_NIGHT_SPEEDUP` | `--night-speedup` | `10` | How much faster than the open hours dead time passes (SIM-0004). Must be positive. At `60` a weeknight is 13 real seconds instead of 78, and costs nothing — nothing calls a model while the town is shut. |
 | `JEVE_DAILY_BUDGET_USD` | `--daily-budget` | `2` | Governor pauses the clock when the window's spend exceeds it. |
 | `JEVE_BUDGET_WAIT_S` | `--budget-wait` | `900` | Seconds between retries while OpenRouter says 402. |
+| `JEVE_ENGINE_SHA` | — | `git rev-parse HEAD`, else unknown | The commit the engine runs. Stamped on `/state` and, when it changes between two known commits, as an `engine.changed` event, so a report can tell which code produced which days. The images set it from the build's `--build-arg`. |
+
+## Tier 1 (`jeve.decide.escalation`, DECIDE-0005)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `JEVE_ESCALATION` | `off` | `shadow`: Jev's uncertain medium- and high-stakes answers, plus a 2% sample, are asked again of a flash model and both are kept in `escalations`; Jev's still decides. `live`: as shadow, and the sets named below act on the second opinion. Production runs `shadow`. |
+| `JEVE_ESCALATION_LIVE` | empty | Comma-separated question sets whose second opinion decides, e.g. `credit.decision,close.signoff`. Read `make escalation-report` first: a set earns this with at least 200 shadow rows and disagreement concentrated in the band. |
+
+Tier 1 is capped at 5% of the previous sim-day's decisions (at least 25 a day).
+Shadow calls are `explore` purpose and share 45 seconds a tick; a failure in
+shadow records nothing and never stops the world. A live set that gets no usable
+answer waits like any other decision (SIM-0002).
 
 ## API (`uvicorn jeve.api.app:app`)
 

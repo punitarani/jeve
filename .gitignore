@@ -19,6 +19,11 @@
 !/ops/soak.md
 !/ops/soak.live.md
 !/ops/episodes.md
+!/ops/field-report-v2.md
+!/ops/escalation.md
+!/ops/judge-panel.md
+!/ops/ontology-gaps.md
+!/ops/situation-probe.md
 # A nested ops/ means something resolved it against the wrong cwd. Ignored so
 # it can never be committed; `ops/` at the root is the only real one. (A bare
 # `ops/` here would also re-ignore the root one — later patterns win.)

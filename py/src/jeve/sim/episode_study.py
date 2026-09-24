@@ -68,11 +68,23 @@ class Arm:
     episode_decisions: int = 0
     escalation_chances: int = 0
     escalations: int = 0
+    staked_chances: int = 0
+    """Episodes-off only: meetings an episode would have been held about the
+    outage, recorded as the encounter's shadow stake."""
+    staked_escalations: int = 0
     paid_late_days: float = 0.0
     facts_reach: int = 0
     exits: dict[str, int] = field(default_factory=dict)
     depths: dict[int, int] = field(default_factory=dict)
     days_at_ceiling: int = 0
+
+    @property
+    def staked_rate(self) -> float:
+        return (
+            self.staked_escalations / self.staked_chances
+            if self.staked_chances
+            else 0.0
+        )
 
     @property
     def escalation_rate(self) -> float:
@@ -160,6 +172,20 @@ def measure(
             "SELECT count(*) AS n FROM events WHERE kind = 'ticket.escalated' "
             "AND payload->>'decided_by' <> 'episode'",
         )
+        # The same construct as the episodes-on arm's denominator: meetings
+        # with an outage between the people in them, whatever they chose to
+        # talk about. What escalated from those is what the encounter caused.
+        arm.staked_chances = _one(
+            conn,
+            "SELECT count(*) AS n FROM events WHERE kind = 'encounter' "
+            "AND payload->>'stake' = 'outage'",
+        )
+        arm.staked_escalations = _one(
+            conn,
+            "SELECT count(*) AS n FROM events x JOIN events e ON e.seq = ANY(x.causes) "
+            "WHERE x.kind = 'ticket.escalated' AND e.kind = 'encounter' "
+            "AND e.payload->>'stake' = 'outage'",
+        )
 
     arm.facts_reach = _one(conn, "SELECT count(*) AS n FROM knowledge WHERE hops > 0")
     if episodes_on:
@@ -241,9 +267,7 @@ def render(pairs: list[tuple[Arm, Arm]]) -> str:
         "*selected* into an episode — which requires a live stake, a free "
         "cooldown and room in the day's budget. Selection is therefore inside "
         "the gap along with resolution, and the honest reading is that the two "
-        "arms disagree by at most this much. Separating them needs the shadow "
-        "arm this harness does not yet run: episodes computed at every eligible "
-        "meeting and applied at none.",
+        "arms disagree by at most this much. The next table separates them.",
         "",
         "| seed | chances (off) | escalated (off) | rate (off) | chances (on) | "
         "escalated (on) | rate (on) | gap |",
@@ -260,6 +284,36 @@ def render(pairs: list[tuple[Arm, Arm]]) -> str:
     mean_gap = sum(on.escalation_rate - off.escalation_rate for on, off in pairs) / len(
         pairs
     )
+    lines += [
+        "",
+        "### The gap, split",
+        "",
+        "With episodes off, each encounter carries the stake an episode would "
+        "have been about (its *shadow*). Counting only encounters whose shadow "
+        "stake was the outage gives the off arm the on arm's denominator. Then "
+        "*selection* is how much choosing those meetings moves the rate, and "
+        "*resolution* is what rounds do with the same meetings. The cooldown "
+        "and daily ceiling are not in the shadow, so selection is slightly "
+        "understated.",
+        "",
+        "| seed | staked (off) | escalated | rate | selection | resolution |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for on, off in pairs:
+        lines.append(
+            f"| {on.seed} | {off.staked_chances} | {off.staked_escalations} | "
+            f"{off.staked_rate:.2f} | {off.staked_rate - off.escalation_rate:+.2f} "
+            f"| {on.escalation_rate - off.staked_rate:+.2f} |"
+        )
+    selection = sum(off.staked_rate - off.escalation_rate for _, off in pairs)
+    resolution = sum(on.escalation_rate - off.staked_rate for on, off in pairs)
+    lines += [
+        "",
+        f"**Mean selection: {selection / len(pairs):+.2f}; mean resolution: "
+        f"{resolution / len(pairs):+.2f}.** The part of the gap that is "
+        "resolution is what rounds do that one shot does not, on the same "
+        "meetings.",
+    ]
     lines += [
         "",
         f"**Mean gap: {mean_gap:+.2f}.** A gap near zero means the two "

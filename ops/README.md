@@ -13,6 +13,11 @@ which commit.
 | `soak.live.md` | `make soak POLICY=jev CALLS=record DAYS=10 COUNTERFACTUAL=1` | The same, decided by Jev, with what it cost. Run at gates. |
 | `episodes.md` | `make episodes` | Does giving a meeting rounds change anything (WORLD-0006)? The same sim-days played twice, with and without — episodes are on in every other world (WORLD-0007), so the off arm exists only here: the docking comparison first, then the billing timeline. Both arms on rules, so it is free. |
 | `persona-probe.md` | `make persona-probe` | Does sampling Jev's distributions preserve persona? With a control. |
+| `situation-probe.md` | `make situation-probe` | Does the situation move Jev as much as temperament does? Main-effect ranges on a controlled design, with the noise of each point. |
+| `field-report-v2.md` | `scripts/field_compare.py`, by hand | The base commit of the simulation review and its result, 30 sim-days each on rules, beside golden-20260920's findings. Free. |
+| `escalation.md` | `make escalation-report`, after a shadow run | What tier 1 said when it was asked (DECIDE-0005): agreement by set and by rule, cost, latency. Whether a set may go live is read here. |
+| `judge-panel.md` | `make judge-panel` (`LIVE=1` to ask the panel) | Does another model read a situation as Jev does? Situation against temperament effects, and agreement, from the call cache. |
+| `ontology-gaps.md` | `make ontology-gaps` (`PROPOSE=1` to ask a model) | Where `other` won, and what a model proposes adding, for a person to review. |
 | `providers.md` | `make providers` | One real call per model: reachable, not merely resolvable. |
 
 **Runtime state is ignored.** Written by the running system; yours is not mine.

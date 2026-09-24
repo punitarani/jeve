@@ -229,6 +229,7 @@ def _clock(meta: dict[str, Any]) -> dict[str, object]:
         "status": meta["status"],
         "speed": float(meta["speed"]),
         "run_id": meta["run_id"],
+        "engine_sha": str(meta.get("engine_sha") or "unknown"),
     }
 
 

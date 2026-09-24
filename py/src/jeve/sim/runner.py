@@ -17,8 +17,9 @@ from typing import Literal
 from psycopg import Connection
 from psycopg.rows import DictRow
 
-from jeve.config import find_repo_root
+from jeve.config import find_repo_root, load_settings
 from jeve.core.clock import SimTime
+from jeve.decide import escalation
 from jeve.decide.jev_policy import JevPolicy
 from jeve.decide.policy import Policy, RulesPolicy
 from jeve.decide.recorder import Recorder
@@ -59,7 +60,11 @@ def build_policy(
     if name == "rules":
         return RulesPolicy(root_seed)
     recorder = Recorder(mode=calls, cassette=cassette if calls == "record" else None)
-    return JevPolicy(root_seed, recorder)
+    settings = load_settings()
+    tier1 = escalation.Config(
+        mode=settings.escalation, live=frozenset(settings.escalation_live)
+    )
+    return JevPolicy(root_seed, recorder, settings=settings, tier1=tier1)
 
 
 def advance(

@@ -31,6 +31,7 @@ from jeve.core.clock import (
     WORK_END,
     WORK_START,
     SimTime,
+    after_working_time,
     next_open,
 )
 from jeve.core.orgs import BY_ID, ORGS
@@ -38,20 +39,42 @@ from jeve.core.seed import derive_rng
 from jeve.decide.gates import ASK_FROM_DAYS_BEFORE_DUE
 from jeve.decide.policy import Decision, DecisionContext, Policy
 from jeve.decide.questions import trait_fraction
-from jeve.world import flows, scheduler, space
+from jeve.world import (
+    customers,
+    economy,
+    engineering,
+    episodes,
+    flows,
+    scheduler,
+    shocks,
+    space,
+    timesheets,
+)
 
 # Every rate in here is per *hour*, and turned into a chance for one tick where
 # it is used: nothing in the world may depend on how long a tick is.
 
-# Tallybird's hazard: chance per business hour that a module falls over.
-# Elevated because the fixture starts with debt high and a risky deploy queued.
-HAZARD_PER_HOUR = 0.016
+# Tallybird's hazard: chance per business hour that a module falls over, at no
+# debt; `DEBT_MULTIPLIER` scales it with the codebase's debt, which engineering
+# now moves (WORLD-0011). It was 0.016, which at the seeded debt is about one
+# outage a day: harmless while an outage changed nothing lasting, and a
+# certain death spiral once customers remember them. At 0.006 the seeded debt
+# gives about two a week, before deploys and shocks add theirs.
+HAZARD_PER_HOUR = 0.006
 DEBT_MULTIPLIER = 2.5
 
-# How quickly subscribers notice an outage: the old 12%-per-quarter-hour, as a
-# rate. Drawn once per person per incident (CORE-0009), not once per tick for
-# whoever happened to be among the first forty rows.
-NOTICE_RATE_PER_HOUR = -math.log(1 - 0.12) * 4
+USES_PER_HOUR: dict[str, float] = {"pos": 4.0, "timetrack": 1.0, "invoicing": 0.5}
+"""How often somebody touches each feature in an hour they are working, which is
+how soon they find out it is down. A till is rung up every few minutes;
+time is logged between tasks; invoices go out a few times a day.
+
+It replaces one rate for everything (a mean of 117 minutes, drawn against a
+90-minute outage), which put 61% of all notices after the fix: people
+"noticing" an outage of a feature they did not touch until it worked again
+(field report, defect 4). The delay is still drawn once per (person, incident)
+(CORE-0009), but in hours of *use*, so nobody notices overnight; and a notice
+that would have landed after the fix is withdrawn when the incident ends,
+because by the time they tried the feature it worked."""
 
 # Walk-ins per hour, by the hour. The same 192 across office hours as the flat
 # six-a-tick it replaces, shaped like a cafe: a rush before work, a bigger one
@@ -70,6 +93,7 @@ month, keyed by (firm, client, month)."""
 TICKET_TIMEOUT = 2 * DAY
 REOPEN_WINDOW = 3 * DAY
 CHASE_AFTER = 7 * DAY
+CHASE_HARDER_AFTER = 3 * DAY
 WRITE_OFF_AFTER = 60 * DAY
 AUTOPAY_ABOVE = 0.2
 """Clients in the four prompter fifths pay by standing instruction on the day a
@@ -92,6 +116,28 @@ def _seq_of(value: object) -> list[int]:
 
 
 SUPPORT_ROLES = ("support", "support_lead")
+
+FRICTION: tuple[str, ...] = (
+    # One party failing, refusing or falling out with another. The golden field
+    # report counted none of them in a month: "a conflict-free economy is
+    # degenerate" (the scenario, §6). Measured on the base commit's rules world,
+    # a month held one. Left out on purpose: cafe walkouts (a queue, not a
+    # quarrel, and hundreds a week in any world), insolvency warnings (an alert
+    # to oneself), and outages and what they block (weather). Read by the soak
+    # and by `/report`.
+    "catering.declined",
+    "escalation.dropped",
+    "firm.failed",
+    "invoice.disputed",
+    "invoice.written_off",
+    "payroll.held",
+    "payroll.missed",
+    "promise.broken",
+    "rent.late",
+    "staff.left",
+    "subscription.cancelled",
+    "supplier.unpaid",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,7 +197,7 @@ class Engine:
         policy: Policy,
         *,
         root_seed: int,
-        debt_level: float = 1.0,
+        debt_level: float | None = None,
         encounters: bool = True,
         spatial: bool = True,
         episodes: bool = True,
@@ -159,7 +205,9 @@ class Engine:
         self._conn = conn
         self._policy = policy
         self._root = root_seed
-        self._debt = debt_level
+        self.pinned_debt = debt_level
+        """None: the codebase's debt is what engineering makes of it
+        (WORLD-0011). A number pins it, for an experiment about the hazard."""
         self.encounters = encounters
         """Off, people still move but meeting changes nothing: the control arm
         for "does space matter?"."""
@@ -174,6 +222,9 @@ class Engine:
         # Whatever ran before us may have died mid-tick (WORLD-0002).
         db.resync_sequences(self._conn)
         self._remember_outages_from_before_memory()
+        # A world seeded before WORLD-0010 gets its accounts, prices and
+        # recurring jobs here, under the writer lock, once.
+        economy.install(self._conn, root_seed=root_seed)
         self._conn.commit()
 
     def _remember_outages_from_before_memory(self) -> None:
@@ -318,6 +369,30 @@ class Engine:
             ),
         ).fetchone()
         assert row is not None
+        if decision.escalation is not None:
+            # DECIDE-0005: measurement beside the decision, read by nothing in
+            # the world. In the tick's transaction, so it rolls back with it.
+            second = decision.escalation
+            self._conn.execute(
+                "INSERT INTO escalations (decision_id, question_set, sim_time, "
+                "mode, sampled, triggers, asks, jev, llm, model, call_hash, "
+                "agrees, applied) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (
+                    row["id"],
+                    ctx.kind,
+                    ctx.sim_time,
+                    second.mode,
+                    second.sampled,
+                    json.dumps(second.triggers),
+                    second.asks,
+                    json.dumps(second.jev),
+                    json.dumps(second.llm),
+                    second.model,
+                    second.call_hash,
+                    second.agrees,
+                    second.mode == "live",
+                ),
+            )
         self._conn.execute(
             "UPDATE persons SET decision_seq = decision_seq + 1 WHERE id = %s",
             (ctx.person_id,),
@@ -376,15 +451,40 @@ class Engine:
         ).fetchone()
         return int(row["cents"]) if row else 0
 
+    def weekly_wages(self, org_id: str) -> int:
+        return flows.weekly_wages(self, org_id)
+
+    def payroll_held(self, org_id: str) -> bool:
+        return flows.payroll_held(self, org_id)
+
+    def weekly_outgoings(self, org_id: str) -> int:
+        """What a week costs this firm to keep open: its wage bill and its
+        fixed costs. The denominator of every runway in the world."""
+
+        return flows.weekly_outgoings(self, org_id)
+
+    def runway_days(self, org_id: str, cash: int | None = None) -> float:
+        """How many days the firm's cash lasts at its usual weekly outgoings.
+
+        It was `cash / this bill * 7`, a multiple of whatever was being paid,
+        so a firm with a month of payroll in the bank read as flush in front of
+        a small bill and broke in front of a large one (field report).
+        """
+
+        cash = self.cash_of(f"{org_id}.cash") if cash is None else cash
+        return cash / max(1, self.weekly_outgoings(org_id)) * 7
+
     def payer_of(self, org_id: str) -> DictRow | None:
         """Who pays this firm's bills and chases what it is owed."""
 
         roles = list(BY_ID[org_id].payer_roles)
+        # Whoever is left, if the people whose job it is have gone: somebody
+        # still has to open the post (WORLD-0010).
         return self._conn.execute(
             "SELECT id, org_id, role, traits FROM persons WHERE org_id = %s "
-            "AND kind = 'staff' AND role = ANY(%s) "
-            "ORDER BY array_position(%s::text[], role), id LIMIT 1",
-            (org_id, roles, roles),
+            f"AND kind = 'staff' AND status <> 'left' AND {economy.AT_WORK} "
+            "ORDER BY COALESCE(array_position(%s::text[], role), 99), id LIMIT 1",
+            (org_id, roles),
         ).fetchone()
 
     # What the rest of `jeve.world` needs of the engine, by its public name.
@@ -452,6 +552,7 @@ class Engine:
                     # Logged once known: the clock is read inside the
                     # transaction, never before it.
                     span.log(input=report.clock())
+                    self._policy.begin_tick(report.sim_time)
                     self._advance(report, SimTime(report.sim_time))
                     # Summarised inside the transaction, so nothing after the
                     # commit can fail and reach the daemon as a tick that had
@@ -500,10 +601,11 @@ class Engine:
             self._support(report, now)
             self._customers(report, now)
             self._followups(report, now)
+            customers.disputes(self, report, now)
             self._payments(report, now)
             self._client_payments(report, now)
             self._chase(report, now)
-        if now.cafe_open:
+        if now.cafe_open and not economy.failed(self, "thirdrail"):
             self._cafe(report, now)
 
         self._conn.execute(
@@ -564,7 +666,10 @@ class Engine:
     # -- flow 1: incidents -------------------------------------------------
 
     def _maybe_incident(self, report: TickReport, now: SimTime) -> None:
-        chance = per_tick(HAZARD_PER_HOUR * (1 + self._debt * (DEBT_MULTIPLIER - 1)))
+        if economy.failed(self, "tallybird"):
+            return  # its customers have moved to another vendor (WORLD-0010)
+        debt = engineering.debt(self)
+        chance = per_tick(HAZARD_PER_HOUR * (1 + debt * (DEBT_MULTIPLIER - 1)))
         for module_id in ("timetrack", "invoicing", "pos"):
             if self._module_down(module_id):
                 continue
@@ -575,7 +680,14 @@ class Engine:
             )
             if rng.random() < chance:
                 self._start_incident(
-                    report, module_id, {"severity": 1, "expected_minutes": 90}
+                    report,
+                    module_id,
+                    {
+                        "severity": 1,
+                        "expected_minutes": engineering.outage_minutes(
+                            self, report.sim_time, 90
+                        ),
+                    },
                 )
 
     def _start_incident(
@@ -589,10 +701,13 @@ class Engine:
             report,
             "incident.started",
             org_id="tallybird",
+            # A deploy that broke something is the cause of what it broke.
+            causes=[int(payload["cause"])] if payload.get("cause") else [],
             payload={
                 "module_id": module_id,
                 "severity": severity,
                 "expected_minutes": minutes,
+                "deploy": bool(payload.get("deploy")),
             },
         )
         row = self._conn.execute(
@@ -644,11 +759,14 @@ class Engine:
             (module_id, module_id, [r for o in ORGS for r in o.payer_roles[:1]]),
         ).fetchall()
         rows = []
+        rate = USES_PER_HOUR.get(module_id, 1.0)
         for user in users:
             person_id = str(user["id"])
             rng = derive_rng(self._root, "notice", person_id, incident_id)
-            delay = -math.log(1.0 - rng.random()) / NOTICE_RATE_PER_HOUR * HOUR
-            rows.append((incident_id, person_id, started + int(delay)))
+            use = -math.log(1.0 - rng.random()) / rate * HOUR
+            # People on a till keep the cafe's hours; everyone else an office's.
+            noticed = after_working_time(started, use, till=module_id == "pos")
+            rows.append((incident_id, person_id, noticed))
         db.executemany(
             self._conn,
             "INSERT INTO outage_notices (incident_id, person_id, notice_sim) "
@@ -673,6 +791,12 @@ class Engine:
         causes += _seq_of(row["escalation_event_seq"])
         self._conn.execute(
             "UPDATE modules SET status = 'up' WHERE id = %s", (module_id,)
+        )
+        # Whoever had not tried the feature by now never found it broken.
+        self._conn.execute(
+            "DELETE FROM outage_notices WHERE incident_id = %s AND notice_sim > %s "
+            "AND ticket_id IS NULL",
+            (incident_id, report.sim_time),
         )
         # An outage that is over is gossip, not news: it stops travelling, and
         # stops creating notices for an incident nobody can still be stuck on.
@@ -704,6 +828,26 @@ class Engine:
             minutes=minutes,
             escalated=row["escalation_event_seq"] is not None,
         )
+        # A long outage leaves debt behind it (WORLD-0011)...
+        level = engineering.postmortem(self, report, minutes=minutes)
+        if level is not None:
+            self._emit(
+                report,
+                "postmortem.debt",
+                org_id="tallybird",
+                causes=[ended_seq],
+                payload={"incident_id": incident_id, "debt_level": level},
+            )
+        # ...and everyone who ran into it trusts the vendor a little differently.
+        customers.after_outage(
+            self,
+            report,
+            incident_id=incident_id,
+            module_id=module_id,
+            minutes=minutes,
+            escalated=row["escalation_event_seq"] is not None,
+            cause=ended_seq,
+        )
 
     # -- flow 2: customers file tickets, support triages and answers -------
 
@@ -720,7 +864,8 @@ class Engine:
         # at second hand, and that is what their first decision should see.
         waiting = self._conn.execute(
             "SELECT n.incident_id, n.person_id, n.asked_day, i.module_id, "
-            "  i.started_sim, i.cause_event_seq, p.traits, k.hops AS heard_hops "
+            "  i.started_sim, i.cause_event_seq, p.traits, p.org_id, p.kind, "
+            "  k.hops AS heard_hops "
             "FROM outage_notices n JOIN incidents i ON i.id = n.incident_id "
             "JOIN persons p ON p.id = n.person_id "
             "LEFT JOIN knowledge k ON k.person_id = n.person_id "
@@ -729,6 +874,16 @@ class Engine:
             "  AND n.notice_sim <= %s ORDER BY n.incident_id, n.person_id",
             (report.sim_time,),
         ).fetchall()
+        # Month-end is close, or a month-end run is already waiting on the
+        # outage: what makes an invoicing outage matter this week (WORLD-0011).
+        month_end = (
+            self._conn.execute(
+                "SELECT 1 FROM scheduled WHERE (kind = 'month.end' AND "
+                "due_sim_time <= %s) OR kind = 'invoice.run' LIMIT 1",
+                (report.sim_time + 2 * DAY,),
+            ).fetchone()
+            is not None
+        )
         asked: list[DictRow] = []
         contexts: list[DecisionContext] = []
         for row in waiting:
@@ -763,6 +918,8 @@ class Engine:
                         "already_open": open_already is not None,
                         "hours_down": (report.sim_time - int(row["started_sim"]))
                         // HOUR,
+                        "module": str(row["module_id"]),
+                        "month_end": month_end,
                         # Only the first time they are asked. A day later they
                         # have had every chance to hit it themselves.
                         "heard_hops": int(row["heard_hops"] or 0)
@@ -786,6 +943,90 @@ class Engine:
         for row, made in zip(asked, self._decide_many(report, contexts), strict=True):
             if made.chosen.get("file"):
                 self._file(report, row, made)
+            if "workaround" in made.chosen:
+                self._work_around(report, row, made)
+
+    def _work_around(self, report: TickReport, row: DictRow, made: Made) -> None:
+        """How somebody gets their work done while a feature is down
+        (the scenario's behaviour #5). Recorded, and where it reaches the world
+        it does so by rule: work done by hand goes out, and may not reconcile
+        at the month's close; ringing the account manager is an escalation
+        that has to be passed on to be worth anything (WORLD-0012)."""
+
+        how = str(made.chosen["workaround"])
+        person_id = str(row["person_id"])
+        changed = self._conn.execute(
+            "UPDATE outage_notices SET workaround = %s WHERE incident_id = %s "
+            "AND person_id = %s AND workaround IS DISTINCT FROM %s RETURNING 1",
+            (how, int(row["incident_id"]), person_id, how),
+        ).fetchone()
+        if changed is None:
+            # The same answer as yesterday is not something that happened.
+            return
+        self._emit(
+            report,
+            "outage.workaround",
+            actor_id=person_id,
+            org_id=str(row["org_id"]) if row["kind"] == "staff" else None,
+            causes=_seq_of(row["cause_event_seq"]),
+            decision_id=made.id,
+            payload={
+                "incident_id": int(row["incident_id"]),
+                "module_id": str(row["module_id"]),
+                "workaround": how,
+                "decided_by": made.source,
+            },
+        )
+        if how == "by_hand" and self._runs_the_books(person_id, row):
+            count = int(
+                economy.policy(self, str(row["org_id"])).get("paper_records", 0)
+            )
+            economy.set_policy(self, str(row["org_id"]), paper_records=count + 1)
+        if how == "call_account_manager":
+            manager = self._conn.execute(
+                "SELECT id FROM persons WHERE org_id = 'tallybird' AND kind = 'staff' "
+                "AND status <> 'left' AND role = ANY(ARRAY['account_manager', "
+                "'support_lead', 'founder']) ORDER BY array_position(ARRAY["
+                "'account_manager', 'support_lead', 'founder'], role), id LIMIT 1"
+            ).fetchone()
+            if manager is not None:
+                episodes.escalate(
+                    self,
+                    report,
+                    raised_by=person_id,
+                    org_id=str(row["org_id"]),
+                    raised_with=str(manager["id"]),
+                    zone="phone",
+                    cause_seq=int(row["cause_event_seq"] or 0) or None,
+                    decision_id=made.id,
+                    decided_by=made.source,
+                    module=str(row["module_id"]),
+                )
+
+    def _runs_the_books(self, person_id: str, row: DictRow) -> bool:
+        if row["kind"] != "staff":
+            return False
+        payer = self.payer_of(str(row["org_id"]))
+        return payer is not None and str(payer["id"]) == person_id
+
+    def by_hand(self, org_id: str, module_id: str) -> bool:
+        """Is this firm doing by hand what a feature that is down would do?
+
+        The firm's decision, so the answer of whoever pays its bills: a junior
+        associate who has heard the invoicing is down may do their own work by
+        hand, but does not switch the firm's billing to paper.
+        """
+
+        payer = self.payer_of(org_id)
+        if payer is None:
+            return False
+        row = self._conn.execute(
+            "SELECT 1 FROM outage_notices n JOIN incidents i ON i.id = n.incident_id "
+            "WHERE i.ended_sim IS NULL AND i.module_id = %s AND n.person_id = %s "
+            "AND n.workaround = 'by_hand' LIMIT 1",
+            (module_id, str(payer["id"])),
+        ).fetchone()
+        return row is not None
 
     def _file(self, report: TickReport, row: DictRow, made: Made) -> None:
         person_id = str(row["person_id"])
@@ -843,8 +1084,11 @@ class Engine:
         ).fetchall()
         if not staff:
             return
+        # Work support can still do: an answered ticket is waiting on its
+        # reporter, not on the desk, and counting it made the queue look
+        # deepest just after support had cleared it.
         backlog_row = self._conn.execute(
-            "SELECT count(*) AS n FROM tickets WHERE status <> 'closed'"
+            "SELECT count(*) AS n FROM tickets WHERE status IN ('open','triaged')"
         ).fetchone()
         backlog = int(backlog_row["n"]) if backlog_row else 0
 
@@ -896,7 +1140,7 @@ class Engine:
                         untriaged["id"],
                     ),
                 )
-                self._emit(
+                triaged_seq = self._emit(
                     report,
                     "ticket.triaged",
                     actor_id=person_id,
@@ -915,6 +1159,7 @@ class Engine:
                         "decided_by": made.source,
                     },
                 )
+                self._escalate_internally(report, person_id, module_id, triaged_seq)
                 continue
 
             # Otherwise answer something already triaged.
@@ -954,6 +1199,35 @@ class Engine:
                 "answered_seq = %s, asked_day = NULL WHERE id = %s",
                 (report.sim_time, answered, triaged["id"]),
             )
+
+    INTERNAL_ESCALATION_TICKETS = 3
+    """Blocked customers on one outage before support takes it to engineering
+    without anybody having to be cornered (WORLD-0012). Triage severity had no
+    consequence; now enough of it is a priority."""
+
+    def _escalate_internally(
+        self, report: TickReport, person_id: str, module_id: object, cause: int
+    ) -> None:
+        if not module_id or not self._module_down(str(module_id)):
+            return
+        incident = episodes.open_incident(self, [str(module_id)])
+        if incident is None:
+            return
+        blocked = self._conn.execute(
+            "SELECT count(*) AS n FROM tickets WHERE incident_id = %s "
+            "AND severity >= 2 AND status IN ('triaged', 'answered')",
+            (incident["id"],),
+        ).fetchone()
+        if blocked is None or int(blocked["n"]) < self.INTERNAL_ESCALATION_TICKETS:
+            return
+        episodes.prioritise(
+            self,
+            report,
+            module=str(module_id),
+            actor_id=person_id,
+            cause=cause,
+            route="queue",
+        )
 
     def _followups(self, report: TickReport, now: SimTime) -> None:
         """An answered ticket ends: confirmed by its reporter, or timed out.
@@ -1036,7 +1310,7 @@ class Engine:
         )
         # Run in this same tick; a blocked run reschedules itself.
         for org in ORGS:
-            if org.bills_clients_monthly:
+            if org.bills_clients_monthly and not economy.failed(self, org.id):
                 self._issue_invoices(report, org.id, cause=seq, month=month)
         # And the month after. It fired once, and the world ran down (audit B1).
         self._schedule(
@@ -1055,9 +1329,12 @@ class Engine:
         month: int,
         was_blocked: bool = False,
     ) -> None:
-        """The cascade's first link: no Invoicing module, no invoices."""
+        """The cascade's first link: no Invoicing module, no invoices — unless
+        the firm has chosen to do them by hand (WORLD-0011), in which case they
+        go out, and have to be reconciled at the close."""
 
-        if self._module_down("invoicing"):
+        manual = self._module_down("invoicing") and self.by_hand(org_id, "invoicing")
+        if self._module_down("invoicing") and not manual:
             pending = len(self.engaged_clients(org_id, month))
             # Two causes, and both are true: month-end is why a run was
             # attempted, the outage is why it failed. Citing only the calendar
@@ -1105,16 +1382,37 @@ class Engine:
                 "AND payload->>'module_id' = 'invoicing' ORDER BY seq DESC LIMIT 1"
             ).fetchone()
             causes += _seq_of(ended["seq"]) if ended else []
-        for client_id, amount in self.engaged_clients(org_id, month):
-            self.bill(
+        # The work is drawn about the client and the month (CORE-0009); what
+        # the firm charges for it is its price list, which it may have raised.
+        index = economy.price_index(self, org_id)
+        for client_id, amount in self.billed_work(org_id, month):
+            invoice = self.bill(
                 report,
                 from_org=org_id,
                 to_person=client_id,
-                amount=amount,
+                amount=round(amount * index),
                 terms_days=30,
                 kind="services",
                 causes=causes,
+                work_cents=amount,
             )
+            if manual:
+                self._conn.execute(
+                    "UPDATE invoices SET manual = true WHERE id = %s", (invoice,)
+                )
+
+    def billed_work(self, org_id: str, month: int) -> list[tuple[str, int]]:
+        """What each engaged client is billed this month.
+
+        The law firm bills the hours it logged (WORLD-0011), shared across the
+        month's clients by the size of their matters; everyone else bills the
+        work drawn for the month.
+        """
+
+        engaged = self.engaged_clients(org_id, month)
+        if org_id != "halloran":
+            return engaged
+        return timesheets.bill_hours(self, org_id, month, engaged)
 
     def engaged_clients(self, org_id: str, month: int) -> list[tuple[str, int]]:
         """Who had work done this month, and what it came to.
@@ -1151,8 +1449,14 @@ class Engine:
         causes: list[int],
         to_person: str | None = None,
         to_org: str | None = None,
+        work_cents: int | None = None,
     ) -> int:
-        """Issue one invoice: the row, the event, the receivable. Returns its id."""
+        """Issue one invoice: the row, the event, the receivable. Returns its id.
+
+        `work_cents` is what the work came to before the firm's price list,
+        which it may have raised (WORLD-0010): the draw a counterfactual must
+        find unchanged, whatever the firm decided about its prices.
+        """
 
         invoice = self._conn.execute(
             "INSERT INTO invoices (from_org_id, to_org_id, to_person_id, issued_sim, "
@@ -1179,6 +1483,7 @@ class Engine:
                 "to": to_person or to_org,
                 "amount_cents": amount,
                 "invoice_kind": kind,
+                **({"work_cents": work_cents} if work_cents is not None else {}),
             },
         )
         self._conn.execute(
@@ -1195,14 +1500,25 @@ class Engine:
     # -- flow 4: subscription invoices (automatic) -------------------------
 
     def _subscriptions(self, report: TickReport) -> None:
+        # Monthly, so the next run is 28 days out.
+        self._schedule(report.sim_time + 28 * DAY, "subscription.run", None, {})
+        if economy.failed(self, "tallybird"):
+            return
+        # Before the month is billed, customers at risk decide whether to stay,
+        # and some who left come back (WORLD-0011).
+        month = report.sim_time // (28 * DAY)
+        customers.win_back(self, report, month)
+        discounts = customers.renewals(self, report)
         rows = self._conn.execute(
-            "SELECT org_id, person_id, module_id, monthly_cents FROM subscriptions "
+            "SELECT id, org_id, person_id, module_id, monthly_cents FROM subscriptions "
             "WHERE active ORDER BY id"
         ).fetchall()
         total = 0
         issued: list[int] = []
         for row in rows:
-            amount = int(row["monthly_cents"])
+            amount = round(
+                int(row["monthly_cents"]) * (1 - discounts.get(int(row["id"]), 0.0))
+            )
             invoice = self._conn.execute(
                 "INSERT INTO invoices (from_org_id, to_org_id, to_person_id, "
                 "issued_sim, due_sim, amount_cents, kind) "
@@ -1240,8 +1556,6 @@ class Engine:
                 [("tallybird.receivable", total), ("tallybird.revenue", -total)],
                 seq,
             )
-        # Monthly, so the next run is 28 days out.
-        self._schedule(report.sim_time + 28 * DAY, "subscription.run", None, {})
 
     # -- flow 5: payments --------------------------------------------------
 
@@ -1250,7 +1564,9 @@ class Engine:
 
         return self._conn.execute(
             "SELECT i.id, i.amount_cents, i.due_sim, i.from_org_id, i.to_org_id, "
-            "  i.to_person_id, i.issued_seq, i.asked_day, i.deferrals, i.chased_sim "
+            "  i.to_person_id, i.issued_seq, i.asked_day, i.deferrals, i.chased_sim, "
+            "  (i.disputed_sim IS NOT NULL AND i.dispute_resolution IS NULL) "
+            "    AS disputed "
             "FROM invoices i WHERE i.paid_sim IS NULL AND i.written_off_sim IS NULL "
             f"  AND i.due_sim <= %s AND {where} ORDER BY i.due_sim, i.id",
             (params[0] + ASK_FROM_DAYS_BEFORE_DUE * DAY, *params[1:]),
@@ -1284,6 +1600,7 @@ class Engine:
             if not bills:
                 continue
             cash = self.cash_of(f"{org.id}.cash")
+            runway = self.runway_days(org.id, cash)
             contexts = [
                 DecisionContext(
                     person_id=person_id,
@@ -1294,10 +1611,11 @@ class Engine:
                         "days_until_due": (int(bill["due_sim"]) - report.sim_time)
                         // DAY,
                         "can_afford": cash >= int(bill["amount_cents"]),
-                        "runway_days": cash / max(1, int(bill["amount_cents"])) * 7,
+                        "runway_days": runway,
                         "chased": bill["chased_sim"] is not None,
                         "promised": memory.open_commitment(self._conn, int(bill["id"]))
                         is not None,
+                        "disputed": bool(bill["disputed"]),
                     },
                     traits=dict(payer["traits"] or {}),
                 )
@@ -1344,6 +1662,7 @@ class Engine:
                         "autopay": autopay,
                         "promised": memory.open_commitment(self._conn, int(bill["id"]))
                         is not None,
+                        "disputed": bool(bill["disputed"]),
                     },
                     traits=traits,
                 )
@@ -1437,10 +1756,13 @@ class Engine:
                 "UPDATE invoices SET paid_sim = %s WHERE id = %s",
                 (report.sim_time, bill["id"]),
             )
+            # Who decided goes on the row as well as the event. It was left to
+            # the column default, so every payment in production read "rules"
+            # whatever had made it (field report, defect 2).
             self._conn.execute(
                 "INSERT INTO payments (invoice_id, paid_sim, amount_cents, txn_id, "
-                "days_late) VALUES (%s,%s,%s,%s,%s)",
-                (bill["id"], report.sim_time, amount, txn, days_late),
+                "days_late, decided_by) VALUES (%s,%s,%s,%s,%s,%s)",
+                (bill["id"], report.sim_time, amount, txn, days_late, made.source),
             )
             # Anyone who gave their word about this bill has now kept it.
             memory.close_commitments_for(
@@ -1459,10 +1781,24 @@ class Engine:
             "SELECT i.id, i.amount_cents, i.due_sim, i.from_org_id, i.to_org_id, "
             "  i.to_person_id, i.issued_seq, i.chase_asked_day "
             "FROM invoices i WHERE i.paid_sim IS NULL AND i.written_off_sim IS NULL "
+            # A bill under dispute is argued over, not chased.
+            "  AND (i.disputed_sim IS NULL OR i.dispute_resolution IS NOT NULL) "
             "  AND i.due_sim <= %s AND (i.chased_sim IS NULL OR i.due_sim <= %s) "
             "ORDER BY i.from_org_id, i.due_sim, i.id",
-            (report.sim_time - CHASE_AFTER, report.sim_time - WRITE_OFF_AFTER),
+            (report.sim_time - CHASE_HARDER_AFTER, report.sim_time - WRITE_OFF_AFTER),
         ).fetchall()
+        # A week late, or three days while the firm has decided to chase
+        # harder (WORLD-0010).
+        after = {
+            org.id: economy.chase_after_days(self, org.id, report.sim_time) * DAY
+            for org in ORGS
+        }
+        late = [
+            bill
+            for bill in late
+            if int(bill["due_sim"]) <= report.sim_time - after[str(bill["from_org_id"])]
+            or int(bill["due_sim"]) <= report.sim_time - WRITE_OFF_AFTER
+        ]
         asked: list[DictRow] = []
         contexts: list[DecisionContext] = []
         chasers: dict[str, DictRow | None] = {}
@@ -1474,7 +1810,11 @@ class Engine:
             if issuer not in chasers:
                 chasers[issuer] = self.payer_of(issuer)
             chaser = chasers[issuer]
-            if chaser is None or str(chaser["id"]) in report.in_episode:
+            if (
+                chaser is None
+                or str(chaser["id"]) in report.in_episode
+                or economy.failed(self, issuer)
+            ):
                 continue
             if not self.gets_to_it(
                 str(chaser["id"]), now, "chasing", bill["chase_asked_day"]
@@ -1492,7 +1832,7 @@ class Engine:
                         "org": issuer,
                         "days_late": (report.sim_time - int(bill["due_sim"])) // DAY,
                         "large": int(bill["amount_cents"]) >= 200_000,
-                        "runway_days": cash / max(1, int(bill["amount_cents"])) * 7,
+                        "runway_days": self.runway_days(issuer, cash),
                     },
                     traits=dict(chaser["traits"] or {}),
                 )
@@ -1526,6 +1866,9 @@ class Engine:
                 "UPDATE invoices SET chased_sim = %s WHERE id = %s",
                 (report.sim_time, bill["id"]),
             )
+
+    def write_off(self, report: TickReport, bill: DictRow) -> None:
+        self._write_off(report, bill)
 
     def _write_off(self, report: TickReport, bill: DictRow) -> None:
         issuer = str(bill["from_org_id"])
@@ -1577,30 +1920,54 @@ class Engine:
         # else. Their coffee is paid for out of their wages (households), which
         # is how a payroll held by an outage reaches the cafe's till.
         staff = self._conn.execute(
-            "SELECT p.id, p.traits FROM positions pos JOIN persons p "
+            "SELECT p.id, p.org_id, p.traits FROM positions pos JOIN persons p "
             "ON p.id = pos.person_id WHERE pos.zone = 'cafe' AND pos.moved_tick = %s "
             "AND p.org_id <> 'thirdrail' ORDER BY p.id",
             (report.tick_seq,),
         ).fetchall()
-        household_cash = self.cash_of("households.cash") if staff else 0
+        # Each from their own employer's households (WORLD-0010): an unpaid
+        # engineer's coffee used to come out of the lawyers' wages.
+        purse = {
+            org: self.cash_of(economy.household(org))
+            for org in sorted({str(row["org_id"]) for row in staff})
+        }
+        index = economy.price_index(self, "thirdrail")
+        cafe = economy.policy(self, "thirdrail")
+        short = report.sim_time < int(cafe.get("stock_short_until") or 0)
+        sold_out_share = float(cafe.get("stock_short_share", 0.0)) if short else 0.0
 
-        servers = 1.0 if pos_down else 2.0
+        # Service is a queue whose rate depends on who is behind the counter
+        # (the scenario's Third Rail row, WORLD-0011): somebody off sick and not
+        # covered is a slower line. A card reader that is down halves it,
+        # unless the cafe has chosen to write sales down by hand.
+        behind = self._conn.execute(
+            "SELECT count(*) AS n FROM positions s JOIN persons p "
+            "ON p.id = s.person_id WHERE s.zone = 'cafe' AND p.org_id = 'thirdrail' "
+            "AND p.role = ANY(%s)",
+            (list(shocks.COUNTER_ROLES),),
+        ).fetchone()
+        servers = float(max(1, min(3, int(behind["n"]) if behind else 0)))
+        if pos_down and not self.by_hand("thirdrail", "pos"):
+            servers = max(1.0, servers / 2)
         # Who walks in, and what they find, is settled before anyone decides:
         # an arrival waits behind the arrivals ahead of it, not behind what
         # those people went on to choose. That independence is what lets the
         # whole tick's customers be asked at once.
         contexts: list[DecisionContext] = []
         baskets: list[int] = []
-        employed: list[bool] = []
+        employers: list[str | None] = []
         for arrival, row in enumerate([*walk_ins, *staff]):
             person_id = str(row["id"])
-            is_staff = arrival >= len(walk_ins)
+            employer = str(row["org_id"]) if arrival >= len(walk_ins) else None
             basket_rng = derive_rng(
                 self._root, "basket", person_id, now.day, minute, arrival
             )
-            basket = 350 + int(basket_rng.random() * 600)
+            basket = round((350 + int(basket_rng.random() * 600)) * index)
+            # Short of stock, some find nothing they want. A rule, drawn about
+            # the visit, as the basket is.
+            sold_out = basket_rng.random() < sold_out_share
             baskets.append(basket)
-            employed.append(is_staff)
+            employers.append(employer)
             contexts.append(
                 DecisionContext(
                     person_id=person_id,
@@ -1610,7 +1977,9 @@ class Engine:
                     facts={
                         "pos_down": pos_down,
                         "queue_length": max(0, int(arrival - servers)),
-                        "can_afford": (not is_staff) or household_cash >= basket,
+                        "can_afford": employer is None or purse[employer] >= basket,
+                        "sold_out": sold_out,
+                        "prices_up": index > 1.0,
                     },
                     traits=dict(row["traits"] or {}),
                 )
@@ -1618,10 +1987,10 @@ class Engine:
         if not contexts:
             return
 
-        for ctx, amount, is_staff, made in zip(
+        for ctx, amount, employer, made in zip(
             contexts,
             baskets,
-            employed,
+            employers,
             self._decide_many(report, contexts),
             strict=True,
         ):
@@ -1640,7 +2009,7 @@ class Engine:
                     },
                 )
                 continue
-            if is_staff and household_cash < amount:
+            if employer is not None and purse[employer] < amount:
                 continue  # the referee: someone ahead of them spent the last of it
             seq = self._emit(
                 report,
@@ -1656,9 +2025,12 @@ class Engine:
                 },
             )
             legs = [("thirdrail.cash", amount), ("thirdrail.revenue", -amount)]
-            if is_staff:
-                legs += [("households.cash", -amount), ("households.spending", amount)]
-                household_cash -= amount
+            if employer is not None:
+                legs += [
+                    (economy.household(employer), -amount),
+                    (economy.household(employer, "spending"), amount),
+                ]
+                purse[employer] -= amount
             txn = self._post(report.sim_time, "cafe sale", legs, seq)
             self._conn.execute(
                 "INSERT INTO cafe_sales (sim_time, person_id, amount_cents, txn_id, "

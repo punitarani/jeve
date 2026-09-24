@@ -92,6 +92,12 @@ class Recorder:
         if self._conn is not None and not self._conn.closed:
             self._conn.close()
 
+    def connection(self) -> Connection[DictRow]:
+        """The recorder's own autocommit connection: it sees committed rows
+        only, which is what tier 1's daily room is counted from (DECIDE-0005)."""
+
+        return self._connection()
+
     # -- reads -------------------------------------------------------------
 
     def lookup(self, hashes: Iterable[str]) -> dict[str, StoredCall]:
@@ -153,6 +159,34 @@ class Recorder:
         self.stats.live_cost_usd += cost_usd
         if inserted and self._cassette is not None:
             # Write-through: a run that dies halfway keeps what it paid for.
+            self._cassette.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._cassette, "a") as handle:
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+    def mark_unanswered(
+        self,
+        call_hash: str,
+        *,
+        kind: str,
+        model: str,
+        request: dict[str, Any],
+        wire: str,
+    ) -> None:
+        """Record that this request has no answer and will not be asked again
+        (DECIDE-0005's shadow give-up). Costless and first writer wins, like any
+        row, so a real answer already on record is never overwritten; and in the
+        cassette, so a replay knows it too."""
+
+        row = {
+            "hash": call_hash,
+            "kind": kind,
+            "model": model,
+            "provider": None,
+            "request": request,
+            "wire": wire,
+            "response": {"text": "", "unanswered": True},
+        }
+        if insert_call(self._connection(), row) and self._cassette is not None:
             self._cassette.parent.mkdir(parents=True, exist_ok=True)
             with open(self._cassette, "a") as handle:
                 handle.write(json.dumps(row, sort_keys=True) + "\n")

@@ -173,6 +173,9 @@ class Local:
     and compared with it: a round in which everybody does what they did before
     is a conversation going in circles."""
     rounds_done: int = 0
+    """How many rounds were actually run. The outcome used to carry the exit
+    reason under `rounds`, so "how long did it last" could not be read back
+    (field report, defect 3)."""
 
     @property
     def promised(self) -> bool:
@@ -219,6 +222,11 @@ def open_incident(engine: Engine, down: list[str]) -> dict[str, Any] | None:
     }
 
 
+ENGINEERING_ROLES = frozenset({"founder", "eng_lead", "engineer", "sre"})
+"""People who can act on an outage themselves. Anyone else at the vendor has to
+pass a complaint on (WORLD-0012)."""
+
+
 def escalate(
     engine: Engine,
     report: TickReport,
@@ -227,30 +235,59 @@ def escalate(
     org_id: str,
     raised_with: str,
     zone: str,
-    cause_seq: int,
+    cause_seq: int | None,
     decision_id: int | None,
     decided_by: str,
+    module: str | None = None,
+    routed: bool = False,
 ) -> int | None:
-    """A customer has cornered the vendor in person. The fix gets priority.
+    """A customer has cornered the vendor. The fix gets priority — if the
+    complaint reaches somebody who can fix it.
 
     The one consequence a meeting has always had (WORLD-0003), reached now from
     either resolution: `cause_seq` is the encounter for a one-shot and the
     episode's closing event for an episode, so the cascade query walks through
     whichever ran.
+
+    Whom it was raised with matters (WORLD-0012). The field report found
+    escalation was social — it landed on whoever from the vendor happened to be
+    in the cafe, and every one of them could shorten an outage on the spot. An
+    engineer can; a support agent or the account manager decides whether to
+    take it to the engineers (`escalation.handoff`), a quarter of an hour
+    later, and may leave it in the queue instead.
     """
 
-    module = known_outage(
-        engine,
-        org_id,
-        [
-            str(r["id"])
-            for r in engine.conn.execute(
-                "SELECT id FROM modules WHERE status = 'down' ORDER BY id"
-            ).fetchall()
-        ],
-    )
+    if module is None:
+        module = known_outage(
+            engine,
+            org_id,
+            [
+                str(r["id"])
+                for r in engine.conn.execute(
+                    "SELECT id FROM modules WHERE status = 'down' ORDER BY id"
+                ).fetchall()
+            ],
+        )
     if module is None:
         return None
+    if not routed:
+        holder = engine.conn.execute(
+            "SELECT role FROM persons WHERE id = %s", (raised_with,)
+        ).fetchone()
+        if holder is not None and str(holder["role"]) not in ENGINEERING_ROLES:
+            engine.schedule(
+                report.sim_time + TICK,
+                "escalation.handoff",
+                raised_with,
+                {
+                    "raised_by": raised_by,
+                    "org_id": org_id,
+                    "zone": zone,
+                    "cause": cause_seq,
+                    "module": module,
+                },
+            )
+            return None
     incident = open_incident(engine, [module])
     if incident is None or incident["escalated"]:
         return None
@@ -274,7 +311,8 @@ def escalate(
         actor_id=raised_by,
         org_id=org_id,
         decision_id=decision_id,
-        causes=[cause_seq] + ([incident["cause"]] if incident["cause"] else []),
+        causes=([cause_seq] if cause_seq else [])
+        + ([incident["cause"]] if incident["cause"] else []),
         payload={
             "module_id": module,
             "incident_id": incident["id"],
@@ -298,6 +336,131 @@ def escalate(
         "UPDATE tickets SET severity = 3 WHERE module_id = %s "
         "AND status IN ('open','triaged')",
         (module,),
+    )
+    return seq
+
+
+@scheduler.job("escalation.handoff")
+def handoff(
+    engine: Engine, report: TickReport, holder: str, payload: dict[str, Any]
+) -> None:
+    """Somebody at the vendor who cannot fix it was told about the outage."""
+
+    person = engine.conn.execute(
+        "SELECT id, role, traits, status FROM persons WHERE id = %s", (holder,)
+    ).fetchone()
+    module = str(payload.get("module") or "")
+    if person is None or person["status"] == "left" or not module:
+        return
+    incident = open_incident(engine, [module])
+    if incident is None or incident["escalated"]:
+        return  # fixed, or already escalated, while it was being passed on
+    backlog = engine.conn.execute(
+        "SELECT count(*) AS n FROM tickets WHERE status IN ('open','triaged')"
+    ).fetchone()
+    made = engine.decide(
+        report,
+        DecisionContext(
+            person_id=holder,
+            role=str(person["role"]),
+            sim_time=report.sim_time,
+            kind="escalation.handoff",
+            facts={
+                "by_phone": payload.get("zone") == "phone",
+                "backlog": int(backlog["n"]) if backlog else 0,
+            },
+            traits=dict(person["traits"] or {}),
+        ),
+    )
+    cause = payload.get("cause")
+    seq = engine.emit(
+        report,
+        "escalation.relayed" if made.chosen.get("relay") else "escalation.dropped",
+        actor_id=holder,
+        org_id="tallybird",
+        causes=[int(cause)] if cause else [],
+        decision_id=made.id,
+        payload={
+            "module_id": module,
+            "raised_by": str(payload.get("raised_by", "")),
+            "decided_by": made.source,
+        },
+    )
+    if not made.chosen.get("relay"):
+        return
+    if payload.get("zone") == "phone":
+        # A call passed on is a ticket with a priority, not a customer at the
+        # engineers' elbow.
+        prioritise(
+            engine, report, module=module, actor_id=holder, cause=seq, route="phone"
+        )
+        return
+    escalate(
+        engine,
+        report,
+        raised_by=str(payload.get("raised_by", "")),
+        org_id=str(payload.get("org_id", "")),
+        raised_with=holder,
+        zone=str(payload.get("zone", "")),
+        cause_seq=seq,
+        decision_id=made.id,
+        decided_by=made.source,
+        module=module,
+        routed=True,
+    )
+
+
+PRIORITY_KEEPS = 2
+"""A procedural escalation — support's own, or a customer's call passed on —
+halves the time left, once per incident. Somebody pressed in person still
+quarters what remains after it (`escalate`): a queue that works must not make
+a conversation worthless, which is the claim space rests on (`test_space`)."""
+
+
+def prioritise(
+    engine: Engine,
+    report: TickReport,
+    *,
+    module: str,
+    actor_id: str,
+    cause: int,
+    route: str,
+) -> int | None:
+    incident = open_incident(engine, [module])
+    if incident is None:
+        return None
+    done = engine.conn.execute(
+        "SELECT 1 FROM events WHERE kind = 'incident.prioritised' "
+        "AND (payload->>'incident_id')::bigint = %s LIMIT 1",
+        (incident["id"],),
+    ).fetchone()
+    if done is not None:
+        return None
+    pending = engine.conn.execute(
+        "SELECT id, due_sim_time FROM scheduled WHERE kind = 'incident.end' "
+        "AND subject_id = %s ORDER BY id LIMIT 1",
+        (module,),
+    ).fetchone()
+    if pending is None:
+        return None
+    due = int(pending["due_sim_time"])
+    keep = max(ESCALATION_FLOOR, (due - report.sim_time) // PRIORITY_KEEPS)
+    new_due = min(due, report.sim_time + -(-keep // TICK) * TICK)
+    seq = engine.emit(
+        report,
+        "incident.prioritised",
+        actor_id=actor_id,
+        org_id="tallybird",
+        causes=[cause] if cause else [],
+        payload={
+            "incident_id": incident["id"],
+            "module_id": module,
+            "route": route,
+            "minutes_saved": (due - new_due) // 60,
+        },
+    )
+    engine.conn.execute(
+        "UPDATE scheduled SET due_sim_time = %s WHERE id = %s", (new_due, pending["id"])
     )
     return seq
 
@@ -402,6 +565,15 @@ def _news_stake(engine: Engine, group: list[Agent]) -> Stake | None:
     return None
 
 
+def stake_of(
+    engine: Engine, group: list[Agent], down: list[str], now: SimTime
+) -> Stake | None:
+    """What an episode between these people would be about, if any: read,
+    never written, so the episodes-off arm can record its shadow."""
+
+    return _stake_for(engine, group, down, now)
+
+
 def _stake_for(
     engine: Engine, group: list[Agent], down: list[str], now: SimTime
 ) -> Stake | None:
@@ -472,12 +644,19 @@ def run(
     engine: Engine,
     report: TickReport,
     now: SimTime,
-    present: list[Agent],
+    asked: list[Agent],
     made: list[Made],
     by_id: dict[str, Agent],
     down: list[str],
+    *,
+    present: list[Agent] | None = None,
 ) -> set[frozenset[str]]:
     """Open and run every episode this tick. Returns the pairs it consumed.
+
+    `asked` and `made` are the people at a decision point and what they chose
+    (WORLD-0009); `present` is everyone about, who may join a conversation they
+    did not start. Everyone present was asked, before WORLD-0009, and still is
+    when `present` is not given.
 
     A pair that became an episode must not also be recorded as a one-shot
     encounter: the same meeting resolved twice would double-count its effects,
@@ -486,7 +665,7 @@ def run(
     """
 
     consumed: set[frozenset[str]] = set()
-    for agent, decision in zip(present, made, strict=True):
+    for agent, decision in zip(asked, made, strict=True):
         other_id = decision.chosen.get("with")
         if not decision.chosen.get("interact") or not isinstance(other_id, str):
             continue
@@ -498,7 +677,7 @@ def run(
             continue
         if not _budget_left(engine, now):
             break
-        group = _grow(engine, present, agent, other, down, now)
+        group = _grow(engine, present or asked, agent, other, down, now)
         if group is None:
             continue
         stake, members = group
@@ -511,7 +690,7 @@ def run(
             now,
             stake,
             members,
-            present,
+            present or asked,
             down,
             parent_id=None,
             depth=0,
@@ -812,6 +991,9 @@ def _context(
             "refused": local.refused,
             "tension": local.tension,
             "tellable_topic": news.fact.topic if news else None,
+            # Which firm the news is about, so the question can say so
+            # (MEM-0003): "that the software company cannot make payroll".
+            "tellable_about": news.fact.about_org_id if news else None,
         },
         traits=agent.traits,
     )
@@ -931,7 +1113,7 @@ def _close(
     outcome: dict[str, Any] = {
         "stake": stake.kind,
         "stake_ref": stake.ref,
-        "rounds": exit_reason,
+        "rounds": local.rounds_done,
         "pressed": local.pressed,
         "promised": local.promised,
         "refused": local.refused,

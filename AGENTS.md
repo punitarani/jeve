@@ -30,7 +30,7 @@ simulation ever reads generated text.
 | `decisions/` | Decision records and their generated index |
 | `docs/research/` | Ground truth on Jev, prior-art mapping, validation survey, the recursive-micro-simulation survey |
 | `docs/design/` | Long-form analysis behind the decision records |
-| `ops/` | Runtime state (spend ledger) and tracked measurements (`economics.md`, `soak.md`, `persona-probe.md`, `providers.md`) |
+| `ops/` | Runtime state (spend ledger) and tracked measurements (`economics.md`, `soak.md`, `persona-probe.md`, `providers.md`, `field-report-v2.md`, `escalation.md`) |
 | `tools/` | Contract generation and utility scripts |
 
 ## Decisions
@@ -183,6 +183,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### API-0004: Degeneracy detectors are part of the field report, and each is seen to fire
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/api/detectors.py`, `py/src/jeve/api/report.py`, `py/src/jeve/api/contracts.py`, `py/tests/test_detectors.py`, `apps/web/src/components/report/LiveReport.tsx`  
+**Tags**: api, reports, measurement, agent-decided
+
+`FieldReport.detectors` carries eight readings from `jeve.api.detectors`, each with a value, the line past which it fires, and the rows it came from; the live report shows them first.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### CORE-0001: Record architecture decisions as immutable per-file records
 
 **Status**: accepted (2026-09-20)  
@@ -250,6 +262,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: cache, replay, determinism, agent-decided
 
 `DecisionRequest.wire_bytes()` is the one place a decision body is built. The gateway posts exactly those bytes; the policy hashes exactly those bytes.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### DECIDE-0005: Tier 1 runs in shadow inside the tick, and a set goes live by name
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/decide/escalation.py`, `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/decide/policy.py`, `py/src/jeve/decide/recorder.py`, `py/src/jeve/sim/escalations.py`, `py/src/jeve/sim/panel.py`, `py/src/jeve/gen/ontology.py`, `py/migrations/0013_escalations.sql`, `py/tests/test_escalation.py`, `py/tests/test_measurement.py`  
+**Tags**: escalation, confidence, llm, agent-decided
+
+Tier 1 is asked inside `JevPolicy.decide_many`, between Jev's answer and the draw, off unless `JEVE_ESCALATION` says `shadow` or `live`; it acts only for sets named in `JEVE_ESCALATION_LIVE`.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 
@@ -334,6 +358,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: memory, knowledge, diffusion, commitments, agent-decided
 
 A **fact** is a thing that can be known and passed on, identified by what it is about (`outage:<incident>`, `price_rise:<org>`) rather than minted from a counter, so the same news is the same row in every arm of a counterfactual. **Knowledge** records who holds it, from whom, and at what remove. A **commitment** is a promise to pay a particular bill.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### MEM-0003: Trust is a typed belief, and a fact can be false
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/memory/**`, `py/src/jeve/world/customers.py`, `py/migrations/0012_loops.sql`  
+**Tags**: memory, beliefs, diffusion, rumour, agent-decided
+
+A subscriber's trust in the vendor is `persons.beliefs.vendor_reliability`, 0 to 4, revised by a J `score` after each outage they ran into and recovering a level after a month without one; it gates renewal. Facts can now be about late wages, a firm short of money, a vendor losing customers or a broken promise, and `true_fact` is false for a rumour, which travels like any fact.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 
@@ -531,18 +567,6 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
-### WORLD-0003: Space is load-bearing — zones, encounters, and an escalation that reaches billing
-
-**Status**: accepted (2026-09-20)  
-**Scope**: `py/src/jeve/world/space.py`, `py/src/jeve/world/map.py`, `py/migrations/0003_space.sql`, `py/tests/test_space.py`  
-**Tags**: space, encounters, causality, jev, agent-decided
-
-Each open tick, each member of staff makes one `agent.tick` decision from where they stand now: where to go next, whether to talk, to whom, about what, their mood, and — only when it is possible — whether to press the vendor about an outage. Encounters resolve among people co-located *now*; then everyone moves.
-
-This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
-
----
-
 ### WORLD-0004: Four more flows, each built to carry a cascade somewhere new
 
 **Status**: accepted (2026-09-20)  
@@ -586,6 +610,54 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: episodes, recursion, realism, memory, resolution
 
 - **Rounds remember.** Every round's state says what each person did in the round just gone (by the same neutral labels) and how long they have been at it, so round N depends on round N−1. - **People end conversations.** Each person is asked whether they have had their say, not whether the matter is solved. A round in which everyone repeats their last act ends the episode as `stalled`, as the recursion research pre-registered ("rounds continue only on state change"). - **Two deep, by dependency.** `MAX_DEPTH = 2`, in code and in migration 0010. After an episode closes, a pair who have a *different* outage or bill between them take it aside (never a matter an ancestor was about), and news can ripple a second table further. Both count against the daily ceiling. - **Memory is read back.** How someone heard of an outage reaches their first decision to report it; a payer's last kept or broken promise to a firm reaches the next conversation about a bill. Both are appended only when present, so first-hand and first-time questions keep their bytes.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0009: Ask agent.tick at decision points, and describe a room as firms
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/world/space.py`, `py/src/jeve/decide/questions.py`, `py/src/jeve/core/orgs.py`, `py/migrations/0011_decision_points.sql`, `py/tests/test_space.py`, `py/tests/test_questions.py`  
+**Tags**: space, encounters, cost, cache, jev, agent-decided
+
+Somebody is asked `agent.tick` on arrival, while away from their workplace, in company from another firm, when what is on their mind changes, through lunch, and on the hour; cafe staff alone behind their counter are not asked. A quiet desk is asked about the next hour, everyone else about the next quarter.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0010: Give the economy sinks and consequences
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/world/economy.py`, `py/src/jeve/world/flows.py`, `py/src/jeve/world/seed_world.py`, `py/src/jeve/sim/soak.py`, `py/tests/test_consequences.py`  
+**Tags**: economy, insolvency, households, calibration, agent-decided
+
+Rent, stock, quarterly tax on profit and household spending are rules; staff two paydays unpaid decide whether to leave (`leave.consider`), a firm's head reviews its position monthly and on every warning (`founder.review`: raise prices, cut costs, chase debts, borrow, carry on), vacancies are refilled by decision (`hire.decision`), and a firm four paydays behind has failed.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0011: Give every firm the loop the scenario names
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/world/engineering.py`, `py/src/jeve/world/customers.py`, `py/src/jeve/world/timesheets.py`, `py/src/jeve/world/shocks.py`, `py/src/jeve/world/flows.py`, `py/migrations/0012_loops.sql`, `py/tests/test_loops.py`  
+**Tags**: flows, decisions, scenario, calibration, agent-decided
+
+Each firm's loop is a decision at the moment it arises, with a rules twin and its consequences in code: engineering allocation and deploys (debt is live and drives the hazard), trust revised after an outage and renewal asked of customers at risk, a workaround chosen with every report, disputes and their resolution, time logged or not at the law firm, the cafe's cover, stock and catering acceptance, and the close's wait/nag/estimate. Ledgerline closes two clients a day and three fall due together, so its principal decides whose month waits (`close.plan`, a quarter of an hour ahead: the scheduler takes a tick's due rows off the queue before running any). Shocks (Poisson 1.5 a week, keyed by the week) are the environment they answer to.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0012: Route an escalation through whoever was cornered
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/world/episodes.py`, `py/src/jeve/world/engine.py`, `py/tests/test_loops.py`  
+**Tags**: escalation, encounters, support, agent-decided
+
+A complaint raised with an engineer (the founder, an engineering lead, an engineer or an SRE) shortens the outage at once, as before; raised with anyone else, it becomes an `escalation.handoff` decision a quarter of an hour later — relay it to engineering, or leave it in the queue. Support escalates by rule once three blocked customers' tickets are triaged against one outage, and a customer can ring their account manager as a workaround (WORLD-0011).
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

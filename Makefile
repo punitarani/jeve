@@ -93,6 +93,30 @@ fixture: ## Run the golden fixture. POLICY=jev|rules CALLS=replay|record
 soak: ## 35 sim-days on rules, on its own database; checks invariants, writes ops/soak.md. POLICY= CALLS= DAYS= COUNTERFACTUAL=1
 	$(UV) python scripts/soak.py $(if $(POLICY),--policy $(POLICY)) $(if $(CALLS),--calls $(CALLS)) $(if $(DAYS),--days $(DAYS)) $(if $(COUNTERFACTUAL),--counterfactual)
 
+.PHONY: situation-probe
+situation-probe: ## Does the situation move Jev as much as the person? ~155 live calls, well under a cent; DRY=1 for the design
+	$(UV) python scripts/situation_probe.py $(if $(DRY),--dry-run)
+
+.PHONY: census
+census: ## What would a run cost Jev? Distinct requests per question set, on rules, free. DAYS= LEVELS=
+	$(UV) python scripts/call_census.py $(if $(DAYS),--days $(DAYS)) $(if $(LEVELS),--levels $(LEVELS))
+
+.PHONY: calibrate
+calibrate: ## Where does the money go? Cash by week and every consequence, on rules, free. DAYS= SEED=
+	$(UV) python scripts/calibrate.py $(if $(DAYS),--days $(DAYS)) $(if $(SEED),--seed $(SEED))
+
+.PHONY: escalation-report
+escalation-report: ## What did tier 1 say in shadow? Agreement by set and rule, cost, latency: ops/escalation.md, free
+	$(UV) python scripts/escalation_report.py
+
+.PHONY: judge-panel
+judge-panel: ## Does another model read situations as Jev does? Free from the cache; LIVE=1 asks three models (<$1)
+	$(UV) python scripts/judge_panel.py $(if $(LIVE),--live)
+
+.PHONY: ontology-gaps
+ontology-gaps: ## Where did `other` win? ops/ontology-gaps.md, free; PROPOSE=1 asks a model what to add
+	$(UV) python scripts/ontology_gaps.py $(if $(PROPOSE),--propose)
+
 .PHONY: episodes
 episodes: ## Does giving a meeting rounds change anything? Two arms, one seed, free. DAYS= SEEDS=
 	$(UV) python scripts/episodes_report.py $(if $(DAYS),--days $(DAYS)) $(if $(SEEDS),--seeds $(SEEDS))

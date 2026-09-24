@@ -14,6 +14,7 @@ Deliberate shape, from the scenario:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from psycopg import Connection
@@ -23,6 +24,14 @@ from jeve import db, memory
 from jeve.core.clock import DAY, at
 from jeve.core.orgs import ORGS as ORG_SPECS
 from jeve.core.seed import derive_rng
+from jeve.world.economy import (
+    SEAT_PRICE_CENTS,
+    household,
+    household_accounts,
+    recurring,
+    seats_for,
+)
+from jeve.world.flows import WEEKLY_WAGE_CENTS
 
 ROOT_SEED = 20260920
 
@@ -30,10 +39,10 @@ MODULES = (("timetrack", "TimeTrack"), ("invoicing", "Invoicing"), ("pos", "POS"
 
 ORGS = tuple((org.id, org.name, org.kind) for org in ORG_SPECS)
 
-HOUSEHOLD_OPENING_CENTS = 20_000_00
-"""What the town's households have in the bank on day zero: a few days of what
-they are collectively paid. Staff spend from it at the cafe and wages refill it
-(WORLD-0005)."""
+HOUSEHOLD_OPENING_WEEKS = 1.5
+"""What each firm's households have in the bank on day zero, in weeks of that
+firm's wages. One purse per employer (WORLD-0010): the town used to share one,
+so an unpaid engineer's coffee came out of a lawyer's wages."""
 
 # Staff with a full decision surface. Counterparties are generated below.
 STAFF: tuple[tuple[str, str, str], ...] = (
@@ -80,7 +89,7 @@ class SeedSummary:
         return self.staff + self.counterparties
 
 
-def _traits(rng: object, role: str) -> dict[str, float]:
+def traits_for(rng: object) -> dict[str, float]:
     """Per-person parameters. The only thing separating two people in the same
     role, and therefore what the persona-flattening detector tests."""
 
@@ -117,7 +126,7 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
                      subscriptions, tickets, invoices, payments, cafe_sales,
                      decisions, positions, outage_notices,
                      facts, knowledge, episodes, episode_participants,
-                     commitments
+                     commitments, timesheets, rota, escalations
                      RESTART IDENTITY CASCADE
             """
         )
@@ -129,10 +138,24 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         db.executemany(
             conn, "INSERT INTO modules (id, name) VALUES (%s, %s)", list(MODULES)
         )
+        # What each firm has decided lives in `policy` (WORLD-0010). A world
+        # seeded here is under this economy from its first second; a world
+        # that predates it counts missed paydays from its upgrade.
         db.executemany(
             conn,
             "INSERT INTO orgs (id, name, kind, policy) VALUES (%s, %s, %s, %s)",
-            [(oid, name, kind, "{}") for oid, name, kind in ORGS],
+            [
+                (
+                    oid,
+                    name,
+                    kind,
+                    json.dumps(
+                        {"economy_since": 0}
+                        | ({"seats_priced": True} if oid == "tallybird" else {})
+                    ),
+                )
+                for oid, name, kind in ORGS
+            ],
         )
 
         # Accounts. `external` is the outside world: having it as a real
@@ -143,13 +166,8 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         for org_id, _, _ in ORGS:
             for kind in ("cash", "receivable", "payable", "revenue", "expense"):
                 accounts.append((f"{org_id}.{kind}", org_id, kind.title(), kind))
-        # The people who work in the town, as one purse. No org: they are not a
-        # firm, and the dashboard's per-firm cash must not count them.
-        accounts += [
-            ("households.cash", None, "Households: cash", "cash"),
-            ("households.income", None, "Households: wages received", "revenue"),
-            ("households.spending", None, "Households: spending", "expense"),
-        ]
+        # The people who work in the town, one purse per employer.
+        accounts += household_accounts()
         db.executemany(
             conn,
             "INSERT INTO accounts (id, org_id, name, kind) VALUES (%s, %s, %s, %s)",
@@ -164,9 +182,20 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
         ).fetchone()
         assert txn is not None
         entries = [(txn["id"], f"{org}.cash", cents) for org, cents in opening.items()]
-        entries.append((txn["id"], "households.cash", HOUSEHOLD_OPENING_CENTS))
+        savings = {
+            org: int(
+                HOUSEHOLD_OPENING_WEEKS
+                * sum(
+                    WEEKLY_WAGE_CENTS.get(role, 1_000_00)
+                    for staff_org, role, _ in STAFF
+                    if staff_org == org
+                )
+            )
+            for org in opening
+        }
+        entries += [(txn["id"], household(org), c) for org, c in savings.items()]
         entries.append(
-            (txn["id"], "external", -sum(opening.values()) - HOUSEHOLD_OPENING_CENTS)
+            (txn["id"], "external", -sum(opening.values()) - sum(savings.values()))
         )
         db.executemany(
             conn,
@@ -177,13 +206,12 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
 
         # People.
         persons: list[tuple[str, str, str, str, str, str]] = []
-        import json
 
         for index, (org_id, role, name) in enumerate(STAFF):
             rng = derive_rng(root_seed, "staff", index)
             pid = f"{org_id}.{role}.{index}"
             persons.append(
-                (pid, org_id, name, role, "staff", json.dumps(_traits(rng, role)))
+                (pid, org_id, name, role, "staff", json.dumps(traits_for(rng)))
             )
 
         counterparties = 0
@@ -206,7 +234,7 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
                         f"{role.title()} {index:03d}",
                         role,
                         "counterparty",
-                        json.dumps(_traits(rng, role)),
+                        json.dumps(traits_for(rng)),
                     )
                 )
                 counterparties += 1
@@ -239,7 +267,11 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             module = ("invoicing", "timetrack", "invoicing", "pos", "invoicing")[
                 index % 5
             ]
-            subs.append((None, f"tallybird.subscriber.{index}", module, 49_00))
+            person = f"tallybird.subscriber.{index}"
+            # Small firms, paying per seat (WORLD-0010): a hundred at $49 a
+            # month each was a tenth of Tallybird's wage bill.
+            price = SEAT_PRICE_CENTS * seats_for(root_seed, person)
+            subs.append((None, person, module, price))
         db.executemany(
             conn,
             "INSERT INTO subscriptions (org_id, person_id, module_id, monthly_cents) "
@@ -414,10 +446,17 @@ def seed(conn: Connection[DictRow], *, root_seed: int = ROOT_SEED) -> SeedSummar
             (closing, 0, "close.run", org_id, json.dumps({"due": closing}))
             for org_id in ("halloran", "tallybird", "thirdrail")
         ]
+        # And a quarter of an hour before, which of the three waits a day.
+        schedule.append((closing - 15 * 60, 0, "close.plan", "ledgerline", "{}"))
         # Lunch in from the cafe is thought about on Tuesdays and Thursdays.
         schedule += [
             (at(1, 10), 0, "catering.consider", org_id, "{}")
             for org_id in ("halloran", "ledgerline", "tallybird")
+        ]
+        # Rent, stock, tax, households, loans, reviews and hiring (WORLD-0010).
+        schedule += [
+            (due, 0, kind, subject, json.dumps(payload))
+            for due, kind, subject, payload in recurring(at(0, 7))
         ]
         db.executemany(
             conn,

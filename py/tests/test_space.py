@@ -143,14 +143,17 @@ def test_people_are_at_work_when_it_is_open_and_home_when_it_is_not(
         "FROM positions s JOIN persons p ON p.id = s.person_id GROUP BY p.org_id"
     ).fetchall()
     by_org = {str(r["org_id"]): int(r["out"]) for r in rows}
-    assert by_org["thirdrail"] == 6
+    # The early shift: shift lead, the morning barista and the baker. The owner
+    # comes in at eight, the afternoon barista at noon, the weekend part-timer
+    # on Saturday (field report, defect 5).
+    assert by_org["thirdrail"] == 3
     assert by_org["tallybird"] == by_org["halloran"] == by_org["ledgerline"] == 0
 
     advance(conn, engine, until=at(0, 10))
     out = conn.execute(
         "SELECT count(*) AS n FROM positions WHERE zone <> 'home'"
     ).fetchone()
-    assert out is not None and int(out["n"]) == 24
+    assert out is not None and int(out["n"]) == 18 + 4
 
     advance(conn, engine, until=at(1, 7))  # overnight
     out = conn.execute(
@@ -267,7 +270,8 @@ def test_a_conversation_in_the_cafe_reaches_an_invoice(
     """The cascade query from the definition of done: start at a conversation,
     follow `causes` forward, arrive at money. A meeting with a stake is an
     episode (WORLD-0007) and one without is an encounter, so the conversation is
-    whichever the meeting was."""
+    whichever the meeting was. A complaint to someone who cannot fix it
+    reaches the engineers through their relay (WORLD-0012), one step later."""
 
     run(conn, days=5)
     reached = conn.execute(
@@ -276,7 +280,7 @@ def test_a_conversation_in_the_cafe_reaches_an_invoice(
             SELECT seq, kind, 0 AS depth FROM events
             WHERE kind IN ('encounter', 'episode.closed') AND seq IN (
                 SELECT unnest(causes) FROM events
-                WHERE kind = 'ticket.escalated'
+                WHERE kind IN ('ticket.escalated', 'escalation.relayed')
                   AND payload->>'module_id' = 'invoicing')
             UNION
             SELECT e.seq, e.kind, d.depth + 1
@@ -287,9 +291,9 @@ def test_a_conversation_in_the_cafe_reaches_an_invoice(
     ).fetchall()
     depth = {str(r["kind"]): int(r["depth"]) for r in reached}
     assert 0 in (depth.get("encounter"), depth.get("episode.closed"))
-    assert depth["ticket.escalated"] == 1
-    assert depth["incident.ended"] == 2
-    assert depth["invoice.issued"] == 3
+    assert depth["ticket.escalated"] in (1, 2)
+    assert depth["incident.ended"] == depth["ticket.escalated"] + 1
+    assert depth["invoice.issued"] == depth["incident.ended"] + 1
 
 
 def test_an_outage_is_escalated_at_most_once(conn: Connection[DictRow]) -> None:
@@ -327,3 +331,85 @@ def test_only_someone_affected_can_escalate_and_only_to_the_vendor(
             (row["by_org"], row["m"]),
         ).fetchone()
         assert subscribed is not None, row
+
+
+# -- decision points (WORLD-0009) ----------------------------------------------
+
+
+def test_the_weekend_part_timer_works_the_weekend(conn: Connection[DictRow]) -> None:
+    seed(conn, root_seed=ROOT_SEED)
+    engine = Engine(conn, RulesPolicy(ROOT_SEED), root_seed=ROOT_SEED)
+    advance(conn, engine, until=at(5, 10))
+    weekday = conn.execute(
+        "SELECT count(*) AS n FROM events WHERE kind = 'agent.moved' "
+        "AND actor_id = 'thirdrail.weekend.23' AND sim_time < %s",
+        (at(5),),
+    ).fetchone()
+    assert weekday is not None and int(weekday["n"]) == 0
+    here = conn.execute(
+        "SELECT zone FROM positions WHERE person_id = 'thirdrail.weekend.23'"
+    ).fetchone()
+    assert here is not None and here["zone"] == "cafe"
+    conn.rollback()
+
+
+def test_nobody_is_asked_to_stay_at_their_desk_every_quarter_hour(
+    conn: Connection[DictRow],
+) -> None:
+    """5,331 answers per office worker and 8,783 per member of cafe staff in the
+    field report, most of them "stay". Somebody alone at their own desk with
+    nothing new is asked on the hour and through lunch; the cafe's staff alone
+    behind their counter are not asked at all."""
+
+    run(conn, days=2)
+    rows = conn.execute(
+        "SELECT p.org_id, count(*) AS n FROM decisions d JOIN persons p "
+        "ON p.id = d.person_id WHERE d.question_set = 'agent.tick' "
+        "GROUP BY p.org_id"
+    ).fetchall()
+    asked = {str(r["org_id"]): int(r["n"]) for r in rows}
+    # Two days of office hours are 64 quarter hours per office worker.
+    office_people = {"tallybird": 8, "halloran": 5, "ledgerline": 5}
+    for org, people in office_people.items():
+        assert asked[org] < 0.7 * 64 * people, (org, asked[org])
+        # Arriving, the hours, lunch: at least twelve a day each.
+        assert asked[org] >= 2 * 12 * people, (org, asked[org])
+    # The cafe's staff are asked only when somebody from another firm is in, or
+    # when they are away from the counter: not before the offices open.
+    from jeve.core.orgs import shift_for
+    from jeve.world.seed_world import STAFF
+
+    nth: dict[str, int] = {}
+    on_shift = 0
+    for org, role, _ in STAFF:
+        if org != "thirdrail":
+            continue
+        shift = shift_for(org, role, nth.get(role, 0))
+        nth[role] = nth.get(role, 0) + 1
+        on_shift += sum(
+            (shift.end - shift.start) // 900 for day in (0, 1) if day in shift.days
+        )
+    assert asked["thirdrail"] < 0.6 * on_shift, (asked["thirdrail"], on_shift)
+    before_nine = conn.execute(
+        "SELECT count(*) AS n FROM decisions d JOIN persons p ON p.id = d.person_id "
+        "WHERE d.question_set = 'agent.tick' AND p.org_id = 'thirdrail' "
+        "AND d.sim_time % 86400 < 9 * 3600"
+    ).fetchone()
+    # Arrivals only: nobody from another firm is about before nine.
+    assert before_nine is not None and int(before_nine["n"]) <= 2 * 4
+
+
+def test_lunch_still_empties_the_offices(conn: Connection[DictRow]) -> None:
+    """The lunch curve (3% of office staff in the cafe mid-morning, 31% at noon)
+    is what asking less often must not flatten."""
+
+    run(conn, days=2)
+    moves = conn.execute(
+        "SELECT (sim_time % 86400) / 3600 AS hour, count(*) AS n FROM events "
+        "WHERE kind = 'agent.moved' AND payload->>'to_zone' = 'cafe' "
+        "AND org_id <> 'thirdrail' GROUP BY 1"
+    ).fetchall()
+    by_hour = {int(r["hour"]): int(r["n"]) for r in moves}
+    lunch = by_hour.get(12, 0) + by_hour.get(13, 0)
+    morning = by_hour.get(10, 0) + by_hour.get(11, 0)
+    assert lunch > 2 * max(1, morning), by_hour

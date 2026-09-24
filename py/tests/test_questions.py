@@ -7,6 +7,8 @@ are checked where a broken set costs a test run rather than a night.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from jeve.decide import gates
@@ -22,7 +24,13 @@ from jeve.llm.protocol import Choice, Score
 # One context per kind that gets past every code gate, so a question is asked.
 ASKING: dict[str, dict[str, object]] = {
     # Told by somebody who saw it, so the provenance words are in the request.
-    "file.ticket": {"module_down": True, "already_open": False, "heard_hops": 1},
+    "file.ticket": {
+        "module_down": True,
+        "already_open": False,
+        "module": "invoicing",
+        "month_end": True,
+        "heard_hops": 1,
+    },
     "ticket.triage": {"subject": "exports fail", "module_down": True, "backlog": 12},
     "ticket.answer": {"backlog": 12},
     "payment.timing": {"days_until_due": -4, "can_afford": True, "runway_days": 9},
@@ -36,7 +44,12 @@ ASKING: dict[str, dict[str, object]] = {
         "escalated": True,
         "blocked_billing": True,
     },
-    "close.signoff": {"client": "halloran", "invoices_stuck": True, "overdue_bills": 3},
+    "close.signoff": {
+        "client": "halloran",
+        "invoices_stuck": True,
+        "overdue_bills": 3,
+        "attempt": 2,
+    },
     "catering.order": {"org": "tallybird", "can_afford": True, "team_mood": 1.2},
     "payroll.release": {
         "employer": "thirdrail",
@@ -73,6 +86,78 @@ ASKING: dict[str, dict[str, object]] = {
         "tension": 1,
         "tellable_topic": "price_rise",
     },
+    "leave.consider": {"org": "tallybird", "weeks_behind": 2},
+    "eng.allocation": {
+        "debt_level": 1.3,
+        "incidents_last_week": 2,
+        "backlog": 25,
+        "churned_last_month": 1,
+        "runway_days": 30,
+    },
+    "deploy.decision": {"debt_level": 1.0, "incidents_last_week": 0},
+    "vendor.trust": {
+        "trust": 3,
+        "module": "invoicing",
+        "minutes": 300,
+        "reported": True,
+        "answered": False,
+        "escalated": False,
+        "repeat": True,
+        "tried_another_tool": True,
+    },
+    "subscription.renew": {
+        "trust": 1,
+        "heard_bad_news": True,
+        "price_rise": True,
+        "offered_discount": True,
+        "relies_on_it": True,
+    },
+    "retention.offer": {
+        "trust": 1,
+        "large": True,
+        "runway_days": 40,
+        "heard_bad_news": True,
+    },
+    "invoice.dispute": {
+        "issuer": "halloran",
+        "large": True,
+        "price_rise": True,
+        "firm": False,
+    },
+    "dispute.resolution": {
+        "org": "halloran",
+        "large": True,
+        "runway_days": 40,
+        "client_firm": False,
+    },
+    "escalation.handoff": {"by_phone": True, "backlog": 12},
+    "time.log": {"pending_days": 3, "timetrack_down": True, "on_paper": True},
+    "cover.shift": {"absent_role": "barista", "runway_days": 20},
+    "close.order": {
+        "clients": {
+            "halloran": {"stuck": False, "overdue_bills": 0, "fee_rank": 0},
+            "tallybird": {"stuck": True, "overdue_bills": 2, "fee_rank": 1},
+            "thirdrail": {"stuck": False, "overdue_bills": 0, "fee_rank": 2},
+        }
+    },
+    "supplier.order": {"trend": 1.3, "pos_down": False, "runway_days": 20},
+    "catering.accept": {"size": "large", "short_staffed": True},
+    "founder.review": {
+        "org": "tallybird",
+        "runway_days": 10,
+        "money_in": 100,
+        "money_out": 250,
+        "overdue_to_them": 50,
+        "weekly_outgoings": 100,
+        "payroll_held": True,
+        "raised_recently": True,
+        "has_loan": True,
+    },
+    "hire.decision": {
+        "org": "ledgerline",
+        "vacancy": "staff_accountant",
+        "runway_days": 60,
+    },
     "agent.tick": {
         "org": "halloran",
         "here": "cafe",
@@ -82,6 +167,9 @@ ASKING: dict[str, dict[str, object]] = {
             {"id": "thirdrail.barista.20", "org": "thirdrail", "role": "barista"},
         ],
         "outage": "invoicing",
+        "mind": "outage:invoicing",
+        "dealings": {"thirdrail": "they_owe"},
+        "horizon": "tick",
         "can_raise": True,
     },
 }
@@ -228,11 +316,14 @@ def test_people_in_the_room_are_described_not_named() -> None:
     prepared = _prepare("agent.tick")
     assert prepared.state is not None
     here = prepared.state["who_is_here"]
+    # As firms, most relevant first: the vendor to somebody whose software is
+    # down, then a firm with a bill between it and theirs (report rec. 4).
     assert here == {
-        "person_a": "a sre from the software company",
-        "person_b": "a barista from the cafe",
+        "the_software_company": "one person from the software company",
+        "the_cafe": "one person who works at the cafe; their firm owes that firm money",
     }
     assert "tallybird.sre.4" not in str(prepared.state)
+    assert "thirdrail" not in str(prepared.state)
     keys = [ask.key for ask in prepared.asks]
     assert keys == [
         "next_zone",
@@ -253,6 +344,197 @@ def test_alone_there_is_nobody_to_ask_about() -> None:
 def test_raising_the_outage_is_only_asked_of_someone_who_can() -> None:
     facts = {**ASKING["agent.tick"], "can_raise": False}
     assert "raise_outage" not in [a.key for a in _prepare("agent.tick", facts).asks]
+
+
+def test_a_room_is_firms_not_a_list_of_people() -> None:
+    """The roster was the bill: every person present, in load order, so two
+    rooms differing only in which barista stood where never shared a call.
+    Now the room is at most three firms, and who in a firm is code's to pick."""
+
+    crowd = [
+        {"id": f"thirdrail.barista.{i}", "org": "thirdrail", "role": "barista"}
+        for i in range(3)
+    ] + [
+        {"id": "ledgerline.principal.13", "org": "ledgerline", "role": "principal"},
+        {"id": "halloran.partner.8", "org": "halloran", "role": "partner"},
+        {"id": "halloran.paralegal.11", "org": "halloran", "role": "paralegal"},
+        {"id": "tallybird.support.6", "org": "tallybird", "role": "support"},
+    ]
+    facts = {**ASKING["agent.tick"], "present": crowd, "dealings": {}}
+    shuffled = {**facts, "present": list(reversed(crowd))}
+    first, second = _prepare("agent.tick", facts), _prepare("agent.tick", shuffled)
+    assert first == second
+    assert first.state is not None
+    here = first.state["who_is_here"]
+    assert isinstance(here, dict) and len(here) == 3
+    assert next(iter(here)) == "the_software_company"
+    with_whom = next(a for a in first.asks if a.key == "with_whom").question
+    assert isinstance(with_whom, Choice)
+    assert list(with_whom.criteria) == [*here, "other"]
+
+
+def test_code_picks_the_person_in_the_chosen_firm() -> None:
+    from jeve.decide.questions import Resolved
+
+    crowd = [
+        {"id": f"thirdrail.barista.{i}", "org": "thirdrail", "role": "barista"}
+        for i in range(3)
+    ]
+    ctx = DecisionContext(
+        person_id="p",
+        role="partner",
+        sim_time=12 * 3600,
+        kind="agent.tick",
+        facts={
+            "org": "halloran",
+            "here": "cafe",
+            "own_zone": "law_office",
+            "present": crowd,
+        },
+    )
+    got = {
+        "next_zone": Resolved("stay", {}, None),
+        "mood": Resolved("2", {}, None),
+        "interact": Resolved(True, {}, 0.1),
+        "with_whom": Resolved("the_cafe", {}, 0.1),
+        "topic": Resolved("small_talk", {}, 0.1),
+    }
+    interpret = QUESTION_SETS["agent.tick"].interpret
+
+    def always(roll: float) -> Callable[[], float]:
+        return lambda: roll
+
+    picked = {
+        interpret(ctx, got, always(roll)).chosen["with"] for roll in (0.0, 0.5, 0.99)
+    }
+    assert picked == {p["id"] for p in crowd}
+
+
+def test_every_role_is_a_noun_phrase_with_the_right_article() -> None:
+    """The report quoted Jev being sent "a engineer", "a sre" and "a weekend at
+    the cafe" (defect 5)."""
+
+    from jeve.core.orgs import ORGS
+    from jeve.decide.questions import role_words
+    from jeve.world.seed_world import STAFF
+
+    roles = {role for _, role, _ in STAFF} | {
+        role for org in ORGS for role in org.headcount
+    }
+    for role in sorted(roles):
+        words = role_words(role)
+        article, noun = words.split(" ", 1)
+        assert article in ("a", "an", "the"), words
+        assert "_" not in noun, words
+        if article == "a":
+            assert noun[0] not in "aeiou", words
+        if article == "an":
+            assert noun[0] in "aeiou" or noun.startswith("IT"), words
+    assert role_words("weekend") == "a weekend part-timer"
+    assert role_words("sre") == "a site reliability engineer"
+
+
+def test_the_cafe_is_not_somewhere_the_cafe_walks_over_to() -> None:
+    facts: dict[str, object] = {
+        "org": "thirdrail",
+        "here": "cafe",
+        "own_zone": "cafe",
+        "present": [],
+        "horizon": "tick",
+    }
+    zone = _prepare("agent.tick", facts).asks[0].question
+    assert isinstance(zone, Choice)
+    assert "cafe" not in zone.criteria
+    assert "software_office" in zone.criteria
+
+
+def test_a_desk_asked_on_the_hour_is_asked_about_the_hour() -> None:
+    facts: dict[str, object] = {
+        "org": "halloran",
+        "here": "law_office",
+        "own_zone": "law_office",
+        "present": [],
+        "horizon": "hour",
+    }
+    zone = _prepare("agent.tick", facts).asks[0].question
+    assert isinstance(zone, Choice)
+    assert zone.instructions == "Where does this person go in the next hour?"
+    quarter = _prepare("agent.tick", {**facts, "horizon": "tick"}).asks[0].question
+    assert isinstance(quarter, Choice)
+    assert "fifteen minutes" in quarter.instructions
+
+
+def test_money_reaches_what_is_on_somebodys_mind() -> None:
+    """Findings 4 and 7: four values of `on_their_mind`, all about the outage."""
+
+    from jeve.decide.questions import MIND_WORDS, mind_words
+
+    said = {mind_words(key, None) for key in MIND_WORDS}
+    assert len(said) == len(MIND_WORDS)
+    assert "wages" in mind_words("unpaid", None)
+    assert mind_words("outage:pos", None) == (
+        "The pos software has been down and it is disrupting the day."
+    )
+    for key in ("unpaid", "payday", "short", "nothing"):
+        facts = {**ASKING["agent.tick"], "mind": key, "outage": None}
+        prepared = _prepare("agent.tick", facts)
+        assert prepared.state is not None
+        assert prepared.state["on_their_mind"] == MIND_WORDS[key]
+
+
+def test_catering_sees_the_money_and_a_held_payroll_orders_nothing() -> None:
+    """The founder of an insolvent firm ordered $420 of lunch: the question
+    said the account was comfortable whatever it held (defect 8)."""
+
+    from jeve.decide.questions import funds_words
+
+    assert funds_words(90) != funds_words(30) != funds_words(5)
+    tight = _prepare("catering.order", {**ASKING["catering.order"], "runway_days": 5})
+    assert tight.state is not None and "tight" in str(tight.state["funds"])
+    held = DecisionContext(
+        person_id="p",
+        role="founder",
+        sim_time=0,
+        kind="catering.order",
+        facts={"org": "tallybird", "can_afford": True, "payroll_held": True},
+    )
+    assert gates.settle(held) == {"order": "none"}
+
+
+def test_the_same_outage_offers_every_way_of_working_around_it() -> None:
+    """The scenario's behaviour #5, "the most direct test of the research
+    question": one request asks both whether to report it and how to get the
+    work done meanwhile (DECIDE-0001)."""
+
+    prepared = _prepare("file.ticket")
+    assert [ask.key for ask in prepared.asks] == ["file", "workaround"]
+    workaround = prepared.asks[1].question
+    assert isinstance(workaround, Choice)
+    assert set(workaround.criteria) >= {"wait", "by_hand", "call_account_manager"}
+    assert prepared.state is not None
+    assert "invoices" in str(prepared.state["what_it_stops"])
+    assert "month-end" in str(prepared.state["calendar"])
+    quiet = _prepare("file.ticket", {"module_down": True, "module": "pos"})
+    assert quiet.state is not None and "calendar" not in quiet.state
+
+
+def test_a_late_close_asks_what_to_do_about_it_only_when_it_is_late() -> None:
+    late = _prepare("close.signoff")
+    assert [ask.key for ask in late.asks] == ["readiness", "if_not_ready"]
+    on_time = _prepare(
+        "close.signoff", {**ASKING["close.signoff"], "invoices_stuck": False}
+    )
+    assert [ask.key for ask in on_time.asks] == ["readiness"]
+
+
+def test_news_about_a_firm_names_the_firm() -> None:
+    from jeve.decide.questions import TELLABLE_WORDS, tellable_words
+
+    # The two sentences recorded before WORLD-0011 are unchanged.
+    assert tellable_words("price_rise", "tallybird") == TELLABLE_WORDS["price_rise"]
+    assert tellable_words("outage", None) == TELLABLE_WORDS["outage"]
+    assert "the software company" in tellable_words("insolvency", "tallybird")
+    assert "the cafe" in tellable_words("payroll_late", "thirdrail")
 
 
 # -- WORLD-0008: what the words now carry ------------------------------------------
@@ -277,7 +559,7 @@ def test_the_second_round_is_a_different_question() -> None:
     assert "just_now" not in first and "how_long" not in first
     assert second["just_now"] == {
         "this_person": "set out their own side of it",
-        "person_a": "pushed for it to be dealt with now",
+        "the_accounting_firm": "pushed for it to be dealt with now",
     }
     assert first != second
     longer = _state("episode.round", _round(rounds_done=2))

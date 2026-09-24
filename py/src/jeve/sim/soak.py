@@ -32,9 +32,10 @@ from psycopg.rows import DictRow, dict_row
 
 from jeve import db
 from jeve.config import find_repo_root
-from jeve.core.clock import DAY, SimTime
+from jeve.core.clock import DAY, HOUR, SimTime
 from jeve.core.orgs import ORGS
 from jeve.sim import daemon
+from jeve.world.engine import FRICTION
 from jeve.world.seed_world import ROOT_SEED, seed
 
 REPORTS = {
@@ -139,23 +140,65 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
         )
     )
 
-    # Wages arrive somewhere and come back as demand.
+    # Wages arrive somewhere and come back as demand. Households are accounts
+    # without an org, one set per employer (WORLD-0010).
     wages = -_one(
         conn,
-        "SELECT COALESCE(sum(amount_cents),0) FROM ledger_entries "
-        "WHERE account_id = 'households.income'",
+        "SELECT COALESCE(sum(e.amount_cents),0) FROM ledger_entries e "
+        "JOIN accounts a ON a.id = e.account_id "
+        "WHERE a.org_id IS NULL AND a.kind = 'revenue'",
     )
     spent = _one(
         conn,
-        "SELECT COALESCE(sum(amount_cents),0) FROM ledger_entries "
-        "WHERE account_id = 'households.spending'",
+        "SELECT COALESCE(sum(e.amount_cents),0) FROM ledger_entries e "
+        "JOIN accounts a ON a.id = e.account_id "
+        "WHERE a.org_id IS NULL AND a.kind = 'expense'",
     )
+    # The field report's households took in $759k and spent $10.6k: a sink.
     out.append(
         Check(
             "wages come back as demand",
-            days < 5 or (wages > 0 and spent > 0),
-            f"households were paid ${wages / 100:,.0f} and spent ${spent / 100:,.0f} "
-            "at the cafe",
+            days < 14 or (wages > 0 and spent >= wages // 2),
+            f"households were paid ${wages / 100:,.0f} and spent ${spent / 100:,.0f}",
+        )
+    )
+
+    # Nobody spends money they do not have: every cash account, firm or
+    # household, stays at or above zero at every moment of the run.
+    overdrawn = [
+        str(r["account_id"])
+        for r in conn.execute(
+            "SELECT account_id FROM (SELECT e.account_id, sum(e.amount_cents) OVER "
+            "(PARTITION BY e.account_id ORDER BY t.sim_time, e.id) AS running "
+            "FROM ledger_entries e JOIN ledger_txns t ON t.id = e.txn_id "
+            "JOIN accounts a ON a.id = e.account_id WHERE a.kind = 'cash') s "
+            "GROUP BY account_id HAVING min(running) < 0 ORDER BY 1"
+        ).fetchall()
+    ]
+    out.append(
+        Check(
+            "no cash account is ever overdrawn",
+            not overdrawn,
+            "overdrawn: " + ", ".join(overdrawn) if overdrawn else "none",
+        )
+    )
+
+    # A warning is read (WORLD-0010). It used to be emitted every week and read
+    # by nothing (field report, finding 2): the head of the firm looks within
+    # a week, or had just looked.
+    unread = _one(
+        conn,
+        "SELECT count(*) FROM events w WHERE w.kind = 'insolvency.warning' "
+        "AND w.sim_time < %s AND NOT EXISTS (SELECT 1 FROM events r "
+        "  WHERE r.kind = 'firm.reviewed' AND r.org_id = w.org_id "
+        "  AND r.sim_time BETWEEN w.sim_time - %s AND w.sim_time + %s)",
+        (end - 7 * DAY, 7 * DAY, 7 * DAY),
+    )
+    out.append(
+        Check(
+            "an insolvency warning is answered by the head of the firm",
+            unread == 0,
+            f"{unread} warning(s) with no review within a week",
         )
     )
 
@@ -222,7 +265,81 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
             ),
         )
     )
+
+    # Somebody, somewhere, falls out with somebody every week. The golden field
+    # report counted no dispute, write-off or refusal in a month (WORLD-0011).
+    quiet = [
+        week + 1
+        for week in range(1, days // 7)
+        if _one(
+            conn,
+            "SELECT count(*) FROM events WHERE kind = ANY(%s) "
+            "AND sim_time >= %s AND sim_time < %s",
+            (list(FRICTION), week * 7 * DAY, (week + 1) * 7 * DAY),
+        )
+        == 0
+    ]
+    out.append(
+        Check(
+            "every week has friction in it",
+            not quiet,
+            "weeks with none: " + ", ".join(map(str, quiet)) if quiet else "every week",
+        )
+    )
+
+    # A complaint passed to support or the account manager is decided on, not
+    # parked: a handoff still queued an hour after it was due is one lost
+    # (WORLD-0012).
+    # Measured from the last tick that ran, not the end of the horizon: a
+    # complaint made at the last open tick is due after it, and is not lost.
+    parked = _one(
+        conn,
+        "SELECT count(*) FROM scheduled WHERE kind = 'escalation.handoff' "
+        "AND due_sim_time < (SELECT max(sim_time) FROM events) - %s",
+        (HOUR,),
+    )
+    handed = _one(
+        conn,
+        "SELECT count(*) FROM decisions WHERE question_set = 'escalation.handoff'",
+    )
+    out.append(
+        Check(
+            "an escalation handed on is decided within the hour",
+            parked == 0,
+            f"{handed} handoff(s) decided, {parked} still queued past due",
+        )
+    )
+
+    # The loops that run on a calendar decide something every time they are
+    # due. A job that never reaches its question is a loop that is not there.
+    silent = [
+        kind
+        for kind in SCHEDULED_KINDS
+        if _one(conn, "SELECT count(*) FROM decisions WHERE question_set = %s", (kind,))
+        == 0
+    ]
+    out.append(
+        Check(
+            "every loop on a calendar decides something",
+            days < 14 or not silent,
+            "silent: " + ", ".join(silent) if silent else ", ".join(SCHEDULED_KINDS),
+        )
+    )
     return out
+
+
+SCHEDULED_KINDS: tuple[str, ...] = (
+    # Asked on their own calendar, whatever else happens (WORLD-0010, WORLD-0011).
+    "eng.allocation",
+    "deploy.decision",
+    "time.log",
+    "supplier.order",
+    "founder.review",
+    "invoice.dispute",
+    "payment.timing",
+    "payroll.release",
+    "close.order",
+)
 
 
 # -- measures: reported, never asserted ------------------------------------------
@@ -237,7 +354,7 @@ def _cash_by_week(conn: Connection[DictRow], days: int) -> list[str]:
         "|---|" + "---:|" * len(weeks),
     ]
     for account, label in [(f"{o.id}.cash", o.id) for o in ORGS] + [
-        ("households.cash", "households")
+        ("households.%.cash", "households")
     ]:
         cells = []
         for day in weeks:
@@ -245,7 +362,7 @@ def _cash_by_week(conn: Connection[DictRow], days: int) -> list[str]:
                 conn,
                 "SELECT COALESCE(sum(e.amount_cents),0) FROM ledger_entries e "
                 "JOIN ledger_txns t ON t.id = e.txn_id "
-                "WHERE e.account_id = %s AND t.sim_time <= %s",
+                "WHERE e.account_id LIKE %s AND t.sim_time <= %s",
                 (account, day * DAY),
             )
             cells.append(f"${cents / 100:,.0f}")
@@ -347,10 +464,20 @@ def compare(with_outage: Connection[DictRow], calm: Connection[DictRow]) -> list
     def invoices(
         conn: Connection[DictRow],
     ) -> dict[tuple[str, str, int], tuple[int, int]]:
+        # The law firm bills the hours it logged (WORLD-0011), and logging is
+        # behaviour, which the counterfactual is allowed to change. What is
+        # still a draw about the client and the month is everyone else's work.
+        # The work as drawn: a firm may have raised its prices, or discounted
+        # a disputed bill since, and both of those are behaviour too.
         rows = conn.execute(
-            "SELECT from_org_id, COALESCE(to_person_id, to_org_id) AS payer, "
-            " amount_cents, issued_sim FROM invoices WHERE kind = 'services' "
-            "AND issued_sim >= 0 AND to_person_id IS NOT NULL ORDER BY id"
+            "SELECT i.from_org_id, COALESCE(i.to_person_id, i.to_org_id) AS payer, "
+            " COALESCE((e.payload->>'work_cents')::bigint, "
+            "   (e.payload->>'amount_cents')::bigint, i.amount_cents) "
+            "   AS amount_cents, i.issued_sim "
+            "FROM invoices i LEFT JOIN events e ON e.seq = i.issued_seq "
+            "WHERE i.kind = 'services' AND i.issued_sim >= 0 "
+            "AND i.to_person_id IS NOT NULL AND i.from_org_id <> 'halloran' "
+            "ORDER BY i.id"
         ).fetchall()
         seen: dict[tuple[str, str, int], tuple[int, int]] = {}
         for r in rows:

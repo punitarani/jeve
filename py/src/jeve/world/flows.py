@@ -22,9 +22,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from jeve import memory
 from jeve.core.clock import DAY, TICK, SimTime, next_office_open
+from jeve.core.seed import derive_rng
 from jeve.decide.policy import DecisionContext
-from jeve.world import scheduler
+from jeve.world import economy, scheduler
 
 if TYPE_CHECKING:
     from jeve.world.engine import Engine, TickReport
@@ -45,13 +47,57 @@ WEEKLY_WAGE_CENTS: dict[str, int] = {
 CREDIT_SHARE: dict[str, float] = {"none": 0.0, "partial": 0.25, "full_month": 1.0}
 
 
-def _person(engine: Engine, role: str, org: str) -> dict[str, Any] | None:
+def weekly_wages(engine: Engine, org_id: str) -> int:
+    """This week's wage bill: everyone on the payroll, at their role's rate."""
+
+    staff = engine.conn.execute(
+        "SELECT role FROM persons WHERE org_id = %s AND kind = 'staff' "
+        "AND status <> 'left'",
+        (org_id,),
+    ).fetchall()
+    return sum(WEEKLY_WAGE_CENTS.get(str(row["role"]), 1_000_00) for row in staff)
+
+
+def payroll_held(engine: Engine, org_id: str) -> bool:
+    """Is this firm's payroll waiting on a retry right now?"""
+
     row = engine.conn.execute(
-        "SELECT id, traits FROM persons WHERE org_id = %s AND role = %s "
-        "ORDER BY id LIMIT 1",
-        (org, role),
+        "SELECT 1 FROM scheduled WHERE kind = 'payroll.run' AND subject_id = %s "
+        "AND payload ? 'held' LIMIT 1",
+        (org_id,),
+    ).fetchone()
+    return row is not None
+
+
+def weekly_outgoings(engine: Engine, org_id: str) -> int:
+    """What a week costs a firm to stay open: wages, and rent, stock and
+    interest (WORLD-0010)."""
+
+    return weekly_wages(engine, org_id) + economy.weekly_fixed(engine, org_id)
+
+
+def _person(engine: Engine, role: str, org: str) -> dict[str, Any] | None:
+    """Whoever does this job at this firm, or whoever covers it now that they
+    have gone (WORLD-0010). A job with nobody in it used to stop its flow for
+    ever without a word: no payroll clerk, no payroll, for the whole town."""
+
+    roles = [role, *COVER.get(role, ())]
+    row = engine.conn.execute(
+        "SELECT id, role, traits FROM persons WHERE org_id = %s AND kind = 'staff' "
+        f"AND status <> 'left' AND role = ANY(%s) AND {economy.AT_WORK} "
+        "ORDER BY array_position(%s::text[], role), id LIMIT 1",
+        (org, roles, roles),
     ).fetchone()
     return dict(row) if row else None
+
+
+COVER: dict[str, tuple[str, ...]] = {
+    "payroll": ("client_admin", "staff_accountant", "principal"),
+    "senior_accountant": ("staff_accountant", "principal"),
+    "staff_accountant": ("senior_accountant", "principal"),
+    "account_manager": ("support_lead", "founder"),
+}
+"""Who covers a job whose holder has left."""
 
 
 # -- flow 7: service credits after an outage ---------------------------------
@@ -175,17 +221,35 @@ def payroll(
 ) -> None:
     """Friday's wages. Ledgerline runs payroll for every firm in town."""
 
-    clerk = _person(engine, "payroll", "ledgerline")
+    if economy.failed(engine, org_id):
+        return
+    # Ledgerline runs everybody's payroll; if Ledgerline cannot, the firm runs
+    # its own rather than nobody being paid again.
+    clerk = (
+        None
+        if economy.failed(engine, "ledgerline")
+        else _person(engine, "payroll", "ledgerline")
+    )
+    if clerk is None:
+        payer = engine.payer_of(org_id)
+        clerk = dict(payer) if payer is not None else None
     staff = engine.conn.execute(
-        "SELECT role FROM persons WHERE org_id = %s AND kind = 'staff'", (org_id,)
+        "SELECT role FROM persons WHERE org_id = %s AND kind = 'staff' "
+        "AND status <> 'left'",
+        (org_id,),
     ).fetchall()
-    total = sum(WEEKLY_WAGE_CENTS.get(str(row["role"]), 1_000_00) for row in staff)
+    total = weekly_wages(engine, org_id)
     if clerk is None or total <= 0:
         return
 
     cash = engine.cash_of(f"{org_id}.cash")
-    if cash < 2 * total:
-        _warn_of_insolvency(engine, report, org_id, cash=cash, weekly_wages=total)
+    if cash < 2 * total and not payload.get("held"):
+        # Once per payday, not per retry. The warning used to be read by
+        # nothing (field report, finding 2); now the head of the firm looks.
+        warning = _warn_of_insolvency(
+            engine, report, org_id, cash=cash, weekly_wages=total
+        )
+        economy.request_review(engine, report, org_id, warning)
 
     # Timesheets come out of TimeTrack, for the firms that use it.
     uses_timetrack = engine.conn.execute(
@@ -199,6 +263,9 @@ def payroll(
             "SELECT cause_event_seq FROM incidents WHERE module_id = 'timetrack' "
             "AND ended_sim IS NULL ORDER BY id DESC LIMIT 1"
         ).fetchone()
+    # The employer kept this week's hours on paper while TimeTrack was down
+    # (WORLD-0011): the clerk can see them, and they must be reconciled later.
+    on_paper = outage is not None and engine.by_hand(org_id, "timetrack")
 
     made = engine.decide(
         report,
@@ -212,6 +279,7 @@ def payroll(
                 "can_afford": cash >= total,
                 "cash_multiple": cash / total,
                 "timesheets_available": outage is None,
+                "on_paper": on_paper,
                 "held_before": bool(payload.get("held")),
             },
             traits=dict(clerk["traits"] or {}),
@@ -242,6 +310,41 @@ def payroll(
                     "decided_by": made.source,
                 },
             )
+        missed = int(payload.get("missed", 0))
+        if reason == "insufficient_cash" and not payload.get("held"):
+            # That wages are late is news, and the staff are the first to know
+            # (WORLD-0011). It travels from there.
+            fact = memory.Fact.payroll_late(org_id)
+            memory.record_fact(
+                engine.conn, fact, sim_time=report.sim_time, seq=held_seq
+            )
+            memory.revive(engine.conn, fact.id)
+            for person in engine.conn.execute(
+                "SELECT id FROM persons WHERE org_id = %s AND kind = 'staff' "
+                "AND status <> 'left' ORDER BY id",
+                (org_id,),
+            ).fetchall():
+                memory.learn(
+                    engine.conn,
+                    str(person["id"]),
+                    fact.id,
+                    sim_time=report.sim_time,
+                    seq=held_seq,
+                )
+        if reason == "insufficient_cash":
+            # Paydays gone by unpaid, counted from this payday — or from when
+            # the world came under WORLD-0010, for one that predates it.
+            since = max(
+                due, int(economy.policy(engine, org_id).get("economy_since", due))
+            )
+            behind = max(0, report.sim_time - since) // economy.WEEK + 1
+            if behind > missed:
+                missed = behind
+                economy.missed_payday(
+                    engine, report, org_id, weeks_behind=behind, held_seq=int(held_seq)
+                )
+                if economy.failed(engine, org_id):
+                    return
         # Hours come back when the software does, so look again next tick. Cash
         # does not appear in fifteen minutes; look again tomorrow.
         retry = DAY if reason == "insufficient_cash" else TICK
@@ -249,7 +352,7 @@ def payroll(
             report.sim_time + retry,
             "payroll.run",
             org_id,
-            {"held": int(held_seq), "due": due},
+            {"held": int(held_seq), "due": due, "missed": missed},
         )
         return
 
@@ -276,6 +379,15 @@ def payroll(
             "decided_by": made.source,
         },
     )
+    # Wages are paid: late wages are no longer news, and a firm with a
+    # couple of paydays in hand is no longer short.
+    memory.make_stale(
+        engine.conn, memory.Fact.payroll_late(org_id).id, sim_time=report.sim_time
+    )
+    if cash - total >= 2 * total:
+        memory.make_stale(
+            engine.conn, memory.Fact.insolvency(org_id).id, sim_time=report.sim_time
+        )
     # Four legs: the firm's cost, and the households' income. Wages used to
     # leave the firm and arrive nowhere, so nothing anyone earned was ever
     # spent, and a late payday could not reach the cafe's till.
@@ -285,8 +397,8 @@ def payroll(
         [
             (f"{org_id}.cash", -total),
             (f"{org_id}.expense", total),
-            ("households.cash", total),
-            ("households.income", -total),
+            (economy.household(org_id), total),
+            (economy.household(org_id, "income"), -total),
         ],
         seq,
     )
@@ -295,7 +407,7 @@ def payroll(
 
 def _warn_of_insolvency(
     engine: Engine, report: TickReport, org_id: str, *, cash: int, weekly_wages: int
-) -> None:
+) -> int:
     """Less than two paydays in the bank: say so, and say why.
 
     The soak does not require a firm to survive — that would be tuning. It
@@ -327,7 +439,7 @@ def _warn_of_insolvency(
         cause = "spending_exceeds_income"
     else:
         cause = "thin_reserves"
-    engine.emit(
+    seq = engine.emit(
         report,
         "insolvency.warning",
         org_id=org_id,
@@ -342,6 +454,15 @@ def _warn_of_insolvency(
             "cause": cause,
         },
     )
+    # Whoever runs the firm, and whoever pays its bills, know it is short; the
+    # news travels from them (WORLD-0011).
+    fact = memory.Fact.insolvency(org_id)
+    memory.record_fact(engine.conn, fact, sim_time=report.sim_time, seq=seq)
+    memory.revive(engine.conn, fact.id)
+    knowers = [economy.head_of(engine, org_id), engine.payer_of(org_id)]
+    for person in sorted({str(k["id"]) for k in knowers if k is not None}):
+        memory.learn(engine.conn, person, fact.id, sim_time=report.sim_time, seq=seq)
+    return seq
 
 
 # -- flow 9: the monthly close -----------------------------------------------
@@ -352,6 +473,116 @@ CLOSE_FEE_CENTS: dict[str, int] = {
     "thirdrail": 450_00,
 }
 CLOSE_ATTEMPTS = 5
+CLOSE_CAPACITY = 2
+"""Clients Ledgerline can close in one working day. Three fall due together at
+every month-end, so somebody's month always waits (the scenario's Ledgerline
+row: "which client to close first")."""
+PLAN_AHEAD = 15 * 60
+
+
+def _stuck(engine: Engine, org_id: str) -> int | None:
+    """The month-end run that was blocked and has not gone out since, if any.
+
+    Read from the event log rather than the scheduler's queue, because the
+    scheduler has already taken this tick's due rows off the queue by the time
+    any of them is handled.
+    """
+
+    blocked = engine.conn.execute(
+        "SELECT max(seq) AS seq FROM events WHERE kind = 'invoice.blocked' "
+        "AND org_id = %s",
+        (org_id,),
+    ).fetchone()
+    blocked_seq = int(blocked["seq"]) if blocked and blocked["seq"] else None
+    if blocked_seq is None:
+        return None
+    sent = engine.conn.execute(
+        "SELECT 1 FROM events WHERE kind = 'invoice.issued' AND org_id = %s "
+        "AND seq > %s AND payload->>'invoice_kind' = 'services' LIMIT 1",
+        (org_id, blocked_seq),
+    ).fetchone()
+    return blocked_seq if sent is None else None
+
+
+@scheduler.job("close.plan")
+def plan_closes(
+    engine: Engine, report: TickReport, _subject: str, payload: dict[str, Any]
+) -> None:
+    """A quarter of an hour before the month's closes, decide whose waits.
+
+    Before, not at, nine: the scheduler takes a tick's due rows off the queue
+    before it runs any of them, so a job due alongside the closes could not
+    move one. Next month's plan is due a month on, as the closes are.
+    """
+
+    engine.schedule(report.sim_time + 28 * DAY, "close.plan", "ledgerline", {})
+    if economy.failed(engine, "ledgerline"):
+        return
+    due = engine.conn.execute(
+        "SELECT id, subject_id FROM scheduled WHERE kind = 'close.run' "
+        "AND due_sim_time > %s AND due_sim_time <= %s AND NOT payload ? 'attempt' "
+        "ORDER BY subject_id",
+        (report.sim_time, report.sim_time + PLAN_AHEAD),
+    ).fetchall()
+    clients = {str(r["subject_id"]): int(r["id"]) for r in due}
+    if len(clients) <= CLOSE_CAPACITY:
+        return
+    stuck = {client: _stuck(engine, client) for client in clients}
+    principal = _person(engine, "principal", "ledgerline")
+    if principal is None:
+        return
+    fees = sorted(clients, key=lambda c: -CLOSE_FEE_CENTS.get(c, 600_00))
+    made = engine.decide(
+        report,
+        DecisionContext(
+            person_id=str(principal["id"]),
+            role=str(principal["role"]),
+            sim_time=report.sim_time,
+            kind="close.order",
+            facts={
+                "clients": {
+                    client: {
+                        "stuck": stuck[client] is not None,
+                        "overdue_bills": _overdue_bills(engine, client, report),
+                        "fee_rank": fees.index(client),
+                    }
+                    for client in clients
+                }
+            },
+            traits=dict(principal["traits"] or {}),
+        ),
+    )
+    waits = str(made.chosen.get("waits", ""))
+    if waits not in clients:
+        return  # "other": everything is attempted today, and the day runs long
+    tomorrow = next_office_open(report.sim_time + DAY - report.sim_time % DAY)
+    blocked = stuck[waits]
+    seq = engine.emit(
+        report,
+        "close.queued",
+        actor_id=str(principal["id"]),
+        org_id=waits,
+        causes=[blocked] if blocked is not None else [],
+        decision_id=made.id,
+        payload={"client": waits, "until": tomorrow, "decided_by": made.source},
+    )
+    # The close that waited cites the wait, as one put off would cite its
+    # deferral: the chain from a blocked invoice run to a late fee stays whole.
+    engine.conn.execute(
+        "UPDATE scheduled SET due_sim_time = %s, "
+        "payload = payload || jsonb_build_object('deferred', %s::bigint) "
+        "WHERE id = %s",
+        (tomorrow, seq, clients[waits]),
+    )
+
+
+def _overdue_bills(engine: Engine, org_id: str, report: TickReport) -> int:
+    row = engine.conn.execute(
+        "SELECT count(*) AS n FROM invoices WHERE to_org_id = %s "
+        "AND paid_sim IS NULL AND written_off_sim IS NULL AND due_sim < %s",
+        (org_id, report.sim_time),
+    ).fetchone()
+    return int(row["n"]) if row else 0
 
 
 @scheduler.job("close.run", office_hours_only=True)
@@ -365,33 +596,15 @@ def close_books(
     accountant's sign-off at a third firm, and the accountant's own fee with it.
     """
 
+    if economy.failed(engine, org_id) or economy.failed(engine, "ledgerline"):
+        return
     role = "senior_accountant" if org_id != "thirdrail" else "staff_accountant"
     accountant = _person(engine, role, "ledgerline")
     if accountant is None:
         return
-    # Stuck means: a month-end run was blocked and nothing has gone out since.
-    # Read from the event log rather than the scheduler's queue, because the
-    # scheduler has already taken this tick's due rows off the queue by the
-    # time any of them is handled.
-    blocked = engine.conn.execute(
-        "SELECT max(seq) AS seq FROM events WHERE kind = 'invoice.blocked' "
-        "AND org_id = %s",
-        (org_id,),
-    ).fetchone()
-    blocked_seq = int(blocked["seq"]) if blocked and blocked["seq"] else None
-    stuck = None
-    if blocked_seq is not None:
-        sent = engine.conn.execute(
-            "SELECT 1 FROM events WHERE kind = 'invoice.issued' AND org_id = %s "
-            "AND seq > %s AND payload->>'invoice_kind' = 'services' LIMIT 1",
-            (org_id, blocked_seq),
-        ).fetchone()
-        stuck = blocked_seq if sent is None else None
-    overdue = engine.conn.execute(
-        "SELECT count(*) AS n FROM invoices WHERE to_org_id = %s "
-        "AND paid_sim IS NULL AND due_sim < %s",
-        (org_id, report.sim_time),
-    ).fetchone()
+    role = str(accountant["role"])
+    stuck = _stuck(engine, org_id)
+    overdue = _overdue_bills(engine, org_id, report)
     attempt = int(payload.get("attempt", 1))
 
     made = engine.decide(
@@ -404,15 +617,57 @@ def close_books(
             facts={
                 "client": org_id,
                 "invoices_stuck": stuck is not None,
-                "overdue_bills": int(overdue["n"]) if overdue else 0,
+                "overdue_bills": overdue,
+                "attempt": attempt,
             },
             traits=dict(accountant["traits"] or {}),
         ),
     )
     ready = int(made.chosen.get("readiness", 1)) >= 1
+    late = str(made.chosen.get("if_not_ready", "wait"))
+    # Close on an estimate and fix it next month (WORLD-0011): the month is
+    # closed, marked as estimated, and the true-up is billed with the next one.
+    estimated = not ready and late == "estimate"
+    ready = ready or estimated
     first_deferral = payload.get("deferred")
+    rework_fee = int(payload.get("rework_fee", 0))
+
+    if ready and attempt < CLOSE_ATTEMPTS and not payload.get("reconciled"):
+        rework = _reconcile(engine, report, org_id, int(payload.get("due") or 0))
+        if rework:
+            fee, items = rework
+            seq = engine.emit(
+                report,
+                "close.rework",
+                actor_id=str(accountant["id"]),
+                org_id=org_id,
+                decision_id=made.id,
+                payload={"client": org_id, "items": items, "fee_cents": fee},
+            )
+            engine.schedule(
+                next_office_open(report.sim_time + DAY - report.sim_time % DAY),
+                "close.run",
+                org_id,
+                {
+                    "attempt": attempt + 1,
+                    "deferred": first_deferral or seq,
+                    "due": payload.get("due"),
+                    "reconciled": True,
+                    "rework_fee": rework_fee + fee,
+                },
+            )
+            return
 
     if not ready and attempt < CLOSE_ATTEMPTS:
+        if late == "nag":
+            engine.emit(
+                report,
+                "close.nagged",
+                actor_id=str(accountant["id"]),
+                org_id=org_id,
+                decision_id=made.id,
+                payload={"client": org_id, "decided_by": made.source},
+            )
         causes = [int(first_deferral)] if first_deferral else []
         if stuck is not None:
             causes.append(stuck)
@@ -441,6 +696,8 @@ def close_books(
                 "attempt": attempt + 1,
                 "deferred": first_deferral or seq,
                 "due": payload.get("due"),
+                "reconciled": bool(payload.get("reconciled")),
+                "rework_fee": rework_fee,
             },
         )
         return
@@ -465,16 +722,25 @@ def close_books(
         payload={
             "client": org_id,
             "readiness": int(made.chosen.get("readiness", 1)),
+            "estimated": estimated,
             "days_late": max(0, report.sim_time - due) // DAY,
             "decided_by": made.source,
         },
     )
+    # A month closed on an estimate is corrected, and paid for, next month.
+    true_up = int(economy.policy(engine, org_id).get("true_up_cents", 0))
+    economy.set_policy(engine, org_id, true_up_cents=TRUE_UP_CENTS if estimated else 0)
     # The accountant's fee goes out when the work is done, and not before.
     engine.bill(
         report,
         from_org="ledgerline",
         to_org=org_id,
-        amount=CLOSE_FEE_CENTS.get(org_id, 600_00),
+        amount=round(
+            CLOSE_FEE_CENTS.get(org_id, 600_00)
+            * economy.price_index(engine, "ledgerline")
+        )
+        + rework_fee
+        + true_up,
         terms_days=14,
         kind="services",
         causes=[closed],
@@ -482,6 +748,50 @@ def close_books(
     # Next month's close, a month after this one was *due*: a late close does
     # not push every close after it.
     engine.schedule(due + 28 * DAY, "close.run", org_id, {"due": due + 28 * DAY})
+
+
+REWORK_FEE_CENTS = 120_00
+"""What Ledgerline charges to put right one thing done by hand that did not
+reconcile (the scenario's "manual work later fails reconciliation")."""
+TRUE_UP_CENTS = 200_00
+AUDIT_FEE_CENTS = 300_00
+RECONCILE_FAILS = 0.5
+
+
+def _reconcile(
+    engine: Engine, report: TickReport, org_id: str, due: int
+) -> tuple[int, int] | None:
+    """What the client did by hand this month, checked against the books.
+
+    Invoices sent by hand and records kept on paper while a feature was down
+    (`outage.workaround`) each fail to reconcile half the time, drawn about the
+    item (CORE-0009); an audit notice (a shock) is extra work whatever else.
+    Returns the fee and the number of items to rework, or None if nothing is.
+    """
+
+    manual = engine.conn.execute(
+        "UPDATE invoices SET reconciled = false WHERE from_org_id = %s AND manual "
+        "AND reconciled IS NULL RETURNING id",
+        (org_id,),
+    ).fetchall()
+    policy = economy.policy(engine, org_id)
+    paper = int(policy.get("paper_records", 0))
+    audit = bool(policy.get("audit_pending"))
+    economy.set_policy(engine, org_id, paper_records=0, audit_pending=False)
+    items = 0
+    for row in manual:
+        if derive_rng(engine.root_seed, "reconcile", int(row["id"])).random() < (
+            RECONCILE_FAILS
+        ):
+            items += 1
+    for index in range(paper):
+        rng = derive_rng(engine.root_seed, "reconcile", org_id, due, index)
+        if rng.random() < RECONCILE_FAILS:
+            items += 1
+    fee = items * REWORK_FEE_CENTS + (AUDIT_FEE_CENTS if audit else 0)
+    if fee <= 0:
+        return None
+    return fee, items + (1 if audit else 0)
 
 
 # -- flow 10: catering -------------------------------------------------------
@@ -496,9 +806,20 @@ def consider_catering(
 ) -> None:
     """Does the firm order lunch in from the cafe for tomorrow?"""
 
+    if economy.failed(engine, org_id):
+        return
+    # Considered twice a week, whatever is decided this time.
+    engine.schedule(
+        report.sim_time + (2 if SimTime(report.sim_time).weekday == 1 else 5) * DAY,
+        "catering.consider",
+        org_id,
+        {},
+    )
+    if economy.failed(engine, "thirdrail"):
+        return
     buyer = engine.conn.execute(
         "SELECT id, role, traits FROM persons WHERE org_id = %s AND role = ANY(%s) "
-        "ORDER BY id LIMIT 1",
+        "AND status <> 'left' ORDER BY id LIMIT 1",
         (org_id, list(CATERING_BUYERS)),
     ).fetchone()
     if buyer is None:
@@ -518,36 +839,104 @@ def consider_catering(
             kind="catering.order",
             facts={
                 "org": org_id,
-                "can_afford": cash >= 10 * CATERING_CENTS["large"],
+                "can_afford": cash >= 10 * CATERING_CENTS["large"]
+                # A firm that has decided to cut costs orders no lunch.
+                and not economy.frugal(engine, org_id, report.sim_time),
+                # A firm that cannot pay its staff does not buy them lunch. The
+                # founder of an insolvent Tallybird ordered $420 of catering
+                # (field report, finding 3): the question said funds were
+                # "comfortably enough" whatever the balance.
+                "payroll_held": payroll_held(engine, org_id),
+                "runway_days": engine.runway_days(org_id, cash),
                 "team_mood": float(mood["mood"]) if mood and mood["mood"] else 2.0,
             },
             traits=dict(buyer["traits"] or {}),
         ),
     )
-    # Considered twice a week, whatever was decided this time.
-    engine.schedule(
-        report.sim_time + (2 if SimTime(report.sim_time).weekday == 1 else 5) * DAY,
-        "catering.consider",
-        org_id,
-        {},
-    )
     size = str(made.chosen.get("order", "none"))
     if size not in CATERING_CENTS:
         return
+    take_order(
+        engine,
+        report,
+        org_id,
+        size,
+        ordered_by=str(buyer["id"]),
+        decision_id=made.id,
+        decided_by=made.source,
+    )
+
+
+def take_order(
+    engine: Engine,
+    report: TickReport,
+    org_id: str,
+    size: str,
+    *,
+    ordered_by: str | None,
+    decision_id: int | None = None,
+    decided_by: str = "rules",
+    cause: int | None = None,
+) -> None:
+    """An office orders lunch for tomorrow, and the cafe decides whether it
+    can take it on (the scenario's "accept a catering order at capacity").
+
+    Nothing was ever declined in the field report's world: the scenario calls
+    that "runaway politeness", and it is what the acceptance rate measures.
+    """
+
+    amount = round(CATERING_CENTS[size] * economy.price_index(engine, "thirdrail"))
     seq = engine.emit(
         report,
         "catering.ordered",
-        actor_id=str(buyer["id"]),
+        actor_id=ordered_by,
         org_id=org_id,
-        decision_id=made.id,
+        causes=[cause] if cause else [],
+        decision_id=decision_id,
         payload={
             "org_id": org_id,
             "size": size,
-            "amount_cents": CATERING_CENTS[size],
-            "decided_by": made.source,
+            "amount_cents": amount,
+            "decided_by": decided_by,
         },
     )
+    taker = engine.payer_of("thirdrail")
+    if taker is None:
+        return
     tomorrow_noon = report.sim_time - report.sim_time % DAY + DAY + 12 * 3600
+    from jeve.world import shocks
+
+    absent, _ = shocks.off(engine, tomorrow_noon)
+    counter = engine.conn.execute(
+        "SELECT id FROM persons WHERE org_id = 'thirdrail' AND kind = 'staff' "
+        "AND status <> 'left' AND role = ANY(%s)",
+        (list(shocks.COUNTER_ROLES),),
+    ).fetchall()
+    made = engine.decide(
+        report,
+        DecisionContext(
+            person_id=str(taker["id"]),
+            role=str(taker["role"]),
+            sim_time=report.sim_time,
+            kind="catering.accept",
+            facts={
+                "size": size,
+                "short_staffed": any(str(p["id"]) in absent for p in counter),
+            },
+            traits=dict(taker["traits"] or {}),
+        ),
+    )
+    if not made.chosen.get("accept"):
+        engine.emit(
+            report,
+            "catering.declined",
+            actor_id=str(taker["id"]),
+            org_id="thirdrail",
+            causes=[seq],
+            decision_id=made.id,
+            payload={"to_org_id": org_id, "size": size, "decided_by": made.source},
+        )
+        return
     engine.schedule(
         tomorrow_noon, "catering.deliver", org_id, {"ordered": seq, "size": size}
     )
@@ -566,8 +955,13 @@ def deliver_catering(
     from jeve.world import space
     from jeve.world.map import ORG_ZONE
 
+    if economy.failed(engine, "thirdrail"):
+        return
     size = str(payload.get("size", "small"))
-    amount = CATERING_CENTS.get(size, CATERING_CENTS["small"])
+    amount = round(
+        CATERING_CENTS.get(size, CATERING_CENTS["small"])
+        * economy.price_index(engine, "thirdrail")
+    )
     carrier = space.send(
         engine,
         report,

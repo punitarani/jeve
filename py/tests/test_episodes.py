@@ -91,6 +91,9 @@ class Scripted:
         """Every context this policy was handed, in order — what each person
         was told, which is what the round-memory tests read back."""
 
+    def begin_tick(self, sim_time: int) -> None:
+        return None
+
     def decide(self, ctx: DecisionContext) -> Decision:
         self.asked.append(ctx)
         if ctx.kind != "episode.round":
@@ -458,10 +461,13 @@ def test_a_promise_is_scored_either_way(conn: Connection[DictRow]) -> None:
 def test_an_episode_can_escalate_an_outage_and_still_only_once(
     conn: Connection[DictRow],
 ) -> None:
-    """The consequence a meeting has always had, reached from the other arm."""
+    """The consequence a meeting has always had, reached from the other arm.
+
+    With an engineer: pressed, they act at once. Anyone else at the vendor has
+    to decide to pass it on (WORLD-0012), which the test below covers."""
 
     asker = "halloran.office_manager.12"
-    vendor = "tallybird.support.6"
+    vendor = "tallybird.engineer.2"
     policy = Scripted(
         ROOT_SEED, {asker: [{"act": "press"}], vendor: [{"act": "explain"}]}
     )
@@ -1050,6 +1056,17 @@ def test_a_world_begun_before_episodes_carries_on_with_them(
     # and forgetting only 0009 re-created its tables under a later migration's
     # record, so the schema the rest of the module ran on was 0009's alone.
     conn.execute("DELETE FROM schema_migrations WHERE name >= '0009'")
+    # And what those later migrations added outside 0009's tables, which would
+    # otherwise already exist when they are applied again.
+    conn.execute("DROP TABLE timesheets, rota, escalations")
+    conn.execute(
+        "ALTER TABLE outage_notices DROP COLUMN workaround; "
+        "ALTER TABLE subscriptions DROP COLUMN cancelled_sim; "
+        "ALTER TABLE invoices DROP COLUMN dispute_asked, DROP COLUMN disputed_sim, "
+        "  DROP COLUMN dispute_resolution, DROP COLUMN manual, "
+        "  DROP COLUMN reconciled; "
+        "ALTER TABLE positions DROP COLUMN mind"
+    )
     _hand_the_world_to_the_daemon(conn)
 
     assert daemon.main(["--until-day", "6", *DAEMON]) == 0

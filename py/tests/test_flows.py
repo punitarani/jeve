@@ -19,7 +19,7 @@ from jeve import db
 from jeve.core.clock import DAY, SimTime, at
 from jeve.decide.policy import RulesPolicy
 from jeve.sim import advance
-from jeve.world import flows
+from jeve.world import episodes, flows
 from jeve.world.engine import Engine
 from jeve.world.flows import WEEKLY_WAGE_CENTS
 from jeve.world.map import ORG_ZONE
@@ -134,12 +134,16 @@ def test_a_conversation_in_the_cafe_reaches_money(conn: Connection[DictRow]) -> 
     them, an encounter when not (WORLD-0007)."""
 
     run(conn, days=5)
+    # Straight to an engineer, or through whoever was cornered deciding to pass
+    # it on (WORLD-0012); in one shot or over rounds (WORLD-0007). Either way
+    # the chain starts at a conversation.
     reached = conn.execute(
         """
         WITH RECURSIVE downstream AS (
             SELECT seq, kind, 0 AS depth FROM events
             WHERE kind IN ('encounter', 'episode.closed') AND seq IN (
-                SELECT unnest(causes) FROM events WHERE kind = 'ticket.escalated')
+                SELECT unnest(causes) FROM events
+                WHERE kind IN ('ticket.escalated', 'escalation.relayed'))
             UNION
             SELECT e.seq, e.kind, d.depth + 1
             FROM events e JOIN downstream d ON d.seq = ANY(e.causes)
@@ -151,9 +155,9 @@ def test_a_conversation_in_the_cafe_reaches_money(conn: Connection[DictRow]) -> 
         """
     ).fetchall()
     depth = {str(r["kind"]): int(r["depth"]) for r in reached}
-    assert depth["ticket.escalated"] == 1
-    assert depth["incident.ended"] == 2
-    assert depth["credit.issued"] == 3
+    assert depth["ticket.escalated"] in (1, 2)
+    assert depth["incident.ended"] == depth["ticket.escalated"] + 1
+    assert depth["credit.issued"] == depth["incident.ended"] + 1
     postings = {str(r["kind"]): int(r["postings"]) for r in reached}
     assert postings["credit.issued"] > 0
 
@@ -281,12 +285,15 @@ def test_wages_cannot_be_paid_from_an_empty_account(
 
 
 def test_books_close_when_the_month_can_be_stated(conn: Connection[DictRow]) -> None:
-    run(conn, days=5)
+    # A week and a day: two clients close on Friday, and the third, which
+    # Ledgerline had no room for, on Monday (WORLD-0011).
+    run(conn, days=8)
     closed = conn.execute(
-        "SELECT org_id, seq, payload FROM events WHERE kind = 'close.completed' "
-        "ORDER BY org_id"
+        "SELECT org_id, seq, sim_time, payload FROM events "
+        "WHERE kind = 'close.completed' ORDER BY org_id"
     ).fetchall()
     assert [str(c["org_id"]) for c in closed] == ["halloran", "tallybird", "thirdrail"]
+    assert sorted(int(c["sim_time"]) for c in closed) == [at(4, 9), at(4, 9), at(7, 9)]
     for close in closed:
         # The accountant's fee goes out because the work was done: an invoice
         # from Ledgerline that cites the close, booked as a receivable.
@@ -302,12 +309,18 @@ def test_books_close_when_the_month_can_be_stated(conn: Connection[DictRow]) -> 
 
 
 def test_an_outage_nobody_chased_delays_the_close_and_the_fee(
-    conn: Connection[DictRow],
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The second thing space changes. With encounters, someone presses the
     vendor, the invoices go out on Thursday, and Halloran's books close on
-    Friday morning. Without, the invoices are still stuck on Friday, the close
-    is put off, and Ledgerline bills for it days later."""
+    Friday morning. Without anybody chasing it, the invoices are still stuck on
+    Friday, the close is put off, and Ledgerline bills for it days later.
+
+    "Anybody" is more people than it was: support's own queue and a customer's
+    call to the account manager prioritise an outage too (WORLD-0012), and
+    either would clear this one by Friday. The unchased arm switches them off,
+    so what it measures is still the outage nobody chased.
+    """
 
     def halloran_close() -> tuple[int, int]:
         done = conn.execute(
@@ -323,17 +336,20 @@ def test_an_outage_nobody_chased_delays_the_close_and_the_fee(
 
     run(conn, days=8, encounters=True)
     chased_at, chased_deferrals = halloran_close()
-    run(conn, days=8, encounters=False)
-    unchased_at, unchased_deferrals = halloran_close()
+    with monkeypatch.context() as patch:
+        patch.setattr(episodes, "prioritise", lambda *args, **kwargs: None)
+        run(conn, days=8, encounters=False, variant="no-queue")
+    unchased_at, _ = halloran_close()
 
     assert chased_deferrals == 0 and chased_at == at(4, 9)
-    assert unchased_deferrals >= 1
     assert unchased_at > chased_at
 
-    # The deferral says why, and the late close says what unblocked it.
+    # Held back, whether put off on the day or queued behind the clients who
+    # were ready (WORLD-0011): the holdup says why, and the late close says
+    # what unblocked it.
     deferral = conn.execute(
-        "SELECT seq, causes FROM events WHERE kind = 'close.deferred' "
-        "AND org_id = 'halloran' ORDER BY seq LIMIT 1"
+        "SELECT seq, causes FROM events WHERE kind IN ('close.deferred', "
+        "'close.queued') AND org_id = 'halloran' ORDER BY seq LIMIT 1"
     ).fetchone()
     assert deferral is not None
     why = conn.execute(
@@ -366,13 +382,25 @@ def test_lunch_ordered_is_lunch_delivered_billed_and_carried(
     ).fetchall()
     assert orders, "nobody ordered lunch in a whole week"
 
+    delivered = 0
     for order in orders:
+        # The cafe may turn an order down (WORLD-0011): then the refusal, and
+        # nothing else, is what the order caused.
+        declined = conn.execute(
+            "SELECT 1 FROM events WHERE kind = 'catering.declined' "
+            "AND %s = ANY(causes)",
+            (order["seq"],),
+        ).fetchone()
         delivery = conn.execute(
             "SELECT seq, sim_time, actor_id, payload FROM events "
             "WHERE kind = 'catering.delivered' AND %s = ANY(causes)",
             (order["seq"],),
         ).fetchone()
+        if declined is not None:
+            assert delivery is None, order["org_id"]
+            continue
         assert delivery is not None, order["org_id"]
+        delivered += 1
         when = SimTime(int(delivery["sim_time"]))
         assert when.day == SimTime(int(order["sim_time"])).day + 1
         assert when.time_of_day == 12 * 3600
@@ -399,6 +427,7 @@ def test_lunch_ordered_is_lunch_delivered_billed_and_carried(
         ).fetchone()
         assert carried is not None, (order["org_id"], delivery["actor_id"])
 
+    assert delivered, "every order was declined, so no delivery was checked"
     # Nobody carries two lunches to two offices in the same fifteen minutes.
     doubled = conn.execute(
         "SELECT actor_id, sim_time, count(*) AS n FROM events "

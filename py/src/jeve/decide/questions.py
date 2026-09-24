@@ -26,7 +26,7 @@ from typing import Literal
 
 from jeve.core.clock import SimTime
 from jeve.decide.policy import DecisionContext
-from jeve.llm.protocol import Choice, Noul, NoulCriteria, Score
+from jeve.llm.protocol import Choice, Noul, NoulCriteria, Prose, Score
 
 type Mode = Literal["J", "P"]
 """J: judgement, take the argmax. P: propensity, sample the distribution.
@@ -138,6 +138,13 @@ _TRAIT_WORDS: dict[str, tuple[str, str, str]] = {
         "friendly enough; chats when there is a reason to",
         "talkative; stops to chat with anyone nearby",
     ),
+    # Seeded for everyone from the start and rendered nowhere until the
+    # decisions it belongs to existed (field report, defect 9).
+    "risk_appetite": (
+        "cautious; prefers what is safe and known",
+        "weighs a risk before taking it",
+        "happy to take a chance on something new",
+    ),
 }
 
 
@@ -164,6 +171,14 @@ def trait_fraction(name: str, value: object) -> float:
 
 def trait_words(name: str, value: object) -> str:
     return _TRAIT_WORDS[name][trait_level(name, value)]
+
+
+TRAIT_PHRASES: frozenset[str] = frozenset(
+    phrase for levels in _TRAIT_WORDS.values() for phrase in levels
+)
+"""Every phrase a trait renders to. A state value that is one of these is the
+person's temperament; anything else is their situation (the judge panel's
+split between the two)."""
 
 
 def _number(value: object, default: float = 0.0) -> float:
@@ -275,16 +290,51 @@ _FILE = Ask(
 )
 
 
+_WORKAROUND = Ask(
+    "workaround",
+    "P",
+    Choice(
+        instructions="While it is down, how does this person get their work done?",
+        criteria={
+            "wait": "They wait for it to come back and do something else meanwhile.",
+            "by_hand": "They do the work by hand, outside the software.",
+            "other_tool": "They use a different product for now.",
+            "call_account_manager": (
+                "They ring their account manager at the software company."
+            ),
+            "other": "Something else.",
+        },
+    ),
+)
+"""The scenario's behaviour #5 and "the most direct test of the research
+question": the same outage, different people, different responses. Asked in
+the same request as whether to report it (DECIDE-0001: one request per decision
+point carries its whole surface)."""
+
+BLOCKS: dict[str, str] = {
+    "invoicing": "They cannot send invoices to their own customers.",
+    "timetrack": "They cannot record the hours their people work.",
+    "pos": "Their card reader is down, so they can only take cash.",
+}
+"""What each feature being down stops somebody doing (WORLD-0011). The report
+found the situation wording bland and temperament swamping it (finding 5)."""
+
+
 def _prepare_file_ticket(ctx: DecisionContext) -> Prepared:
     state: dict[str, object] = {
         "person": "a customer who pays for small-business software",
         "temperament": trait_words("vocality", ctx.traits.get("vocality")),
         "situation": _outage_so_far(ctx.facts.get("hours_down")),
     }
+    module = str(ctx.facts.get("module", ""))
+    if module in BLOCKS:
+        state["what_it_stops"] = BLOCKS[module]
+    if ctx.facts.get("month_end") and module == "invoicing":
+        state["calendar"] = "It is month-end; their invoices are due to go out."
     heard = hearsay_words(ctx.facts.get("heard_hops"))
     if heard is not None:
         state["how_they_know"] = heard
-    return Prepared(ctx.kind, asks=(_FILE,), state=state)
+    return Prepared(ctx.kind, asks=(_FILE, _WORKAROUND), state=state)
 
 
 def hearsay_words(hops: object) -> str | None:
@@ -332,7 +382,10 @@ def _outage_so_far(hours: object) -> str:
 def _interpret_file_ticket(
     ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
 ) -> Outcome:
-    return Outcome({"file": bool(got["file"].value)}, {})
+    return Outcome(
+        {"file": bool(got["file"].value), "workaround": str(got["workaround"].value)},
+        {},
+    )
 
 
 _TRIAGE_QUEUE = Ask(
@@ -474,21 +527,22 @@ _BUY = Ask(
 
 
 def _prepare_cafe(ctx: DecisionContext) -> Prepared:
-    return Prepared(
-        ctx.kind,
-        asks=(_BUY,),
-        state={
-            "person": "someone who has just walked into a neighbourhood cafe",
-            "temperament": trait_words("patience", ctx.traits.get("patience")),
-            "line": queue_words(ctx.facts.get("queue_length")),
-            "till": (
-                "The card reader is broken; the cafe is taking cash only and "
-                "service is slow."
-                if ctx.facts.get("pos_down")
-                else "The cafe is running normally and taking cards."
-            ),
-        },
-    )
+    state: dict[str, object] = {
+        "person": "someone who has just walked into a neighbourhood cafe",
+        "temperament": trait_words("patience", ctx.traits.get("patience")),
+        "line": queue_words(ctx.facts.get("queue_length")),
+        "till": (
+            "The card reader is broken; the cafe is taking cash only and "
+            "service is slow."
+            if ctx.facts.get("pos_down")
+            else "The cafe is running normally and taking cards."
+        ),
+    }
+    if ctx.facts.get("prices_up"):
+        # Additive, so every cafe that has never raised a price still sends
+        # the bytes it always sent.
+        state["prices"] = "The cafe has recently put its prices up."
+    return Prepared(ctx.kind, asks=(_BUY,), state=state)
 
 
 def _interpret_cafe(
@@ -527,16 +581,65 @@ MOODS: tuple[str, ...] = (
 )
 
 
-def slot(index: int) -> str:
-    """A neutral label for someone present. Names and ids are noise to Jev,
-    and would stop two identical rooms sharing a call."""
+ROLE_WORDS: dict[str, str] = {
+    "founder": "the founder",
+    "exec": "an executive",
+    "eng_lead": "an engineering lead",
+    "engineer": "an engineer",
+    "sre": "a site reliability engineer",
+    "support_lead": "a support team lead",
+    "support": "a support agent",
+    "account_manager": "an account manager",
+    "sales": "a salesperson",
+    "product": "a product manager",
+    "designer": "a designer",
+    "ops": "an operations manager",
+    "partner": "a partner",
+    "senior_associate": "a senior associate",
+    "junior_associate": "a junior associate",
+    "paralegal": "a paralegal",
+    "office_manager": "an office manager",
+    "receptionist": "a receptionist",
+    "principal": "a principal",
+    "senior_accountant": "a senior accountant",
+    "staff_accountant": "a staff accountant",
+    "bookkeeper": "a bookkeeper",
+    "payroll": "a payroll clerk",
+    "client_admin": "a client administrator",
+    "it": "an IT administrator",
+    "owner": "the owner",
+    "manager": "a manager",
+    "shift_lead": "a shift lead",
+    "barista": "a barista",
+    "baker": "a baker",
+    "kitchen": "a cook",
+    "weekend": "a weekend part-timer",
+    "subscriber": "a customer",
+    "client": "a client",
+    "customer": "a customer",
+}
+"""A role as a noun phrase, article included. The role column is an identifier,
+and pasting it into a sentence sent Jev "a engineer", "a sre", "a account
+manager" and "a weekend at the cafe" (field report, defect 5)."""
 
-    return f"person_{chr(ord('a') + index)}"
+
+def role_words(role: str) -> str:
+    known = ROLE_WORDS.get(role)
+    if known is not None:
+        return known
+    noun = role.replace("_", " ")
+    return f"{'an' if noun[:1] in 'aeiou' else 'a'} {noun}"
+
+
+def person_words(role: str, org: str) -> str:
+    return f"{role_words(role)} at {ORG_WORDS.get(org, 'a local firm')}"
 
 
 def describe(person: dict[str, object]) -> str:
-    role = str(person.get("role", "employee")).replace("_", " ")
-    return f"a {role} from {ORG_WORDS.get(str(person.get('org')), 'another firm')}"
+    return (
+        f"{role_words(str(person.get('role', 'employee')))} from "
+        f"{ORG_WORDS.get(str(person.get('org')), 'another firm')}"
+    )
 
 
 def _present(ctx: DecisionContext) -> list[dict[str, object]]:
@@ -546,13 +649,111 @@ def _present(ctx: DecisionContext) -> list[dict[str, object]]:
     )
 
 
-def _next_zone(org: str) -> Ask:
+# -- who is here, as groups (field report, recommendation 4) --------------------
+#
+# The roster was every person present, one line each, in load order. It made
+# `agent.tick` the bill: 615 distinct situations became 20,826 distinct
+# requests, because two rooms that differed only in which barista stood where
+# could never share a call. A room is now described as at most three groups,
+# one per firm, with a count in words; `with_whom` chooses a group and code
+# picks the person in it.
+
+GROUPS_SHOWN = 3
+
+_GROUP_KEYS: dict[str, str] = {
+    "tallybird": "the_software_company",
+    "halloran": "the_law_firm",
+    "ledgerline": "the_accounting_firm",
+    "thirdrail": "the_cafe",
+}
+
+_DEALING_WORDS: dict[str, str] = {
+    "owes_them": "; that firm owes their firm money",
+    "they_owe": "; their firm owes that firm money",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class Group:
+    key: str
+    words: str
+    members: tuple[dict[str, object], ...]
+
+
+def _count_words(n: int) -> tuple[str, str]:
+    """How many, and the verb that agrees with it. Two buckets, not three: how
+    many of a firm are in the room has never been what anybody decides on, and
+    every bucket multiplies the rooms that cannot share a call."""
+
+    return ("one person", "works") if n <= 1 else ("a few people", "work")
+
+
+def groups(ctx: DecisionContext) -> list[Group]:
+    """The people here as firms, most relevant first.
+
+    Relevance is what they could matter for: the vendor, to somebody whose
+    software is down; a firm with a live bill between it and theirs; then
+    whoever is most numerous. Ties break on the firm, so the order is a function
+    of the room and never of who arrived first.
+    """
+
+    own = str(ctx.facts.get("org", ""))
+    outage = bool(ctx.facts.get("outage"))
+    raw = ctx.facts.get("dealings")
+    dealing = {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+    by_org: dict[str, list[dict[str, object]]] = {}
+    for person in _present(ctx):
+        by_org.setdefault(str(person.get("org", "")), []).append(person)
+
+    def rank(item: tuple[str, list[dict[str, object]]]) -> tuple[int, int, int, str]:
+        org, members = item
+        return (
+            0 if outage and org == "tallybird" and own != "tallybird" else 1,
+            0 if org in dealing else 1,
+            -len(members),
+            org,
+        )
+
+    shown: list[Group] = []
+    for org, members in sorted(by_org.items(), key=rank)[:GROUPS_SHOWN]:
+        count, verb = _count_words(len(members))
+        if org == own:
+            key, words = "colleagues", f"{count} from their own firm"
+        elif org == "thirdrail":
+            key, words = _GROUP_KEYS[org], f"{count} who {verb} at the cafe"
+        else:
+            key = _GROUP_KEYS.get(org, "another_firm")
+            words = f"{count} from {ORG_WORDS.get(org, 'another firm')}"
+        words += _DEALING_WORDS.get(dealing.get(org, ""), "")
+        ordered = tuple(sorted(members, key=lambda p: str(p.get("id", ""))))
+        shown.append(Group(key, words, ordered))
+    return shown
+
+
+def who_is_here(ctx: DecisionContext) -> dict[str, str] | str:
+    shown = groups(ctx)
+    if not shown:
+        return "Nobody they would stop to talk to."
+    return {group.key: group.words for group in shown}
+
+
+# -- agent.tick: where next, and whether to stop and talk (WORLD-0003) --------
+
+
+def _next_zone(org: str, horizon: str) -> Ask:
+    """Where next. Asked of somebody alone at their desk on the hour, or of
+    anyone else every quarter hour (WORLD-0009), and the question says which:
+    "the next fifteen minutes" put to someone asked once an hour would make
+    every coffee break four times rarer than the person would take it."""
+
+    span = "hour" if horizon == "hour" else "fifteen minutes"
     criteria: dict[str, str] = {
-        "stay": "Stay where they are for the next fifteen minutes.",
+        "stay": f"Stay where they are for the next {span}.",
         "own_workplace": "Go back to their own workplace and get on with work.",
-        "cafe": "Walk over to the cafe for a coffee or something to eat.",
-        "plaza": "Step out into the plaza for some air.",
     }
+    if org != "thirdrail":
+        criteria["cafe"] = "Walk over to the cafe for a coffee or something to eat."
+    criteria["plaza"] = "Step out into the plaza for some air."
     if org != "tallybird":
         criteria["software_office"] = (
             "Walk over to the software company's office to speak to them in person."
@@ -562,7 +763,7 @@ def _next_zone(org: str) -> Ask:
         "next_zone",
         "P",
         Choice(
-            instructions="Where does this person go in the next fifteen minutes?",
+            instructions=f"Where does this person go in the next {span}?",
             criteria=dict(criteria),
         ),
     )
@@ -593,7 +794,7 @@ _RAISE = Ask(
     Noul(
         instructions=(
             "Does this person bring up the broken software with the software "
-            "company's employee who is here, and press them to get it fixed?"
+            "company's people who are here, and press them to get it fixed?"
         ),
         criteria=_yes_no(
             "They raise the outage and push for it to be fixed.",
@@ -602,31 +803,52 @@ _RAISE = Ask(
     ),
 )
 
+MIND_WORDS: dict[str, str] = {
+    "nothing": "Nothing unusual; an ordinary working day.",
+    "unpaid": (
+        "This week's wages have not been paid, and nobody has said when they will be."
+    ),
+    "short": "Word around the office is that the firm is short of money.",
+    "let_down": "Someone who promised to pay the firm what they owe has not paid.",
+    "lost_customer": "The firm has just lost a customer.",
+    "swamped": "The support queue is overflowing with complaints.",
+    "rough_week": "It has been a rough week; things keep going wrong.",
+    "payday": "It is payday; the week's wages have just come in.",
+    "colleague_left": "A colleague has just quit.",
+}
+"""What is on somebody's mind, by the typed key `world.space.mind_of` picks. The
+report found four values, all about the outage: agents could not perceive
+money, and mood could not respond to it (field report, findings 4 and 7)."""
+
+
+def mind_words(mind: object, outage: object) -> str:
+    key = str(mind or "")
+    if key.startswith("outage:") or (not key and outage):
+        module = key.split(":", 1)[1] if ":" in key else str(outage)
+        return f"The {module} software has been down and it is disrupting the day."
+    return MIND_WORDS.get(key, MIND_WORDS["nothing"])
+
 
 def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
     org = str(ctx.facts.get("org", ""))
     here = str(ctx.facts.get("here", ""))
     at_own = here == ctx.facts.get("own_zone")
-    present = _present(ctx)
     outage = ctx.facts.get("outage")
+    shown = groups(ctx)
 
     state: dict[str, object] = {
-        "person": f"a {ctx.role.replace('_', ' ')} at {ORG_WORDS.get(org, 'a firm')}",
+        "person": person_words(ctx.role, org),
         "temperament": trait_words("sociability", ctx.traits.get("sociability")),
         "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
         "time": time_of_day_words(ctx.sim_time),
         "where": (
             "at their own workplace" if at_own else f"in {_PLACE_WORDS.get(here, here)}"
         ),
-        "on_their_mind": (
-            f"The {outage} software has been down and it is disrupting the day."
-            if outage
-            else "Nothing unusual; an ordinary working day."
-        ),
+        "on_their_mind": mind_words(ctx.facts.get("mind"), outage),
+        "who_is_here": who_is_here(ctx),
     }
-    asks: list[Ask] = [_next_zone(org), _MOOD]
-    if present:
-        state["who_is_here"] = {slot(i): describe(p) for i, p in enumerate(present)}
+    asks: list[Ask] = [_next_zone(org, str(ctx.facts.get("horizon", ""))), _MOOD]
+    if shown:
         topics: dict[str, str] = {
             "work": "Their own work and clients.",
             "money": "Bills and invoices; who owes whom.",
@@ -636,7 +858,8 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
             topics = {"the_outage": "The software outage.", **topics}
         topics["other"] = "Something else."
         people: dict[str, str] = {
-            slot(i): describe(p).capitalize() + "." for i, p in enumerate(present)
+            group.key: group.words[:1].upper() + group.words[1:] + "."
+            for group in shown
         }
         people["other"] = "Nobody in particular."
         asks += [
@@ -663,8 +886,6 @@ def _prepare_agent_tick(ctx: DecisionContext) -> Prepared:
         ]
         if ctx.facts.get("can_raise"):
             asks.append(_RAISE)
-    else:
-        state["who_is_here"] = "Nobody they would stop to talk to."
     return Prepared(ctx.kind, asks=tuple(asks), state=state)
 
 
@@ -676,13 +897,19 @@ def _interpret_agent_tick(
     choice = str(got["next_zone"].value)
     next_zone = {"stay": here, "other": here, "own_workplace": own}.get(choice, choice)
 
-    present = _present(ctx)
     with_id: str | None = None
+    extra: dict[str, float] = {}
     if "interact" in got and got["interact"].value:
         picked = str(got["with_whom"].value)
-        for index, person in enumerate(present):
-            if slot(index) == picked:
-                with_id = str(person["id"])
+        members = next((g.members for g in groups(ctx) if g.key == picked), ())
+        # The model chose the firm; which of its people is a draw, taken only
+        # when there is a choice, so a room of one costs no luck.
+        if len(members) == 1:
+            with_id = str(members[0]["id"])
+        elif members:
+            extra["who"] = draw()
+            index = min(len(members) - 1, int(extra["who"] * len(members)))
+            with_id = str(members[index]["id"])
     return Outcome(
         {
             "next_zone": next_zone,
@@ -694,7 +921,7 @@ def _interpret_agent_tick(
                 with_id and "raise_outage" in got and got["raise_outage"].value
             ),
         },
-        {},
+        extra,
     )
 
 
@@ -797,6 +1024,9 @@ def _prepare_payroll(ctx: DecisionContext) -> Prepared:
             "timesheets": (
                 "This week's timesheets are complete and approved."
                 if ctx.facts.get("timesheets_available")
+                else "The time-tracking software is down, but the employer kept "
+                "this week's hours on paper."
+                if ctx.facts.get("on_paper")
                 else "The time-tracking software is down, so this week's timesheets "
                 "cannot be retrieved and the hours worked are unknown."
             ),
@@ -838,7 +1068,9 @@ def _prepare_close(ctx: DecisionContext) -> Prepared:
     overdue = int(_number(ctx.facts.get("overdue_bills")))
     return Prepared(
         ctx.kind,
-        asks=(_READINESS,),
+        asks=(_READINESS, _IF_LATE)
+        if ctx.facts.get("invoices_stuck")
+        else (_READINESS,),
         state={
             "person": "an accountant closing a client's books for the month",
             "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
@@ -860,10 +1092,33 @@ def _prepare_close(ctx: DecisionContext) -> Prepared:
     )
 
 
+_IF_LATE = Ask(
+    "if_not_ready",
+    "J",
+    Choice(
+        instructions=(
+            "If the books cannot be closed because the client's figures are "
+            "missing, what does the accountant do?"
+        ),
+        criteria={
+            "wait": "Wait for the client's figures and close when they arrive.",
+            "estimate": "Close on an estimate now and correct it next month.",
+            "nag": "Chase the client for the figures, and wait.",
+            "other": "Something else.",
+        },
+    ),
+)
+"""The scenario's Ledgerline row: when a client's data is late, wait, nag, or
+estimate and fix later. Asked only when the data is late (WORLD-0011)."""
+
+
 def _interpret_close(
     ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
 ) -> Outcome:
-    return Outcome({"readiness": int(str(got["readiness"].value))}, {})
+    chosen: dict[str, object] = {"readiness": int(str(got["readiness"].value))}
+    if "if_not_ready" in got:
+        chosen["if_not_ready"] = str(got["if_not_ready"].value)
+    return Outcome(chosen, {})
 
 
 # -- catering.order: lunch in, tomorrow? (WORLD-0004) ------------------------
@@ -895,6 +1150,19 @@ def mood_words(average: object) -> str:
     return "The team has been in good spirits."
 
 
+def funds_words(runway_days: object) -> str:
+    """How the firm's account looks to the person spending from it, in weeks of
+    running costs. The first string is the one every catering question used to
+    carry whatever the balance (field report, defect 8)."""
+
+    days = _number(runway_days, 60.0)
+    if days >= 56:
+        return "There is comfortably enough in the account for it."
+    if days >= 21:
+        return "The account can cover it, but money is not plentiful."
+    return "Money is tight; the firm has only a few weeks of costs in the bank."
+
+
 def _prepare_catering(ctx: DecisionContext) -> Prepared:
     org = str(ctx.facts.get("org", ""))
     return Prepared(
@@ -907,7 +1175,7 @@ def _prepare_catering(ctx: DecisionContext) -> Prepared:
             ),
             "temperament": trait_words("sociability", ctx.traits.get("sociability")),
             "team": mood_words(ctx.facts.get("team_mood")),
-            "funds": "There is comfortably enough in the account for it.",
+            "funds": funds_words(ctx.facts.get("runway_days")),
         },
     )
 
@@ -1082,6 +1350,26 @@ TELLABLE_WORDS: dict[str, str] = {
     "outage": "that a feature of the software they all use has stopped working",
     "price_rise": "that the software company is planning to put its prices up",
 }
+"""The two original sentences, kept byte for byte. Everything a fact can be
+about now (WORLD-0011) is worded by `tellable_words`, which names the firm."""
+
+_TOPIC_WORDS: dict[str, str] = {
+    "price_rise": "that {org} is putting its prices up",
+    "payroll_late": "that {org} has not been able to pay its staff",
+    "insolvency": "that {org} is running out of money",
+    "churned": "that {org} is losing customers",
+    "promise_broken": "that somebody broke their word to pay a bill",
+}
+
+
+def tellable_words(topic: str, about: object = None) -> str:
+    if (
+        about is None
+        or topic not in _TOPIC_WORDS
+        or (topic == "price_rise" and about == "tallybird")
+    ):
+        return TELLABLE_WORDS.get(topic, "a piece of news they have heard")
+    return _TOPIC_WORDS[topic].format(org=ORG_WORDS.get(str(about), "a firm in town"))
 
 
 def stake_words(ctx: DecisionContext) -> str:
@@ -1158,10 +1446,16 @@ def just_now_words(ctx: DecisionContext) -> dict[str, str] | None:
     mine = ctx.facts.get("my_last_act")
     if isinstance(mine, str) and mine in _DID_WORDS:
         said["this_person"] = _DID_WORDS[mine]
-    for index, person in enumerate(_present(ctx)):
-        act = person.get("last_act")
-        if isinstance(act, str) and act in _DID_WORDS:
-            said[slot(index)] = _DID_WORDS[act]
+    # By group, as the room is described (WORLD-0009): two people from one firm
+    # who did different things are one line, both acts in it.
+    for group in groups(ctx):
+        acts = dict.fromkeys(
+            _DID_WORDS[act]
+            for person in group.members
+            if isinstance(act := person.get("last_act"), str) and act in _DID_WORDS
+        )
+        if acts:
+            said[group.key] = " and ".join(acts)
     return said or None
 
 
@@ -1223,14 +1517,13 @@ eight ended on the round cap (WORLD-0008). People stop talking when they have
 said their piece."""
 
 
-def _mention(topic: str) -> Ask:
+def _mention(topic: str, about: object = None) -> Ask:
     return Ask(
         "mention",
         "P",
         Noul(
             instructions=(
-                "Does this person tell the others "
-                f"{TELLABLE_WORDS.get(topic, 'a piece of news they have heard')}?"
+                f"Does this person tell the others {tellable_words(topic, about)}?"
             ),
             criteria=_yes_no(
                 "They bring it up and pass it on.",
@@ -1267,15 +1560,14 @@ def _prepare_episode_round(ctx: DecisionContext) -> Prepared:
     org = str(ctx.facts.get("org", ""))
     here = str(ctx.facts.get("here", ""))
     role = str(ctx.facts.get("role_in_stake", "bystander"))
-    present = _present(ctx)
 
     state: dict[str, object] = {
-        "person": f"a {ctx.role.replace('_', ' ')} at {ORG_WORDS.get(org, 'a firm')}",
+        "person": person_words(ctx.role, org),
         "temperament": trait_words("sociability", ctx.traits.get("sociability")),
         "speaks_up": trait_words("vocality", ctx.traits.get("vocality")),
         "where": _PLACE_WORDS.get(here, here),
         "time": time_of_day_words(ctx.sim_time),
-        "who_is_here": {slot(i): describe(p) for i, p in enumerate(present)},
+        "who_is_here": who_is_here(ctx),
         "what_this_is_about": stake_words(ctx),
         "their_part_in_it": _ROLE_WORDS[role],
         "so_far": so_far_words(ctx),
@@ -1290,7 +1582,7 @@ def _prepare_episode_round(ctx: DecisionContext) -> Prepared:
     asks: list[Ask] = [_act(role), _DONE, _MOOD]
     topic = ctx.facts.get("tellable_topic")
     if isinstance(topic, str) and topic:
-        asks.append(_mention(topic))
+        asks.append(_mention(topic, ctx.facts.get("tellable_about")))
     return Prepared(ctx.kind, asks=tuple(asks), state=state)
 
 
@@ -1315,6 +1607,759 @@ def _interpret_episode_round(
     )
 
 
+# -- the economy has consequences (WORLD-0010) ---------------------------------
+
+
+def arrears_words(weeks_behind: object) -> str:
+    weeks = int(_number(weeks_behind))
+    if weeks <= 1:
+        return "Their wages are a week late."
+    if weeks == 2:
+        return "They have not been paid for two weeks."
+    return "They have not been paid for three weeks or more."
+
+
+_LEAVE = Ask(
+    "leave",
+    "P",
+    Noul(
+        instructions=(
+            "This week, does this person hand in their notice and go to work "
+            "somewhere else?"
+        ),
+        criteria=_yes_no(
+            "They quit and take their chances elsewhere.",
+            "They stay for now and hope it is sorted out.",
+        ),
+    ),
+)
+
+
+def _prepare_leave(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_LEAVE,),
+        state={
+            "person": person_words(ctx.role, org),
+            "wages": arrears_words(ctx.facts.get("weeks_behind")),
+            "firm": "Everyone at work knows the firm is short of money.",
+            "temperament": trait_words("patience", ctx.traits.get("patience")),
+            "attitude_to_risk": trait_words(
+                "risk_appetite", ctx.traits.get("risk_appetite")
+            ),
+        },
+    )
+
+
+def _interpret_leave(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    leave = bool(got["leave"].value)
+    return Outcome({"leave": leave, "reason": "unpaid" if leave else "stays"}, {})
+
+
+_REVIEW = Ask(
+    "choice",
+    "J",
+    Choice(
+        instructions=(
+            "Looking at the firm's money, what does this person decide to do "
+            "about it now?"
+        ),
+        criteria={
+            "raise_prices": "Put the firm's prices up by about a tenth.",
+            "cut_costs": (
+                "Cut spending: no extras, no lunches, no new hires, until "
+                "things improve."
+            ),
+            "chase_debts": "Chase everyone who owes the firm money, sooner and harder.",
+            "borrow": "Take a short-term loan from the bank to cover the gap.",
+            "hold_course": "Carry on as they are; nothing needs to change.",
+            "other": "Something else.",
+        },
+    ),
+)
+
+
+def trend_words(money_in: object, money_out: object) -> str:
+    received, spent = _number(money_in), _number(money_out)
+    if received <= 0 and spent <= 0:
+        return "Almost nothing has come in or gone out this month."
+    if received >= spent * 1.1:
+        return "More money has come in this month than has gone out."
+    if received >= spent * 0.9:
+        return "About as much has gone out this month as has come in."
+    return "Far more has gone out this month than has come in."
+
+
+def owed_words(overdue: object, weekly: object) -> str:
+    owed, week = _number(overdue), max(1.0, _number(weekly, 1.0))
+    if owed <= 0:
+        return "Nobody owes the firm anything overdue."
+    if owed < week:
+        return "A little is owed to the firm and overdue."
+    return "Customers owe the firm a lot of overdue money."
+
+
+def _prepare_review(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    state: dict[str, object] = {
+        "person": person_words(ctx.role, org),
+        "attitude_to_risk": trait_words(
+            "risk_appetite", ctx.traits.get("risk_appetite")
+        ),
+        "cash": funds_words(ctx.facts.get("runway_days")),
+        "this_month": trend_words(
+            ctx.facts.get("money_in"), ctx.facts.get("money_out")
+        ),
+        "owed_to_the_firm": owed_words(
+            ctx.facts.get("overdue_to_them"), ctx.facts.get("weekly_outgoings")
+        ),
+        "wages": (
+            "This week's wages could not be paid."
+            if ctx.facts.get("payroll_held")
+            else "Wages are being paid on time."
+        ),
+    }
+    if ctx.facts.get("raised_recently"):
+        state["prices"] = "The firm put its prices up recently."
+    if ctx.facts.get("has_loan"):
+        state["borrowing"] = "The firm already owes the bank a loan."
+    return Prepared(ctx.kind, asks=(_REVIEW,), state=state)
+
+
+def _interpret_review(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    choice = str(got["choice"].value)
+    return Outcome({"choice": choice if choice != "other" else "hold_course"}, {})
+
+
+_HIRE = Ask(
+    "hire",
+    "J",
+    Noul(
+        instructions="Should the firm hire someone to fill this empty job now?",
+        criteria=_yes_no(
+            "Hire: the work needs doing and the firm can pay for it.",
+            "Leave it empty for now.",
+        ),
+    ),
+)
+
+
+def _prepare_hire(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_HIRE,),
+        state={
+            "person": person_words(ctx.role, org),
+            "vacancy": "The firm is without "
+            f"{role_words(str(ctx.facts.get('vacancy', '')))}.",
+            "cash": funds_words(ctx.facts.get("runway_days")),
+            "attitude_to_risk": trait_words(
+                "risk_appetite", ctx.traits.get("risk_appetite")
+            ),
+        },
+    )
+
+
+def _interpret_hire(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"hire": bool(got["hire"].value)}, {})
+
+
+# -- the loops the scenario names (WORLD-0011) ----------------------------------
+
+
+def debt_words(level: object) -> str:
+    value = _number(level, 1.0)
+    if value < 0.6:
+        return "The codebase is in good shape."
+    if value < 1.2:
+        return "The codebase carries shortcuts that slow the team down."
+    return "The codebase is fragile; things break often."
+
+
+def incidents_words(count: object) -> str:
+    n = int(_number(count))
+    if n == 0:
+        return "Nothing broke last week."
+    if n == 1:
+        return "Something broke once last week."
+    return "Things broke several times last week."
+
+
+_ALLOCATION = Ask(
+    "allocation",
+    "J",
+    Choice(
+        instructions="How should the engineering team spend this week?",
+        criteria={
+            "roadmap": "Build the features customers are asking for.",
+            "debt": "Pay down technical debt so things break less often.",
+            "firefight": "Drop everything else and deal with what is on fire.",
+            "other": "Something else.",
+        },
+    ),
+)
+
+
+def _prepare_allocation(ctx: DecisionContext) -> Prepared:
+    churned = int(_number(ctx.facts.get("churned_last_month")))
+    return Prepared(
+        ctx.kind,
+        asks=(_ALLOCATION,),
+        state={
+            "person": person_words(ctx.role, "tallybird"),
+            "codebase": debt_words(ctx.facts.get("debt_level")),
+            "last_week": incidents_words(ctx.facts.get("incidents_last_week")),
+            "support_queue": backlog_words(ctx.facts.get("backlog")),
+            "customers": (
+                "Customers have been cancelling their subscriptions."
+                if churned
+                else "Customers are asking for new features."
+            ),
+            "cash": funds_words(ctx.facts.get("runway_days")),
+        },
+    )
+
+
+def _interpret_allocation(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    choice = str(got["allocation"].value)
+    return Outcome({"allocation": choice if choice != "other" else "roadmap"}, {})
+
+
+_DEPLOY = Ask(
+    "deploy",
+    "P",
+    Noul(
+        instructions="Does the team release this week's changes to customers today?",
+        criteria=_yes_no(
+            "They ship the changes today.",
+            "They hold the changes back for now.",
+        ),
+    ),
+)
+
+
+def _prepare_deploy(ctx: DecisionContext) -> Prepared:
+    return Prepared(
+        ctx.kind,
+        asks=(_DEPLOY,),
+        state={
+            "person": person_words(ctx.role, "tallybird"),
+            "attitude_to_risk": trait_words(
+                "risk_appetite", ctx.traits.get("risk_appetite")
+            ),
+            "codebase": debt_words(ctx.facts.get("debt_level")),
+            "last_week": incidents_words(ctx.facts.get("incidents_last_week")),
+        },
+    )
+
+
+def _interpret_deploy(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"deploy": bool(got["deploy"].value)}, {})
+
+
+TRUST_LEVELS: tuple[str, ...] = (
+    "They no longer trust it at all and are looking elsewhere.",
+    "They doubt it; one more problem and they will look elsewhere.",
+    "They are uneasy about it but not looking elsewhere yet.",
+    "They are reasonably confident in it.",
+    "They trust it completely.",
+)
+"""A customer's trust in the vendor: MEM-0001's "reliability" slot, the first
+typed belief in the world."""
+
+_TRUST = Ask(
+    "trust",
+    "J",
+    Score(
+        instructions=(
+            "After this, how far does the customer trust the software company "
+            "to keep the product working?"
+        ),
+        criteria=list(TRUST_LEVELS),
+    ),
+)
+
+
+def trust_words(level: object) -> str:
+    index = int(_number(level, 3.0))
+    return TRUST_LEVELS[max(0, min(len(TRUST_LEVELS) - 1, index))]
+
+
+def _prepare_trust(ctx: DecisionContext) -> Prepared:
+    if ctx.facts.get("reported"):
+        handled = (
+            "They reported it and support has replied."
+            if ctx.facts.get("answered")
+            else "They reported it and have heard nothing back."
+        )
+    else:
+        handled = "They did not report it."
+    state: dict[str, object] = {
+        "person": "a customer who pays for small-business software",
+        "temperament": trait_words("patience", ctx.traits.get("patience")),
+        "before": trust_words(ctx.facts.get("trust")),
+        "outage": f"The {ctx.facts.get('module')} feature was down for "
+        f"{outage_words(ctx.facts.get('minutes'))}.",
+        "handled": handled,
+        "history": (
+            "It is the second time this month."
+            if ctx.facts.get("repeat")
+            else "It is the first problem in a while."
+        ),
+    }
+    if ctx.facts.get("tried_another_tool"):
+        state["meanwhile"] = "While it was down they tried a competitor's product."
+    return Prepared(ctx.kind, asks=(_TRUST,), state=state)
+
+
+def _interpret_trust(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"trust": int(str(got["trust"].value))}, {})
+
+
+_RENEW = Ask(
+    "renew",
+    "P",
+    Noul(
+        instructions=(
+            "Does this customer keep paying for the software for another month?"
+        ),
+        criteria=_yes_no(
+            "They keep their subscription.",
+            "They cancel it and move to another product.",
+        ),
+    ),
+)
+
+
+def _prepare_renew(ctx: DecisionContext) -> Prepared:
+    state: dict[str, object] = {
+        "person": "a customer who pays for small-business software",
+        "temperament": trait_words("patience", ctx.traits.get("patience")),
+        "trust": trust_words(ctx.facts.get("trust")),
+        "reliance": (
+            "Their whole business runs on it; moving would be a lot of work."
+            if ctx.facts.get("relies_on_it")
+            else "Only a few of their people use it; moving would be easy."
+        ),
+    }
+    if ctx.facts.get("heard_bad_news"):
+        state["heard"] = "They have heard the software company is in trouble."
+    if ctx.facts.get("price_rise"):
+        state["price"] = "The software company has put its prices up."
+    if ctx.facts.get("offered_discount"):
+        state["offer"] = "The account manager has offered them a month at a discount."
+    return Prepared(ctx.kind, asks=(_RENEW,), state=state)
+
+
+def _interpret_renew(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"renew": bool(got["renew"].value)}, {})
+
+
+_RETAIN = Ask(
+    "offer",
+    "J",
+    Noul(
+        instructions=(
+            "Should the account manager offer this unhappy customer a month at a "
+            "quarter off, to keep them?"
+        ),
+        criteria=_yes_no(
+            "Offer the discount.",
+            "Do not; let them decide on their own.",
+        ),
+    ),
+)
+
+
+def _prepare_retain(ctx: DecisionContext) -> Prepared:
+    state: dict[str, object] = {
+        "person": person_words(ctx.role, "tallybird"),
+        "customer": (
+            "One of the larger customers."
+            if ctx.facts.get("large")
+            else "A mid-sized customer."
+        ),
+        "trust": trust_words(ctx.facts.get("trust")),
+        "cash": funds_words(ctx.facts.get("runway_days")),
+    }
+    if ctx.facts.get("heard_bad_news"):
+        state["heard"] = "The customer has heard the company is in trouble."
+    return Prepared(ctx.kind, asks=(_RETAIN,), state=state)
+
+
+def _interpret_retain(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"offer": bool(got["offer"].value)}, {})
+
+
+_DISPUTE = Ask(
+    "dispute",
+    "P",
+    Noul(
+        instructions="Does this person query the bill instead of accepting it?",
+        criteria=_yes_no(
+            "They write back and dispute part of it.",
+            "They accept it as it stands.",
+        ),
+    ),
+)
+
+
+def _prepare_dispute(ctx: DecisionContext) -> Prepared:
+    issuer = str(ctx.facts.get("issuer", ""))
+    state: dict[str, object] = {
+        "person": (
+            "the person who pays the bills for a small business"
+            if ctx.facts.get("firm")
+            else "a client of a professional firm"
+        ),
+        "temperament": trait_words("patience", ctx.traits.get("patience")),
+        "bill": f"A bill has just arrived from {ORG_WORDS.get(issuer, 'a firm')}.",
+        "size": (
+            "It is larger than they expected."
+            if ctx.facts.get("large")
+            else "It is about what they expected."
+        ),
+    }
+    if ctx.facts.get("price_rise"):
+        state["prices"] = "The firm has recently put its prices up."
+    return Prepared(ctx.kind, asks=(_DISPUTE,), state=state)
+
+
+def _interpret_dispute(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"dispute": bool(got["dispute"].value)}, {})
+
+
+_RESOLUTION = Ask(
+    "resolution",
+    "J",
+    Choice(
+        instructions="A client has disputed a bill. What does the firm do?",
+        criteria={
+            "stand_firm": "Stand by the bill and ask for it in full.",
+            "discount": "Take a sixth off to settle it.",
+            "write_off": "Drop the bill entirely to keep the client.",
+            "other": "Something else.",
+        },
+    ),
+)
+
+
+def _prepare_resolution(ctx: DecisionContext) -> Prepared:
+    org = str(ctx.facts.get("org", ""))
+    return Prepared(
+        ctx.kind,
+        asks=(_RESOLUTION,),
+        state={
+            "person": person_words(ctx.role, org),
+            "bill": (
+                "It is one of the larger bills the firm sends."
+                if ctx.facts.get("large")
+                else "It is a modest bill."
+            ),
+            "client": (
+                "The client is another firm in town."
+                if ctx.facts.get("client_firm")
+                else "The client is an outside customer."
+            ),
+            "cash": funds_words(ctx.facts.get("runway_days")),
+        },
+    )
+
+
+def _interpret_resolution(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    choice = str(got["resolution"].value)
+    return Outcome({"resolution": choice if choice != "other" else "stand_firm"}, {})
+
+
+_HANDOFF = Ask(
+    "relay",
+    "P",
+    Noul(
+        instructions=(
+            "A customer has complained about the outage to this person. Do they "
+            "take it straight to the engineers?"
+        ),
+        criteria=_yes_no(
+            "They go and tell the engineers at once.",
+            "They log it and leave it in the queue.",
+        ),
+    ),
+)
+
+
+def _prepare_handoff(ctx: DecisionContext) -> Prepared:
+    return Prepared(
+        ctx.kind,
+        asks=(_HANDOFF,),
+        state={
+            "person": person_words(ctx.role, "tallybird"),
+            "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
+            "how": (
+                "The customer rang them."
+                if ctx.facts.get("by_phone")
+                else "The customer cornered them in person."
+            ),
+            "queue": backlog_words(ctx.facts.get("backlog")),
+        },
+    )
+
+
+def _interpret_handoff(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"relay": bool(got["relay"].value)}, {})
+
+
+_LOG = Ask(
+    "log",
+    "P",
+    Noul(
+        instructions="Before going home, does this person log their billable hours?",
+        criteria=_yes_no(
+            "They log their hours now.",
+            "They leave it for later.",
+        ),
+    ),
+)
+
+
+def pending_words(days: object) -> str:
+    n = int(_number(days))
+    if n <= 1:
+        return "Only today's hours are unlogged."
+    if n <= 3:
+        return "They have a few days of hours still to log."
+    return "They have not logged their hours for about a week."
+
+
+def _prepare_log(ctx: DecisionContext) -> Prepared:
+    state: dict[str, object] = {
+        "person": person_words(ctx.role, "halloran"),
+        "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
+        "backlog": pending_words(ctx.facts.get("pending_days")),
+    }
+    if ctx.facts.get("on_paper"):
+        state["software"] = (
+            "The time-tracking software is down; they keep a paper note."
+        )
+    return Prepared(ctx.kind, asks=(_LOG,), state=state)
+
+
+def _interpret_log(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"log": bool(got["log"].value)}, {})
+
+
+_COVER = Ask(
+    "cover",
+    "J",
+    Choice(
+        instructions="Someone behind the counter is off sick. What does the owner do?",
+        criteria={
+            "cover_it": "Work the shift themselves.",
+            "call_in": "Call in the weekend part-timer.",
+            "run_short": "Run the cafe one person short.",
+            "other": "Something else.",
+        },
+    ),
+)
+
+
+def _prepare_cover(ctx: DecisionContext) -> Prepared:
+    return Prepared(
+        ctx.kind,
+        asks=(_COVER,),
+        state={
+            "person": person_words(ctx.role, "thirdrail"),
+            "absent": f"{role_words(str(ctx.facts.get('absent_role', 'barista')))} "
+            "is off sick.",
+            "cash": funds_words(ctx.facts.get("runway_days")),
+            "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
+        },
+    )
+
+
+def _interpret_cover(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    choice = str(got["cover"].value)
+    return Outcome({"cover": choice if choice != "other" else "run_short"}, {})
+
+
+CLIENT_KEYS: dict[str, str] = {
+    "tallybird": "the_software_company",
+    "halloran": "the_law_firm",
+    "thirdrail": "the_cafe",
+}
+"""Ledgerline's clients, by the same keys a room uses for firms."""
+
+
+def _client_words(facts: object) -> str:
+    about = facts if isinstance(facts, dict) else {}
+    words = (
+        "Its month-end invoices have not gone out, so there is nothing firm to "
+        "close on yet."
+        if about.get("stuck")
+        else "Its month looks ready to close."
+    )
+    if int(_number(about.get("overdue_bills"))) > 0:
+        words += " It has bills of its own overdue."
+    rank = int(_number(about.get("fee_rank")))
+    words += (
+        " It pays the largest fee of the three."
+        if rank == 0
+        else " It pays the smallest fee."
+        if rank >= 2
+        else ""
+    )
+    return words
+
+
+def _prepare_close_order(ctx: DecisionContext) -> Prepared:
+    raw = ctx.facts.get("clients")
+    clients = raw if isinstance(raw, dict) else {}
+    keyed = [(CLIENT_KEYS[c], clients[c]) for c in sorted(clients) if c in CLIENT_KEYS]
+    criteria: dict[str, Prose | None] = {
+        key: f"{key.replace('_', ' ').capitalize()}'s month waits until tomorrow."
+        for key, _ in keyed
+    }
+    criteria["other"] = "Something else."
+    return Prepared(
+        ctx.kind,
+        asks=(
+            Ask(
+                "waits",
+                "J",
+                Choice(
+                    instructions=(
+                        "The accounting firm can close two clients' months today, "
+                        "and the third has to wait until tomorrow. Whose waits?"
+                    ),
+                    criteria=criteria,
+                ),
+            ),
+        ),
+        state={
+            "person": person_words(ctx.role, "ledgerline"),
+            "clients": {key: _client_words(about) for key, about in keyed},
+            "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
+        },
+    )
+
+
+def _interpret_close_order(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    by_key = {key: client for client, key in CLIENT_KEYS.items()}
+    return Outcome({"waits": by_key.get(str(got["waits"].value), "")}, {})
+
+
+_STOCK = Ask(
+    "order",
+    "J",
+    Choice(
+        instructions="How much stock does the cafe order for the coming week?",
+        criteria={
+            "usual": "The usual amount.",
+            "more": "More than usual.",
+            "less": "Less than usual.",
+            "other": "Something else.",
+        },
+    ),
+)
+
+
+def _prepare_stock(ctx: DecisionContext) -> Prepared:
+    trend = _number(ctx.facts.get("trend"), 1.0)
+    return Prepared(
+        ctx.kind,
+        asks=(_STOCK,),
+        state={
+            "person": person_words(ctx.role, "thirdrail"),
+            "sales": (
+                "The till's records are unavailable, so last week's sales are a guess."
+                if ctx.facts.get("pos_down")
+                else "Last week was busier than the week before."
+                if trend > 1.1
+                else "Last week was quieter than the week before."
+                if trend < 0.9
+                else "Last week was much like the week before."
+            ),
+            "cash": funds_words(ctx.facts.get("runway_days")),
+        },
+    )
+
+
+def _interpret_stock(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    choice = str(got["order"].value)
+    return Outcome({"order": choice if choice != "other" else "usual"}, {})
+
+
+_ACCEPT = Ask(
+    "accept",
+    "P",
+    Noul(
+        instructions="Does the cafe take on this catering order for tomorrow?",
+        criteria=_yes_no(
+            "They accept it.",
+            "They turn it down.",
+        ),
+    ),
+)
+
+
+def _prepare_accept(ctx: DecisionContext) -> Prepared:
+    return Prepared(
+        ctx.kind,
+        asks=(_ACCEPT,),
+        state={
+            "person": person_words(ctx.role, "thirdrail"),
+            "order": (
+                "Lunch for a whole office."
+                if ctx.facts.get("size") == "large"
+                else "Sandwiches for a meeting."
+            ),
+            "staff": (
+                "They are short-handed behind the counter."
+                if ctx.facts.get("short_staffed")
+                else "They have the usual people on."
+            ),
+            "work_habit": trait_words("diligence", ctx.traits.get("diligence")),
+        },
+    )
+
+
+def _interpret_accept(
+    ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
+) -> Outcome:
+    return Outcome({"accept": bool(got["accept"].value)}, {})
+
+
 QUESTION_SETS: dict[str, QuestionSet] = {
     s.kind: s
     for s in (
@@ -1331,5 +2376,21 @@ QUESTION_SETS: dict[str, QuestionSet] = {
         QuestionSet("ticket.confirm", _prepare_confirm, _interpret_confirm),
         QuestionSet("chase.invoice", _prepare_chase, _interpret_chase),
         QuestionSet("episode.round", _prepare_episode_round, _interpret_episode_round),
+        QuestionSet("leave.consider", _prepare_leave, _interpret_leave),
+        QuestionSet("founder.review", _prepare_review, _interpret_review),
+        QuestionSet("hire.decision", _prepare_hire, _interpret_hire),
+        QuestionSet("eng.allocation", _prepare_allocation, _interpret_allocation),
+        QuestionSet("deploy.decision", _prepare_deploy, _interpret_deploy),
+        QuestionSet("vendor.trust", _prepare_trust, _interpret_trust),
+        QuestionSet("subscription.renew", _prepare_renew, _interpret_renew),
+        QuestionSet("retention.offer", _prepare_retain, _interpret_retain),
+        QuestionSet("invoice.dispute", _prepare_dispute, _interpret_dispute),
+        QuestionSet("dispute.resolution", _prepare_resolution, _interpret_resolution),
+        QuestionSet("escalation.handoff", _prepare_handoff, _interpret_handoff),
+        QuestionSet("time.log", _prepare_log, _interpret_log),
+        QuestionSet("cover.shift", _prepare_cover, _interpret_cover),
+        QuestionSet("close.order", _prepare_close_order, _interpret_close_order),
+        QuestionSet("supplier.order", _prepare_stock, _interpret_stock),
+        QuestionSet("catering.accept", _prepare_accept, _interpret_accept),
     )
 }
