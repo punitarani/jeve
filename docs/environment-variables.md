@@ -55,7 +55,7 @@ more than an afternoon wants the same, plus an account cap at OpenRouter.
 |---|---|---|
 | `JEVE_ESCALATION` | `off` | `shadow`: Jev's uncertain medium- and high-stakes answers, plus a 2% sample, are asked again of a flash model and both are kept in `escalations`; Jev's still decides. `live`: as shadow, and the sets named below act on the second opinion. Production runs `shadow`. |
 | `JEVE_ESCALATION_LIVE` | empty | Comma-separated question sets whose second opinion decides, e.g. `credit.decision,close.signoff`. Read `make escalation-report` first: a set earns this with at least 200 shadow rows and disagreement concentrated in the band. |
-| `JEVE_ESCALATION_ROUTE` | empty | Comma-separated question sets tier 1 answers *outright* (DECIDE-0006): every question, every time, sampled from the LLM's distribution, with Jev still asked and both kept in `escalations`. For measuring one arm (`make evals`), not for production; routed rows do not use tier 1's daily room. |
+| `JEVE_ESCALATION_ROUTE` | `episode.round` | Comma-separated question sets, or single questions as `set:ask`, that tier 1 answers *outright* (DECIDE-0006): every question, every time, in Jev's typed shape, sampled from the LLM's distribution, with Jev still asked and both kept in `escalations`. `off` routes nothing. The default routes what people do in a conversation, where Jev's answers stall (`ops/evals.md`); routed rows do not use tier 1's daily room. |
 
 Tier 1 is capped at 5% of the previous sim-day's decisions (at least 25 a day).
 Shadow calls are `explore` purpose and share 45 seconds a tick; a failure in

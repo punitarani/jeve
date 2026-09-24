@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -74,11 +76,20 @@ def main(argv: list[str] | None = None) -> int:
     versus.add_argument("--per-seed", type=int, default=12)
     versus.add_argument("--live", action="store_true")
 
+    sweep = sub.add_parser("sweep", help="run, measure and report arms x seeds")
+    sweep.add_argument("--arms", required=True)
+    sweep.add_argument("--seeds", default="dev")
+    sweep.add_argument("--days", type=int, default=7)
+    sweep.add_argument("--calls", choices=("record", "replay"), default="record")
+    sweep.add_argument("--parallel", type=int, default=6)
+
     rep = sub.add_parser("report", help="render ops/evals.md")
     rep.add_argument("--arms", required=True)
     rep.add_argument("--out", default=str(find_repo_root() / "ops" / "evals.md"))
 
     args = parser.parse_args(argv)
+    if args.command == "sweep":
+        return _sweep(args)
     if args.command == "report":
         report.write(args.arms.split(","), Path(args.out))
         print(f"wrote {args.out}")
@@ -96,6 +107,35 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{name} {seed}: {len(m.values)} measures, digest {m.digest}")
         return 0
     return 2
+
+
+def _sweep(args: argparse.Namespace) -> int:
+    """Every (arm, seed) as its own process — each world sets its own
+    `JEVE_DATABASE_URL`, so they cannot share one — then measure and report."""
+
+    arms = args.arms.split(",")
+    jobs = [(arm, seed) for arm in arms for seed in _seeds(args.seeds)]
+    script = Path(__file__).resolve().parents[3] / "scripts" / "evals.py"
+    running: list[tuple[str, int, subprocess.Popen[bytes]]] = []
+    failed: list[str] = []
+    while jobs or running:
+        while jobs and len(running) < args.parallel:
+            arm, seed = jobs.pop(0)
+            command = [sys.executable, str(script), "run", "--arm", arm]
+            command += ["--seed", str(seed), "--days", str(args.days)]
+            command += ["--calls", args.calls]
+            running.append((arm, seed, subprocess.Popen(command)))
+        arm, seed, proc = running.pop(0)
+        if proc.wait() != 0:
+            failed.append(f"{arm}:{seed}")
+    for arm in arms:
+        for seed in _seeds(args.seeds):
+            if f"{arm}:{seed}" not in failed:
+                runner.measure_world(runner.arm(arm), seed)
+    out = find_repo_root() / "ops" / "evals.md"
+    report.write(arms, out)
+    print(f"wrote {out}" + (f"; failed: {', '.join(failed)}" if failed else ""))
+    return 1 if failed else 0
 
 
 # -- the judge ---------------------------------------------------------------

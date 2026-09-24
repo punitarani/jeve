@@ -287,6 +287,42 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### DECIDE-0006: Route a question set to tier 1 outright, by name, when evals show Jev under-answers it
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/decide/escalation.py`, `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/config.py`, `py/src/jeve/sim/runner.py`, `py/tests/test_escalation.py`  
+**Tags**: escalation, llm, episodes, typed-decisions, agent-decided
+
+`JEVE_ESCALATION_ROUTE` names sets — or single questions, as `set:ask` — that tier 1 answers outright in Jev's typed shape, sampled from the LLM's own distribution; it defaults to `episode.round`.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### EVAL-0001: An LLM role is kept only on a held-out, judged, paired A/B
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/evals/**`, `py/scripts/evals.py`, `py/tests/test_evals.py`, `py/tests/test_layering.py`  
+**Tags**: evals, measurement, llm, layering, agent-decided
+
+An LLM role is kept only when its held-out, paired-by-seed contrast against the arm without it shows a gain and no clear loss, and a judge that has passed a planted-defect test prefers it.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### EVAL-0002: Staff stay seeded; an LLM-written cast flattened them
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/world/seed_world.py`  
+**Tags**: persona, traits, llm, negative-result, agent-decided
+
+Staff traits stay seeded: the LLM-written cast lowered persona signal on held-out seeds and bought nothing the judge could see.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### GEN-0001: Dialogue is a projection — rendered on click, cached by content hash, never read back
 
 **Status**: accepted (2026-09-20)  

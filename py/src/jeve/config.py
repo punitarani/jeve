@@ -22,6 +22,10 @@ HARD_CEILING_USD = 20.0
 # One process may not spend more than this, whatever the ladder says. A loop
 # that re-issues the same call should cost a dollar, not the night.
 RUN_CAP_USD = 1.0
+# DECIDE-0006: what people do in a conversation is answered by tier 1, not Jev.
+# Jev's answers stall 43% of conversations on held-out seeds; routed, 10% stall
+# and the judge prefers the result 17 times in 22 (ops/evals.md).
+ESCALATION_ROUTE: tuple[str, ...] = ("episode.round",)
 
 
 class Settings(BaseModel):
@@ -45,8 +49,8 @@ class Settings(BaseModel):
     # also lets the named sets act on it.
     escalation: Literal["off", "shadow", "live"] = "off"
     escalation_live: tuple[str, ...] = ()
-    # DECIDE-0006: sets tier 1 answers outright, for measuring one arm.
-    escalation_route: tuple[str, ...] = ()
+    # DECIDE-0006: sets (or `set:ask` questions) tier 1 answers outright.
+    escalation_route: tuple[str, ...] = ESCALATION_ROUTE
 
     # LLM-0009: observability. The key is the only switch — absent,
     # `jeve.tracing` never imports the SDK and opens no socket, which is what
@@ -122,14 +126,19 @@ def load_settings(*, ops_dir: Path | None = None) -> Settings:
             for name in os.environ.get("JEVE_ESCALATION_LIVE", "").split(",")
             if name.strip()
         ),
-        escalation_route=tuple(
-            name.strip()
-            for name in os.environ.get("JEVE_ESCALATION_ROUTE", "").split(",")
-            if name.strip()
-        ),
+        escalation_route=_route(os.environ.get("JEVE_ESCALATION_ROUTE")),
         braintrust_api_key=os.environ.get("BRAINTRUST_API_KEY") or None,
         braintrust_project_id=os.environ.get("BRAINTRUST_PROJECT_ID") or None,
     )
+
+
+def _route(value: str | None) -> tuple[str, ...]:
+    """Unset is the default; `off`, or an empty value, routes nothing."""
+
+    if value is None:
+        return ESCALATION_ROUTE
+    names = tuple(name.strip() for name in value.split(",") if name.strip())
+    return () if names in ((), ("off",)) else names
 
 
 def _escalation(value: str) -> Literal["off", "shadow", "live"]:

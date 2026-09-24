@@ -28,9 +28,8 @@ from jeve.config import find_repo_root
 from jeve.decide.recorder import load_cassette
 from jeve.evals.arms import ARMS, Arm, slug
 from jeve.evals.metrics import Measures, measure
-from jeve.sim import daemon, personas
+from jeve.sim import daemon
 from jeve.sim.runner import CASSETTE
-from jeve.world.seed_world import seed as seed_world
 
 EVAL_CASSETTES = find_repo_root() / "ops" / "evals" / "cassettes"
 """Not committed: tens of megabytes per sweep. The report says how to rebuild."""
@@ -85,28 +84,10 @@ def run(arm: Arm, seed: int, days: int, *, calls: str = "record") -> int:
             for path in [CASSETTE, *shared]:
                 if path != own:
                     load_cassette(conn, path)
-    reseed = ["--seed-world"]
-    if arm.personas:
-        # Seeded here, described, and then run as it stands: the daemon must
-        # not reseed the world it is handed.
-        with psycopg.connect(dsn, row_factory=dict_row) as conn:
-            db.migrate(conn)
-            seed_world(conn, root_seed=seed)
-            conn.commit()
-            conn.autocommit = True
-            authored = personas.author(conn, seed, live=calls == "record", cassette=own)
-        print(
-            f"personas: {authored.set_by_model} trait levels set by "
-            f"{sorted(set(authored.models.values()))}, "
-            f"{len(authored.rejected)} rejected, ${authored.cost_usd:.4f}"
-        )
-        for why in authored.rejected:
-            print(f"  rejected: {why}")
-        reseed = []
     return daemon.main(
         [
             *("--seed", str(seed)),
-            *reseed,
+            "--seed-world",
             *("--until-day", str(days)),
             *("--day-minutes", "0"),
             *("--policy", arm.policy),
@@ -128,7 +109,13 @@ def measure_world(arm: Arm, seed: int) -> Measures:
     path = RUNS / f"{slug(arm.name)}-{seed}.json"
     path.write_text(
         json.dumps(
-            {"arm": arm.name, "seed": seed, **measures.as_json()},
+            {
+                "arm": arm.name,
+                "against": arm.against,
+                "note": arm.note,
+                "seed": seed,
+                **measures.as_json(),
+            },
             indent=1,
             sort_keys=True,
         )

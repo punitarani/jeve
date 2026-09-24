@@ -246,39 +246,3 @@ def test_the_report_is_rendered_from_the_run_files_alone(
     assert "`persona_signal` | +0.200" in text and "**clear**" in text
     assert "12.000 ± 0.000 (0/3 in band)" in text
     assert "Held-out seeds: none yet" in text and "No judge results yet." in text
-
-
-# -- the persona referee (EVAL-0002) ---------------------------------------------------
-
-
-def test_the_persona_referee_types_what_it_can_and_rejects_the_rest() -> None:
-    from jeve.decide.questions import TRAIT_NAMES, trait_level
-    from jeve.sim import personas
-
-    staff = [
-        personas.Member("a", "Ann", "founder"),
-        personas.Member("b", "Bo", "barista"),
-    ]
-    seeded = {m.id: {t: 0.5 for t in TRAIT_NAMES} for m in staff}
-    reply = {
-        "a": {"backstory": "x", **{t: "high" for t in TRAIT_NAMES}},
-        "b": {"backstory": "y", **{t: "low" for t in TRAIT_NAMES}, "vocality": "loud"},
-        "z": {"backstory": "not on the staff"},
-    }
-    traits, count, rejected = personas.compile_reply(
-        json.dumps(reply), staff, seeded, ROOT_SEED
-    )
-    # A level lands inside the tertile trait_level reads back...
-    assert all(trait_level(t, traits["a"][t]) == 2 for t in TRAIT_NAMES)
-    assert trait_level("diligence", traits["b"]["diligence"]) == 0
-    # ...a level that is not one keeps the seeded value, and says so...
-    assert traits["b"]["vocality"] == 0.5
-    assert count == 2 * len(TRAIT_NAMES) - 1
-    assert any("b.vocality" in r for r in rejected)
-    assert any(r.startswith("z:") for r in rejected)
-    # ...and a reply that cannot be read changes nobody.
-    same, none, why = personas.compile_reply("{oops", staff, seeded, ROOT_SEED)
-    assert same == seeded and none == 0 and why == ["reply: not JSON"]
-    # The same reply compiles the same way on a replay.
-    again, _, _ = personas.compile_reply(json.dumps(reply), staff, seeded, ROOT_SEED)
-    assert again == traits

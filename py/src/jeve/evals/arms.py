@@ -40,8 +40,6 @@ class Arm:
     """The arm this one differs from by one thing; None for a baseline."""
     note: str
     env: Mapping[str, str] = field(default_factory=dict)
-    personas: bool = False
-    """Staff traits written by a model before the first tick (EVAL-0002)."""
 
 
 ARMS: dict[str, Arm] = {
@@ -57,8 +55,9 @@ ARMS: dict[str, Arm] = {
             "jev",
             "jev",
             "rules",
-            "Jev decides; tier 1 off. The world as it runs in production.",
-            {"JEVE_ESCALATION": "off"},
+            "Jev answers every question; tier 1 off, nothing routed. The world "
+            "as it ran in production before DECIDE-0006.",
+            {"JEVE_ESCALATION": "off", "JEVE_ESCALATION_ROUTE": "off"},
         ),
         Arm(
             "jev-tier1",
@@ -67,7 +66,11 @@ ARMS: dict[str, Arm] = {
             "Jev decides, and an uncertain medium- or high-stakes answer is "
             "re-asked of a flash LLM whose answer the world acts on "
             "(DECIDE-0005 `live` for every set it allows).",
-            {"JEVE_ESCALATION": "live", "JEVE_ESCALATION_LIVE": _escalating()},
+            {
+                "JEVE_ESCALATION": "live",
+                "JEVE_ESCALATION_LIVE": _escalating(),
+                "JEVE_ESCALATION_ROUTE": "off",
+            },
         ),
         Arm(
             "jev-llm-rounds",
@@ -88,16 +91,6 @@ ARMS: dict[str, Arm] = {
             "people do in the conversation, their mood and what they tell stay "
             "Jev's.",
             {"JEVE_ESCALATION": "off", "JEVE_ESCALATION_ROUTE": "episode.round:done"},
-        ),
-        Arm(
-            "jev-personas",
-            "jev",
-            "jev",
-            "The twenty-four staff described as people by a flash LLM, one "
-            "request per firm, and compiled to trait levels (`sim.personas`) "
-            "before the first tick; Jev decides everything, as in `jev`.",
-            {"JEVE_ESCALATION": "off"},
-            personas=True,
         ),
     )
 }

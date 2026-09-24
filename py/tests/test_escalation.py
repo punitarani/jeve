@@ -562,6 +562,20 @@ def test_one_question_of_a_set_can_be_routed_and_the_rest_stay_jevs() -> None:
     assert whole.routed_asks("episode.round", asks) == ("act", "done")
 
 
+def test_conversations_are_routed_by_default_and_the_switch_turns_it_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jeve.config import ESCALATION_ROUTE, load_settings
+
+    monkeypatch.delenv("JEVE_ESCALATION_ROUTE", raising=False)
+    assert load_settings().escalation_route == ESCALATION_ROUTE == ("episode.round",)
+    for off in ("off", ""):
+        monkeypatch.setenv("JEVE_ESCALATION_ROUTE", off)
+        assert load_settings().escalation_route == ()
+    monkeypatch.setenv("JEVE_ESCALATION_ROUTE", "episode.round:done, file.ticket")
+    assert load_settings().escalation_route == ("episode.round:done", "file.ticket")
+
+
 def test_a_routed_row_is_not_counted_against_the_days_room(
     conn: Connection[DictRow],
 ) -> None:

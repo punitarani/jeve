@@ -69,6 +69,8 @@ class World:
     values: dict[str, float | None]
     digest: str
     checks_failed: list[str]
+    against: str | None = None
+    note: str = ""
 
 
 def load(arms: Sequence[str], seeds: Sequence[int]) -> dict[tuple[str, int], World]:
@@ -81,7 +83,8 @@ def load(arms: Sequence[str], seeds: Sequence[int]) -> dict[tuple[str, int], Wor
             raw: dict[str, Any] = json.loads(path.read_text())
             found[(arm, seed)] = World(
                 arm, seed, int(raw["days"]), dict(raw["values"]), str(raw["digest"]),
-                list(raw.get("checks_failed", [])),
+                list(raw.get("checks_failed", [])), raw.get("against"),
+                str(raw.get("note", "")),
             )  # fmt: skip
     return found
 
@@ -146,7 +149,12 @@ def _contrasts(
 ) -> list[str]:
     lines: list[str] = []
     for arm in arms:
-        against = ARMS[arm].against
+        # An arm whose code was retired still has its runs: what it was
+        # compared against, and why, travel in its own JSON.
+        kept = [w for (a, _), w in sorted(worlds.items()) if a == arm]
+        known = ARMS.get(arm)
+        against = known.against if known else (kept[0].against if kept else None)
+        note = known.note if known else (kept[0].note if kept else "")
         if against is None or against not in arms:
             continue
         rows: list[str] = []
@@ -163,7 +171,7 @@ def _contrasts(
         lines += [
             f"#### `{arm}` against `{against}`",
             "",
-            f"{ARMS[arm].note} Paired by seed: Δ = {arm} - {against}, "
+            f"{note} Paired by seed: Δ = {arm} - {against}, "
             f"bootstrap 95% interval, d_z. {clear} of {len(rows)} measures have an "
             "interval that excludes zero.",
             "",
