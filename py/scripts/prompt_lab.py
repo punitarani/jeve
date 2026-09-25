@@ -22,8 +22,8 @@ strong model from the scores so far (DSPy's propose-evaluate-select, on
 jeve's own gateway: DSPy's calls would bypass `jeve.llm`). Selection is on a
 dev split; the winner and the incumbent are then scored on a held-out split
 nobody looked at. `models` compares tier-1 models on one prompt. `audit`
-scores Jev on every modelled set. Every figure is written to
-`ops/evals/prompt-lab/`.
+scores Jev on every modelled set. `lateness` asks whether the chase sees how
+long a bill has been left. Every figure is written to `ops/evals/prompt-lab/`.
 
     uv run --env-file ../.env python scripts/prompt_lab.py tier1 --from-db NAME
 """
@@ -46,6 +46,7 @@ from jeve.decide.policy import DecisionContext
 from jeve.decide.questions import QUESTION_SETS, Ask, Prepared, average_traits
 from jeve.errors import ResponseShapeError, TransportError
 from jeve.evals.runner import decision_contexts
+from jeve.evals.stats import paired, summary
 from jeve.llm import DECISION_PREFERENCE, DecisionRequest, Gateway
 from jeve.llm.protocol import (
     Answer,
@@ -995,6 +996,138 @@ async def orders(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- lateness: does the chase see how long a bill has been left? -----------------
+#
+# In six Jev worlds a firm's chance of chasing a bill was flat in how late it
+# was: 0.28 under a week, 0.41 at 7-9 days, 0.36 at 10-20, 0.39 past 20, where
+# the rules twin climbs to 0.80-1.00. The world asks daily from a week late
+# and a week after each chase, so a bill asked about at three weeks has mostly
+# been chased already. `times_chased` is in the decision's facts, but the
+# question never says so. Hypothesis: told what they have already done, a
+# credit controller escalates with age. Pre-registered rule: keep the wording
+# only if, on held-out states, its age gradient beats the incumbent's with a
+# paired interval clear of zero, and the chance at a week late (first ask,
+# never chased) moves by less than 0.05. Then a world A/B, in its own PR.
+
+LADDER = ((7, 0), (14, 1), (21, 2), (35, 3))
+"""(days late, times chased) as the world asks: daily from a week late, and a
+week after each chase (`engine.CHASE_AGAIN_AFTER`)."""
+REFERENCES = 3
+"""Throwaway reference fields per point, averaged (TypeSafe's probe method)."""
+
+
+def history_words(times: int) -> str:
+    """The candidate: what the chaser has already done, in the chaser's terms."""
+
+    if times <= 0:
+        return "they have not chased it yet"
+    count = {1: "once", 2: "twice"}.get(times, f"{times} times")
+    return f"they have chased it {count}, the last time a week or more ago"
+
+
+def _gradient(rows: list[list[float | None]]) -> list[float | None]:
+    """Per state, P(chase) at the top of the ladder minus at the bottom."""
+
+    return [
+        r[-1] - r[0] if r[-1] is not None and r[0] is not None else None for r in rows
+    ]
+
+
+def _chase_prepared(ctx: DecisionContext, *, history: bool) -> Prepared:
+    prepared = QUESTION_SETS["chase.invoice"].prepare(ctx)
+    if not history:
+        return prepared
+    times = int(str(ctx.facts.get("times_chased") or 0))
+    state = {**(prepared.state or {}), "chased_before": history_words(times)}
+    return replace(prepared, state=state)
+
+
+LADDERS: dict[str, tuple[bool, tuple[tuple[int, int], ...]]] = {
+    "incumbent": (False, LADDER),
+    "history": (True, LADDER),
+    "history, never chased": (True, tuple((d, 0) for d, _ in LADDER)),
+}
+"""Each wording's ladder. The last isolates age from what was done about it."""
+
+
+def _lateness_points(ctx: DecisionContext) -> list[tuple[Prepared, str]]:
+    """Every (question, reference) a state is asked, ladder by ladder, rung by
+    rung. A reference is shared across ladders and rungs (common random
+    numbers), so two wordings of one bill differ only in the wording."""
+
+    from jeve.core.seed import derive_rng
+
+    rngs = [
+        derive_rng(20261314, "lateness", ctx.person_id, ctx.sim_time, k)
+        for k in range(REFERENCES)
+    ]
+    refs = [f"ref-{rng.randrange(16**6):06x}" for rng in rngs]
+    points: list[tuple[Prepared, str]] = []
+    for history, ladder in LADDERS.values():
+        for days, times in ladder:
+            facts = {**ctx.facts, "days_late": days, "times_chased": times}
+            prepared = _chase_prepared(replace(ctx, facts=facts), history=history)
+            points += [(prepared, ref) for ref in refs]
+    return points
+
+
+async def lateness(args: argparse.Namespace) -> int:
+    out: dict[str, Any] = {"from": args.from_db, "ladder": LADDER}
+    splits = (("dev", 0, args.dev), ("held_out", args.dev, args.held_out))
+    async with Gateway(settings=load_settings()) as gw:
+        for split, offset, n in splits:
+            ctxs = contexts(args.from_db, "chase.invoice", n, offset=offset)
+            ledger = Ledger()
+
+            def job(
+                prepared: Prepared, ref: str, lg: Ledger = ledger
+            ) -> Callable[[], Awaitable[Dist | None]]:
+                return lambda: ask_jev(gw, prepared, lg, reference=ref)
+
+            got = await gather(
+                [job(pr, ref) for c in ctxs for pr, ref in _lateness_points(c)]
+            )
+            # by_ladder[name][state][rung]: P(chase), averaged over references.
+            by_ladder: dict[str, list[list[float | None]]] = {n: [] for n in LADDERS}
+            i = 0
+            for _ in ctxs:
+                for name in LADDERS:
+                    rungs: list[float | None] = []
+                    for _rung in LADDER:
+                        ys = [d["chase"]["yes"] for d in got[i : i + REFERENCES] if d]
+                        rungs.append(statistics.fmean(ys) if ys else None)
+                        i += REFERENCES
+                    by_ladder[name].append(rungs)
+            row: dict[str, Any] = {
+                "n": len(ctxs),
+                "calls": ledger.calls,
+                "failed": ledger.failed,
+            }
+            for name, rows in by_ladder.items():
+                row[name] = {
+                    "p_chase_by_rung": [
+                        summary([r[k] for r in rows]).mean for k in range(len(LADDER))
+                    ],
+                    "gradient": summary(_gradient(rows)).mean,
+                }
+            # Paired by state: the same bill, asked both ways.
+            inc, hist = by_ladder["incumbent"], by_ladder["history"]
+            grad = paired(_gradient(inc), _gradient(hist))
+            first = paired([r[0] for r in inc], [r[0] for r in hist])
+            row["gradient_history_minus_incumbent"] = grad.text()
+            row["first_ask_history_minus_incumbent"] = first.text()
+            row["keep"] = (
+                grad.clear
+                and (grad.delta or 0.0) > 0
+                and abs(first.delta or 0.0) < 0.05
+            )
+            print(split, json.dumps(row, default=str), flush=True)
+            out[split] = row
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "lateness.json").write_text(json.dumps(out, indent=1, default=str) + "\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="prompt_lab", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1038,7 +1171,13 @@ def main(argv: list[str] | None = None) -> int:
     a = sub.add_parser("audit")
     a.add_argument("--from-db", required=True)
     a.add_argument("--n", type=int, default=12)
+    late = sub.add_parser("lateness")
+    late.add_argument("--from-db", required=True)
+    late.add_argument("--dev", type=int, default=30)
+    late.add_argument("--held-out", type=int, default=30)
     args = parser.parse_args(argv)
+    if args.command == "lateness":
+        return asyncio.run(lateness(args))
     if args.command == "orders":
         return asyncio.run(orders(args))
     if args.command == "audit":

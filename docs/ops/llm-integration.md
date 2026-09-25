@@ -396,6 +396,44 @@ probability 0.77, on three seeds with 0.45, and on six with 0.20
 the time. The bar's turnover condition is a lottery at this scale, and the
 band is not widened to hide that.
 
+### Lateness reaches the chase, not the conversation
+
+The second session's lab found that neither model pressed harder in
+conversation for a bill weeks overdue. Before spending on that, I measured
+where lateness reaches a decision in finished worlds, using six seeds per arm
+(`scripts/lateness_world.py`, `ops/evals/prompt-lab/lateness-world.json`):
+
+| days late | Jev P(chase) | rules P(chase) | invoice conversations (Jev / rules) |
+| --- | --- | --- | --- |
+| not yet | — | — | 260 / 876 |
+| 1–3 | 0.30 | 0.38 | 96 / 276 |
+| 4–6 | 0.26 | 0.44 | 0 / 22 |
+| 7–9 | 0.41 | 0.47 | 0 / 0 |
+| 10–20 | 0.36 | 0.61 | 0 / 0 |
+| 21+ | 0.39 | 0.94 | 0 / 0 |
+
+- **The conversation blind spot has almost no support in the world.** Of 1,730
+  decisions in conversations about a bill, 22 concerned one more than three
+  days late. Street firms owe each other few bills, and those that go late
+  are paid within days. Outside clients owe most late bills, and they are
+  never in the room. Closing the gap in conversation would change nothing a
+  world can measure, so it was not pursued.
+- **Chasing is where lateness matters, and Jev's chance of chasing is flat in
+  it.** The world asks daily from a week late, and again a week after each
+  chase. A bill still being asked about at three weeks has mostly been chased
+  already. `times_chased` is in the decision's facts, but the question never
+  says so. The hypothesis: told what they have already done, a credit
+  controller escalates with age. `prompt_lab.py lateness` tests it against a
+  pre-registered rule. The wording is kept only if its age gradient beats the
+  incumbent's on held-out states, with a paired interval clear of zero, while
+  the first ask (a week late, never chased) moves by less than 0.05. It needs
+  live Jev calls, so it waits on credits. Any change to the world goes in its
+  own PR with its own trial, so this PR's trial measures the code it merges.
+- **A bill not yet due is described in conversation as "falls due today".**
+  `Stake.days_late` is floored at zero (it has been since #14), so a bill due
+  in two days reads as due today. This is left for the same follow-up PR,
+  because it changes wording and so the recorded calls.
+
 ### Where the bar stands
 
 - **Rules twin (final, six seeds):** every band holds on every seed except
