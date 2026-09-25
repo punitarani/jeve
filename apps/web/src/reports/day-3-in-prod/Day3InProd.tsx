@@ -8,7 +8,7 @@
  * interventions on one running world. Its numbers are the production database
  * read between 03:09 and 03:40 UTC that night through a read-only role, plus
  * the public GET /report at 03:19 (`data.json` holds the series; the smaller
- * tables are constants below, each with the query it came from in the PR).
+ * tables are constants below, each from the queries listed under Method).
  */
 import { BarChart, ColChart, LineChart, type Series } from "@/components/report/charts";
 import { dayfmt, dollars, fmt, pad2 } from "@/components/report/format";
@@ -89,7 +89,7 @@ const RECS: { id: string; ask: string; shipped: string; measured: string; v: Ver
 	{ id: "3", ask: "Put the economy into perception", shipped: "WORLD-0009: nine things can be on someone's mind, money first", measured: "Mood is 0.07 when wages are unpaid and 2.12 on payday, against 1.63 on an ordinary day. 34% of ticks now carry something on the mind (5.7% before)", v: "works" },
 	{ id: "4", ask: "Canonicalise the roster", shipped: "WORLD-0009: a room is at most three firms, described by count", measured: "Cache hit 89.6% → 92.2%; new model calls per open day 94 → 23", v: "works" },
 	{ id: "5", ask: "Ask agent.tick only when something changed", shipped: "WORLD-0009: decision points instead of every quarter hour", measured: "Asks per staff member per open day 31 → 10.7 (−65%). The lunch peak held (22.7% → 23.6% of office staff at the cafe at 13:30); encounters per staff-day halved", v: "works" },
-	{ id: "6", ask: "Fix the defects", shipped: "#26 phase 0: autopay gate, payment provenance, round counts, notices, engine SHA", measured: "317 standing-instruction payments by rule, 0.00–0.07 days late; payments now say who decided (317 rules, 109 Jev); outcome.rounds is a number", v: "works" },
+	{ id: "6", ask: "Fix the defects", shipped: "The R3 deploy's first phase: autopay gate, payment provenance, round counts, notices, engine SHA", measured: "317 standing-instruction payments by rule, 0.00–0.07 days late; payments now say who decided (317 rules, 109 Jev); outcome.rounds is a number", v: "works" },
 	{ id: "7", ask: "Give “how likely” questions a situation that matters", shipped: "The new question sets are written with concrete situations; the old ones were reworded", measured: "New sets follow the situation (vendor.trust: history 0.23 against temperament 0.14). Old ones still follow temperament (file.ticket: 0.33 against 0.01)", v: "partly" },
 	{ id: "8", ask: "Stamp the engine SHA", shipped: "sim_meta.engine_sha, and an engine.changed event per deploy", measured: "54d76f4 is stamped; three later deploys are events at d514.6, d649.6 and d718.7", v: "works" },
 ];
@@ -108,7 +108,7 @@ const REVERSALS: { id: string; cond: string; measured: string; v: Verdict }[] = 
 // -- the collapse ---------------------------------------------------------------
 
 const TIMELINE: { d: string; t: string; k?: "bad" | "mark" }[] = [
-	{ d: "d511.6", k: "mark", t: "#26 deploys into the running world. Tallybird has $11,450 and has not met a payroll since day 156. The new failure rule starts counting missed paydays from zero." },
+	{ d: "d511.6", k: "mark", t: "The R3 deploy lands in the running world. Tallybird has $11,450 and has not met a payroll since day 156. The new failure rule starts counting missed paydays from zero." },
 	{ d: "d512.4", t: "Payday missed (1 of 4). Rent is paid: $4,000." },
 	{ d: "d515.4", t: "Dana, the founder, reviews: cut costs (0.76) over borrowing (0.22). Cutting costs sets a frugal flag. Wages, the actual problem, are untouched." },
 	{ d: "d519.4", t: "Missed (2). Sara, an engineer (P(leave) 0.45), and Petra, the engineering lead (0.58), quit." },
@@ -192,8 +192,8 @@ const PER_DAY = [
 
 const REGIME_COST = [
 	{ r: "R1 · Day-1 code + episodes", days: 148, calls: 13932, usd: 0.589, hit: 0.896 },
-	{ r: "R2 · #21", days: 93, calls: 8933, usd: 0.378, hit: 0.893 },
-	{ r: "R3 · #26 + #28", days: 199, calls: 4498, usd: 0.159, hit: 0.922 },
+	{ r: "R2 · conversations", days: 93, calls: 8933, usd: 0.378, hit: 0.893 },
+	{ r: "R3 · consequences", days: 199, calls: 4498, usd: 0.159, hit: 0.922 },
 ];
 
 /** Settled spend per six wall hours, UTC (spend_entries). */
@@ -260,7 +260,7 @@ function ScaleCalc() {
 					<input id="calc-rate" type="range" min={0.5} max={6} step={0.01} value={rate} onChange={(e) => setRate(+e.target.value)} />
 				</label>
 				<p className="cap">
-					Starts at the measured R3 rate (1.36) and PR #15's district (225 staff). Raise the rate for a colder
+					Starts at the measured R3 rate (1.36) and a proposed 12-firm district (225 staff). Raise the rate for a colder
 					cache: more firms mean more distinct situations, and the rules census already shows the hit rate
 					falling as question sets are added. Cost per call is R3's mean, ${R3_USD_PER_CALL.toFixed(7)}.
 				</p>
@@ -385,7 +385,7 @@ export function Day3InProd() {
 						</Vital>
 						<Vital n="332k">typed decisions; 27,361 new model calls</Vital>
 						<Vital n="5×">
-							cheaper per open day after #26: $0.0008 against $0.0040, with the cache hit rate up to 92%
+							cheaper per open day in R3: $0.0008 against $0.0040, with the cache hit rate up to 92%
 						</Vital>
 						<Vital n="22" unit="days" alert>
 							from the first consequence to Tallybird's failure
@@ -415,18 +415,18 @@ export function Day3InProd() {
 					<div className="regimes">
 						<div className="rg">
 							<span className="rg-pr">R1 · baseline</span>
-							<b>Day-1 code, plus episodes (#14)</b>
+							<b>Day-1 code, plus episodes</b>
 							<p>What Day 1 described, with multi-round conversations switched on at its snapshot.</p>
 							<div className="n">d232 → d403 · 171 sim-days · 14.4 h · 152,718 decisions</div>
 						</div>
 						<div className="rg">
-							<span className="rg-pr">R2 · #21</span>
+							<span className="rg-pr">R2 · conversations</span>
 							<b>Rounds remember, recursion two deep</b>
 							<p>Conversations see their last round and nest two levels; hearsay and promises reach decisions.</p>
 							<div className="n">d403 → d511 · 108 sim-days · 9.3 h · 94,954 decisions</div>
 						</div>
 						<div className="rg r3">
-							<span className="rg-pr">R3 · #26 (+ #28)</span>
+							<span className="rg-pr">R3 · consequences</span>
 							<b>Consequences, perception, decision points, the scenario's loops</b>
 							<p>
 								Built from Day 1's recommendations: 16 new question sets, 46 new kinds of event, tier 1 in shadow, a
@@ -472,7 +472,7 @@ export function Day3InProd() {
 					<Kicker>Scorecard</Kicker>
 					<h2>Day 1 asked for eight changes. All eight shipped.</h2>
 					<p className="sub">
-						Each of Day 1's recommendations, what PR #26 built for it, and what production did next. Measured on R3 against
+						Each of Day 1's recommendations, what the R3 deploy built for it, and what production did next. Measured on R3 against
 						R1 unless the row says otherwise.
 					</p>
 					<Fig>
@@ -541,7 +541,7 @@ export function Day3InProd() {
 					<Kicker>The collapse</Kicker>
 					<h2>Tallybird's last 22 days</h2>
 					<p className="sub">
-						Day 1 ended with Tallybird 11 weeks unpaid and nothing happening. By the time #26 arrived it was 50 weeks.
+						Day 1 ended with Tallybird 11 weeks unpaid and nothing happening. By the time the R3 deploy arrived it was 50 weeks.
 						WORLD-0010 gave it four paydays to recover in. Every line below is a row in the event log.
 					</p>
 					<div className="grid2">
@@ -619,12 +619,12 @@ export function Day3InProd() {
 					<h2>Three firms settle; the street gets quieter</h2>
 					<p className="sub">
 						Cash at the end of each sim-day from 270,957 ledger entries that still sum to exactly zero. Dashed lines mark
-						#21 (d403), #26 (d511) and the failure (d533). Click a firm to hide it.
+						the R2 deploy (d403), the R3 deploy (d511) and the failure (d533). Click a firm to hide it.
 					</p>
 					<Fig
 						title="Cash by firm"
 						legend={<SeriesToggle series={cashSeries} hidden={hidden} onChange={setHidden} />}
-						caption="Third Rail rose in a straight line until #26 because its customers were paid for from outside. Since #26 it pays rent, stock and tax, and its cash is flat: $284,774 at d511, $280,496 at d742. Ledgerline keeps growing (+$91k) and paid $8,506 in tax. Halloran saws between $117k and $163k."
+						caption="Third Rail rose in a straight line until R3 because its customers were paid for from outside. Since R3 it pays rent, stock and tax, and its cash is flat: $284,774 at d511, $280,496 at d742. Ledgerline keeps growing (+$91k) and paid $8,506 in tax. Halloran saws between $117k and $163k."
 					>
 						<LineChart
 							series={cashSeries}
@@ -642,7 +642,7 @@ export function Day3InProd() {
 						<Fig
 							title="Friction per sim-week"
 							legend="payroll, leavers, disputes, churn…"
-							caption="The twelve kinds of event API-0004 counts as friction. Before #26 there were about 0.5 a week. After it, 4.8, near the rules forecast of 4.2, but two-thirds are the monthly batch of disputes. Between the batches most weeks have zero to two (11 of the 29 weeks after the failure have none), and a week with none trips the detector."
+							caption="The twelve kinds of event API-0004 counts as friction. Before R3 there were about 0.5 a week. After it, 4.8, near the rules forecast of 4.2, but two-thirds are the monthly batch of disputes. Between the batches most weeks have zero to two (11 of the 29 weeks after the failure have none), and a week with none trips the detector."
 						>
 							<LineChart
 								series={[{ name: "friction", color: "--bad", values: wk.map((w) => w.friction) }]}
@@ -692,7 +692,7 @@ export function Day3InProd() {
 					<Kicker>The people</Kicker>
 					<h2>What's on their mind now reaches their mood, and their talk</h2>
 					<p className="sub">
-						On Day 1, mood had one lever (an outage) and unpaid Tallybird staff were happier than paid lawyers. #26 gave
+						On Day 1, mood had one lever (an outage) and unpaid Tallybird staff were happier than paid lawyers. The R3 deploy gave
 						the prompt nine things someone can have on their mind.
 					</p>
 					<div className="grid2">
@@ -741,7 +741,7 @@ export function Day3InProd() {
 						title="What they talk about"
 						legend="share of encounters, %"
 						className="mt"
-						caption="During the 22 days of Tallybird's collapse, more than half of all conversations were about money; afterwards, nearly a third. Before #26 money was 3%. Second-hand knowledge rose from 8% of what people learned in R1 to 21% in R3, and a fact travelled four hops for the first time. Three rumours were false: all said Halloran was in trouble, and Halloran never was."
+						caption="During the 22 days of Tallybird's collapse, more than half of all conversations were about money; afterwards, nearly a third. Before R3 money was 3%. Second-hand knowledge rose from 8% of what people learned in R1 to 21% in R3, and a fact travelled four hops for the first time. Three rumours were false: all said Halloran was in trouble, and Halloran never was."
 					>
 						<div className="tbl">
 							<table>
@@ -777,7 +777,7 @@ export function Day3InProd() {
 					<h2>Where the question names the situation, Jev follows it</h2>
 					<p className="sub">
 						The widest swing in Jev's probability as one input changes, averaged over the rest, across R3's cached calls
-						(main-effect range, 0–1). The first six sets are new in #26; the last three were asked on Day 1 too.
+						(main-effect range, 0–1). The first six sets are new in R3; the last three were asked on Day 1 too.
 					</p>
 					<Fig
 						caption="Trust follows outage history and whether a report was answered; renewal follows trust; disputes follow the bill's size. The old “how likely” questions still answer to temperament: how much an outage stops someone's work moves filing a ticket by 0.014. Dispute resolution follows nothing."
@@ -848,7 +848,7 @@ export function Day3InProd() {
 						<Fig
 							title="Cache hit rate by sim-day"
 							legend="7-day mean"
-							caption="Share of Jev decisions answered by an existing call. #26 reworded almost every question, so the cache restarted cold at d511 (70–75%) and climbs back as the new wording fills in. Over all of R3, 92.2% of Jev decisions reused a call."
+							caption="Share of Jev decisions answered by an existing call. The R3 deploy reworded almost every question, so the cache restarted cold at d511 (70–75%) and climbs back as the new wording fills in. Over all of R3, 92.2% of Jev decisions reused a call."
 						>
 							<LineChart
 								series={[{ name: "hit rate", color: "--mark", values: cache.sm }]}
@@ -898,7 +898,7 @@ export function Day3InProd() {
 						<Fig
 							title="Spend per six wall hours"
 							legend="settled, UTC"
-							caption="From about $0.24 per six hours before #26 to about $0.03 after. The window cost $1.13 in model calls."
+							caption="From about $0.24 per six hours before R3 to about $0.03 after. The window cost $1.13 in model calls."
 						>
 							<ColChart
 								cats={SPEND6.map((s) => s[0])}
@@ -961,7 +961,7 @@ export function Day3InProd() {
 						<article className="claim">
 							<h3>A society run on typed decisions, at about one billed call per person-day</h3>
 							<p>
-								After #26: 4,498 new model calls over 199 open days, about 1.4 per staff member per day, and $0.0008 a day
+								In R3: 4,498 new model calls over 199 open days, about 1.4 per staff member per day, and $0.0008 a day
 								for the whole town. The survey measured roughly 1,257 language-model calls per agent-day for Smallville.
 								Every model decision is stored with its full distribution, every gated one with its rule, and all of it replays for free.
 							</p>
@@ -1101,7 +1101,7 @@ export function Day3InProd() {
 						</li>
 						<li>
 							R3 changed many things at once. Decision points, perception, the economy and the loops all arrived in one
-							deploy; their separate effects cannot be told apart here. PR #26's own rules comparison
+							deploy; their separate effects cannot be told apart here. The deploy's own rules comparison
 							(<code>ops/field-report-v2.md</code>) is the place for that.
 						</li>
 						<li>
