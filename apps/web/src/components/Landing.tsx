@@ -10,25 +10,13 @@
 import { useEffect, useState } from "react";
 import type { EventPage, WorldState } from "@jeve/contracts";
 import { fetchLatestEvents, fetchState } from "@/lib/api";
-import { JellyLoader } from "@/components/block/jelly-loader";
+import { RunnerLoader } from "@/components/block/runner-loader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dashboard } from "./Dashboard";
 import { SiteFooter } from "./SiteFooter";
 import { WorldHero } from "./WorldHero";
 
 type Loaded = { state: WorldState; page: EventPage };
-
-// Jeve's ramp: panel grey up to the accent purple, matching --line→--mark.
-const JEVE_COLORS = [
-	"#262d36",
-	"#37404d",
-	"#55606e",
-	"#77808f",
-	"#8b96a5",
-	"#7e6bb8",
-	"#a78bfa",
-	"#c4b5fd",
-];
 
 export function Landing() {
 	const [data, setData] = useState<Loaded | null>(null);
@@ -79,11 +67,7 @@ export function Landing() {
 			<WorldHero />
 			{data === null ? (
 				<main className="page-pad flex min-h-[30vh] flex-col items-center justify-center">
-					{/* The loader's ellipses are position:absolute — it needs a sized,
-					    relative anchor or they scatter to the page. */}
-					<div className="relative h-28 w-28">
-						<JellyLoader colors={JEVE_COLORS} />
-					</div>
+					<RunnerLoader />
 					<p className="muted">Loading the world…</p>
 				</main>
 			) : (

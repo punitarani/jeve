@@ -16,7 +16,7 @@
 import type { FieldReport, TownMap } from "@jeve/contracts";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { JellyLoader } from "@/components/block/jelly-loader";
+import { RunnerLoader } from "@/components/block/runner-loader";
 import { SiteFooter } from "@/components/SiteFooter";
 import { fetchReport, fetchTownMap, money } from "@/lib/api";
 import { REPORTS } from "@/reports";
@@ -65,9 +65,6 @@ const NAV: [string, string][] = [
 	["model", "the model"],
 	["outages", "outages"],
 ];
-
-// Panel grey up to the accent, as the landing page's loader.
-const LOADER = ["#262d36", "#37404d", "#55606e", "#77808f", "#8b96a5", "#7e6bb8", "#a78bfa", "#c4b5fd"];
 
 const firstName = (name: string) => name.split(" ")[0] ?? name;
 
@@ -130,9 +127,7 @@ export function LiveReport() {
 				<div className="page">
 					{error === null ? (
 						<div className="loading">
-							<div className="relative h-28 w-28">
-								<JellyLoader colors={LOADER} />
-							</div>
+							<RunnerLoader />
 							<p>Reading the world…</p>
 						</div>
 					) : (
