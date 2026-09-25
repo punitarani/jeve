@@ -395,3 +395,21 @@ probability 0.77, on three seeds with 0.45, and on six with 0.20
 (`ops/evals/band-power.json`). Even at 180 days six seeds pass only 0.69 of
 the time. The bar's turnover condition is a lottery at this scale, and the
 band is not widened to hide that.
+
+### Where the bar stands
+
+- **Rules twin (final, six seeds):** every band holds on every seed except
+  turnover, which missed on three. No invariant failed.
+- **Jev alone:** the same, except that cash flow fell under the band on one
+  seed. Jev gives cash flow for a payer whose cash is thin 0.02–0.03 of the
+  time and "routine" 0.88–0.94. The middle band corrected the wording but did
+  not move Jev, which is the next thing for the prompt lab.
+- **Persona (bar 4):** met in log-odds and not in probability. It reached 84%
+  and 70% of Jev's own gradients on the same decisions, because GLM's
+  average-person baseline for pressing and chatting is lower than Jev's.
+- **The production world, the before/after contrasts and the judges:** not
+  finished. The OpenRouter account behind the key ran out of credits during
+  the final trial, and every routed world halted with a 402 between day 18
+  and day 32. Production shares the account and will wait at its next live
+  call (SIM-0003). `scripts/evals.py run --resume` carries a halted world on
+  from its last committed tick.
