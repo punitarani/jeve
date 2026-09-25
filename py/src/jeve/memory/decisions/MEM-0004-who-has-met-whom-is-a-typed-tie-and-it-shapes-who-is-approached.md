@@ -4,7 +4,7 @@ title: "Who has met whom is a typed tie, and it shapes who is approached"
 status: "accepted"
 date: 2026-09-24
 deciders: ["claude"]
-scope: ["py/src/jeve/memory/ties.py", "py/migrations/0015_signal.sql", "py/src/jeve/decide/policy.py", "py/tests/test_ties.py", "py/tests/test_query_plans.py"]
+scope: ["py/src/jeve/memory/ties.py", "py/migrations/0015_signal.sql", "py/src/jeve/decide/policy.py", "py/src/jeve/world/space.py", "py/tests/test_ties.py", "py/tests/test_query_plans.py"]
 tags: ["memory", "relationships", "encounters", "episodes", "agent-decided"]
 supersedes: []
 superseded-by: null
@@ -40,10 +40,14 @@ stateless agents lack (docs/research/04 §3.4).
 meeting, and the last topic. Encounters, episodes and promises write it, and
 questions read it as words.
 
-- **Written by events, not asked.** A pleasant word warms a tie and money
-  raised in a bad mood cools it. In an episode, a promise to someone warms and
-  a refusal cools; pressing hard, or both ending on small talk, moves it too.
-  A promise kept warms (+1) and one broken cools (−2).
+- **Written by events, not asked.** A pleasant chat warms a tie a quarter of
+  the time, and being asked about money cools it a quarter of the time. Money
+  or an outage raised in a bad mood always cools it. In an episode, a promise
+  warms and a refusal cools; pressing hard, or both ending on small talk,
+  moves it too. A promise kept warms it by one, a broken one cools it by two.
+  A tie crossing below zero is a falling-out: `relationship.soured`, friction.
+  The first version warmed on every chat and cooled only in a bad mood: over
+  half the pairs who met ended as friends, and almost nobody fell out.
 - **Read as words.** The room, the conversation and the monthly career
   question say who is a friend and who someone has fallen out with. Jev never
   sees a number.

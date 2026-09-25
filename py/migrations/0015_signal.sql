@@ -27,6 +27,9 @@ CREATE TABLE ties (
     last_met    bigint  NOT NULL,
     last_topic  text,
     PRIMARY KEY (a, b),
-    CHECK (a < b)
+    -- Byte order, as Python's sorted() orders the pair: under a locale
+    -- collation '.' and '_' can compare the other way (macOS en_US put
+    -- tallybird.support.6 after tallybird.support_lead.5), and the insert fails.
+    CHECK ((a COLLATE "C") < (b COLLATE "C"))
 );
 CREATE INDEX ties_b ON ties (b);

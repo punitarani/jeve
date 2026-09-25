@@ -161,6 +161,7 @@ FRICTION: tuple[str, ...] = (
     "payroll.held",
     "payroll.missed",
     "promise.broken",
+    "relationship.soured",
     "rent.late",
     "staff.left",
     "subscription.cancelled",

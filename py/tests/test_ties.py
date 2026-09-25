@@ -12,6 +12,7 @@ from psycopg.rows import DictRow
 from jeve import db, memory
 from jeve.decide.policy import approach_weight
 from jeve.world.seed_world import ROOT_SEED, seed
+from jeve.world.space import COOL_CHANCE, WARM_CHANCE, encounter_warmth
 
 pytestmark = pytest.mark.timeout(120)
 
@@ -80,3 +81,25 @@ def test_people_are_likelier_to_approach_someone_they_know_and_like() -> None:
     assert fallen_out < stranger < acquaintance < friend
     # Never zero: an enemy can still be the one somebody has to talk to.
     assert fallen_out > 0
+
+
+def test_a_falling_out_is_crossing_below_neither_here_nor_there() -> None:
+    assert memory.soured(memory.Tie(3, 0), -1)
+    assert memory.soured(memory.Tie(3, 1), -2)
+    assert not memory.soured(memory.Tie(3, 2), -1)  # cooler, still on terms
+    assert not memory.soured(memory.Tie(3, -1), -1)  # already fallen out
+    assert not memory.soured(memory.Tie(3, 0), 1)
+
+
+def test_a_chat_moves_a_tie_only_sometimes() -> None:
+    """Every chat warming, and nothing but a bad mood cooling, put over half
+    the pairs who met at "friends" in a 60-day world and nobody fell out."""
+
+    assert encounter_warmth("small_talk", 2, WARM_CHANCE - 0.01) == 1
+    assert encounter_warmth("small_talk", 2, WARM_CHANCE + 0.01) == 0
+    assert encounter_warmth("money", 2, COOL_CHANCE - 0.01) == -1
+    assert encounter_warmth("money", 2, COOL_CHANCE + 0.01) == 0
+    # A stressed person raising money or the outage always cools it.
+    assert encounter_warmth("money", 0, 0.99) == -1
+    assert encounter_warmth("the_outage", 0, 0.99) == -1
+    assert encounter_warmth("work", 2, 0.0) == 0

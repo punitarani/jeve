@@ -1174,13 +1174,17 @@ def _close(
     people = [seat.agent.id for seat in seats]
     for i, x in enumerate(people):
         for y in people[i + 1 :]:
-            memory.meet(
+            by = pair_warmth(x, y, stake, local)
+            before = memory.meet(
                 engine.conn,
                 x,
                 y,
                 sim_time=report.sim_time,
-                warmth=pair_warmth(x, y, stake, local),
+                warmth=by,
                 topic=stake.kind,
+            )
+            note_soured(
+                engine, report, x, y, before, by, over=stake.kind, cause=closed_seq
             )
     if local.pressed and stake.kind == "invoice" and stake.invoice_id is not None:
         # A bill pressed in person is a reminder its payer is told about
@@ -1499,6 +1503,44 @@ def _carry_the_news(
         return
 
 
+def note_soured(
+    engine: Engine,
+    report: TickReport,
+    x: str,
+    y: str,
+    before: memory.Tie,
+    by: int,
+    *,
+    over: str,
+    cause: int | None,
+) -> None:
+    """Two people who got on, or were neither here nor there, have fallen out
+    (MEM-0004). Said as an event, because a falling-out is friction — the
+    kind the soak looks for every week — and it happened between two people
+    over something, which a changed row alone would not say."""
+
+    if not memory.soured(before, by):
+        return
+    org = engine.conn.execute(
+        "SELECT org_id FROM persons WHERE id = %s", (x,)
+    ).fetchone()
+    engine.emit(
+        report,
+        "relationship.soured",
+        actor_id=x,
+        org_id=str(org["org_id"]) if org and org["org_id"] else None,
+        causes=[cause] if cause is not None else [],
+        payload={
+            "a": x,
+            "b": y,
+            "over": over,
+            "met_before": before.met,
+            "warmth_before": before.warmth,
+            "warmth": max(memory.ties.WARMTH_MIN, before.warmth + by),
+        },
+    )
+
+
 # -- a promise falls due --------------------------------------------------------
 
 
@@ -1549,10 +1591,20 @@ def commitment_due(
         engine.conn, open_promise.to_person_id, fact.id,
         sim_time=report.sim_time, seq=seq,
     )  # fmt: skip
-    memory.warm(
+    before = memory.warm(
         engine.conn,
         open_promise.from_person_id,
         open_promise.to_person_id,
         -2,
         sim_time=report.sim_time,
+    )
+    note_soured(
+        engine,
+        report,
+        open_promise.to_person_id,
+        open_promise.from_person_id,
+        before,
+        -2,
+        over="promise_broken",
+        cause=seq,
     )

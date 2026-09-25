@@ -422,7 +422,7 @@ This decision is immutable. To change it, write a new record and set `superseded
 ### MEM-0004: Who has met whom is a typed tie, and it shapes who is approached
 
 **Status**: accepted (2026-09-24)  
-**Scope**: `py/src/jeve/memory/ties.py`, `py/migrations/0015_signal.sql`, `py/src/jeve/decide/policy.py`, `py/tests/test_ties.py`, `py/tests/test_query_plans.py`  
+**Scope**: `py/src/jeve/memory/ties.py`, `py/migrations/0015_signal.sql`, `py/src/jeve/decide/policy.py`, `py/src/jeve/world/space.py`, `py/tests/test_ties.py`, `py/tests/test_query_plans.py`  
 **Tags**: memory, relationships, encounters, episodes, agent-decided
 
 `ties` holds one row per pair (`a < b`): meetings, warmth, first and last meeting, and the last topic. Encounters, episodes and promises write it, and questions read it as words.

@@ -82,4 +82,7 @@ export const EVENT_TONE: Record<string, string> = {
   "ticket.answered": "good",
   "ticket.triaged": "neutral",
   "month.end": "mark",
+  "relationship.soured": "warn",
+  "staff.notice": "warn",
+  "subscription.cancelled": "bad",
 };

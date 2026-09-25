@@ -28,7 +28,7 @@ from jeve.memory.store import (
     revive,
     track_record,
 )
-from jeve.memory.ties import Tie, meet, ties_of, warm
+from jeve.memory.ties import Tie, meet, soured, ties_of, warm
 
 __all__ = [
     "Commitment",
@@ -48,6 +48,7 @@ __all__ = [
     "reach_of",
     "record_fact",
     "revive",
+    "soured",
     "ties_of",
     "track_record",
     "warm",

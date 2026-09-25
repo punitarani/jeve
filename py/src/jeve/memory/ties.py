@@ -6,8 +6,11 @@ decided exactly as the first. A tie is the typed residue of meetings — how
 often a pair has met, and a warmth from -3 (they have fallen out) to +3 (good
 friends) — moved by rules from what happened, never by prose:
 
-* a friendly word over small talk warms a tie, and money or an outage
-  discussed by someone already stressed cools it;
+* a friendly chat sometimes warms a tie, being asked about money sometimes
+  cools it, and money or an outage raised by someone already stressed always
+  does — sometimes, because a first 60-day world warmed every chat and cooled
+  only in a bad mood, which was rare: over half the pairs who met ended as
+  friends, most at the top of the scale, and almost nobody ever fell out;
 * in an episode, a refusal cools the tie between the one who refused and the
   one asking, a promise warms it, and pressing someone hard when tempers are up
   cools it;
@@ -105,12 +108,23 @@ def meet(
     return Tie(int(before["met"]), int(before["warmth"]))
 
 
-def warm(conn: Connection[DictRow], x: str, y: str, by: int, *, sim_time: int) -> None:
-    """A change in how they get on that was not a meeting (a promise scored)."""
+def soured(before: Tie, by: int) -> bool:
+    """Whether moving a tie `by` from `before` is a falling-out: two people who
+    got on, or were neither here nor there, now do not."""
+
+    return before.warmth >= 0 and max(WARMTH_MIN, before.warmth + by) < 0
+
+
+def warm(conn: Connection[DictRow], x: str, y: str, by: int, *, sim_time: int) -> Tie:
+    """A change in how they get on that was not a meeting (a promise scored).
+    Returns the tie as it stood before."""
 
     if x == y or by == 0:
-        return
+        return Tie()
     a, b = _pair(x, y)
+    before = conn.execute(
+        "SELECT met, warmth FROM ties WHERE a = %s AND b = %s", (a, b)
+    ).fetchone()
     conn.execute(
         "INSERT INTO ties (a, b, met, warmth, first_met, last_met) "
         "VALUES (%s, %s, 0, %s, %s, %s) ON CONFLICT (a, b) DO UPDATE SET "
@@ -120,3 +134,6 @@ def warm(conn: Connection[DictRow], x: str, y: str, by: int, *, sim_time: int) -
             WARMTH_MIN, WARMTH_MAX,
         ),
     )  # fmt: skip
+    if before is None:
+        return Tie()
+    return Tie(int(before["met"]), int(before["warmth"]))

@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING
 from jeve import memory
 from jeve.core.clock import DAY, HOUR, TICK, SimTime
 from jeve.core.orgs import shift_for
-from jeve.core.seed import derive_seed
+from jeve.core.seed import derive_rng, derive_seed
 from jeve.decide.policy import DecisionContext
 from jeve.world import episodes, shocks
 from jeve.world.map import ORG_ZONE, Tile, Zone, entry_for, find_path, spot_for
@@ -580,14 +580,26 @@ def run(engine: Engine, report: TickReport, now: SimTime) -> None:
             )
 
 
-def encounter_warmth(topic: str, mood: int) -> int:
-    """How a one-shot conversation moves a tie (MEM-0004): a pleasant word
-    warms it; money or the outage raised by someone already stressed cools it;
-    anything else leaves it where it was."""
+WARM_CHANCE = 0.25
+"""The chance one pleasant chat moves a tie up a step (MEM-0004)."""
+COOL_CHANCE = 0.25
+"""The chance being asked about money moves it down one."""
 
-    if topic == "small_talk" and mood >= 2:
-        return 1
+
+def encounter_warmth(topic: str, mood: int, draw: float) -> int:
+    """How a one-shot conversation moves a tie (MEM-0004).
+
+    Money or the outage raised by someone already stressed cools it. Otherwise
+    a pleasant chat sometimes warms it and money talk sometimes cools it;
+    anything else leaves it where it was. Every chat warming and nothing
+    but a bad mood cooling (a first 60-day world) put over half the pairs who
+    met at "friends", most at the top of the scale, and nobody fell out."""
+
     if topic in ("money", "the_outage") and mood == 0:
+        return -1
+    if topic == "small_talk" and mood >= 1 and draw < WARM_CHANCE:
+        return 1
+    if topic == "money" and draw < COOL_CHANCE:
         return -1
     return 0
 
@@ -636,12 +648,19 @@ def _encounters(
             episodes.open_incident(engine, down) if topic == "the_outage" else None
         )
         mood = int(decision.chosen.get("mood", 2))
+        # Keyed by the pair and the day (CORE-0009): what a chat does to a tie
+        # is about the two of them, not about when the tick fell.
+        first, second = sorted((agent.id, other.id))
+        draw = derive_rng(
+            engine.root_seed, "tie", first, second, SimTime(report.sim_time).day
+        ).random()
+        warmth = encounter_warmth(topic, mood, draw)
         before = memory.meet(
             engine.conn,
             agent.id,
             other.id,
             sim_time=report.sim_time,
-            warmth=encounter_warmth(topic, mood),
+            warmth=warmth,
             topic=topic,
         )
         reminded = (
@@ -681,6 +700,9 @@ def _encounters(
             decision_id=decision.id,
             causes=[incident["cause"]] if incident and incident["cause"] else [],
             payload=payload,
+        )
+        episodes.note_soured(
+            engine, report, agent.id, other.id, before, warmth, over=topic, cause=seq
         )
         if decision.chosen.get("raise_outage") and other.org == "tallybird":
             episodes.escalate(
