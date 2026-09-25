@@ -23,7 +23,8 @@ jeve's own gateway: DSPy's calls would bypass `jeve.llm`). Selection is on a
 dev split; the winner and the incumbent are then scored on a held-out split
 nobody looked at. `models` compares tier-1 models on one prompt. `audit`
 scores Jev on every modelled set. `lateness` asks whether the chase sees how
-long a bill has been left. Every figure is written to `ops/evals/prompt-lab/`.
+long a bill has been left, and `cash` whether a payer with thin cash ever
+says cash is why. Every figure is written to `ops/evals/prompt-lab/`.
 
     uv run --env-file ../.env python scripts/prompt_lab.py tier1 --from-db NAME
 """
@@ -1128,6 +1129,138 @@ async def lateness(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- cash: does a payer with thin cash ever say cash is why? ---------------------
+#
+# Asked why an overdue bill was left, Jev gave cash flow 0.54 when cash was
+# tight (under 14 days), 0.036 when it was thin (14-30 days) and 0.000 when it
+# was comfortable, over 2,682 asked decisions in six worlds. The thin band is
+# where the median small business sits (JPMorgan Chase Institute: 27 days), and
+# the world's cash-flow share of late bills sat at the band's floor (0.17-0.28
+# against 0.20-0.50). Hypothesis: "there is enough cash to pay it" answers the
+# question before it is asked. Pre-registered rule: a candidate is kept only
+# if, on held-out states, P(cash flow | thin) rises with a paired interval
+# clear of zero, P(cash flow | comfortable) stays under 0.05, and P(cash flow |
+# tight) stays at 0.4 or more. Then a world A/B, in its own PR.
+
+RUNWAYS = (7, 20, 45)
+"""Days of cash, one in each of `cash_band`'s bands: tight, thin, comfortable."""
+CASH_WORDINGS: dict[str, tuple[str, str, str] | None] = {
+    "incumbent": None,
+    "thin": (
+        "cash is tight; paying this leaves little in the account",
+        "cash is thinner than they would like; paying this would take a fair "
+        "bite out of it",
+        "there is comfortably enough cash to pay it",
+    ),
+    "weeks": (
+        "they have less than two weeks of cash in hand",
+        "they have two to four weeks of cash in hand",
+        "they have more than a month of cash in hand",
+    ),
+}
+"""`thin` changes the middle band's words only. `weeks` says the runway itself
+in every band and leaves the reading to the model."""
+
+
+def _cash_points(ctx: DecisionContext) -> list[tuple[Prepared, str]]:
+    from jeve.core.seed import derive_rng
+
+    rngs = [
+        derive_rng(20261315, "cash", ctx.person_id, ctx.sim_time, k)
+        for k in range(REFERENCES)
+    ]
+    refs = [f"ref-{rng.randrange(16**6):06x}" for rng in rngs]
+    points: list[tuple[Prepared, str]] = []
+    for words in CASH_WORDINGS.values():
+        for band, days in enumerate(RUNWAYS):
+            c = replace(ctx, facts={**ctx.facts, "runway_days": days})
+            prepared = QUESTION_SETS["payment.timing"].prepare(c)
+            if words is not None:
+                state = {**(prepared.state or {}), "cash": words[band]}
+                prepared = replace(prepared, state=state)
+            points += [(prepared, ref) for ref in refs]
+    return points
+
+
+async def cash(args: argparse.Namespace) -> int:
+    from jeve.decide import gates
+
+    out: dict[str, Any] = {"from": args.from_db, "runways": RUNWAYS}
+    pool = [
+        c
+        for c in contexts(
+            args.from_db, "payment.timing", 4 * (args.dev + args.held_out)
+        )
+        # Overdue and asked: the reason list without "not due", no gate.
+        if float(str(c.facts.get("days_until_due", 1))) <= 0 and gates.settle(c) is None
+    ]
+    held_out = pool[args.dev : args.dev + args.held_out]
+    splits = (("dev", pool[: args.dev]), ("held_out", held_out))
+    async with Gateway(settings=load_settings()) as gw:
+        for split, ctxs in splits:
+            ledger = Ledger()
+
+            def job(
+                prepared: Prepared, ref: str, lg: Ledger = ledger
+            ) -> Callable[[], Awaitable[Dist | None]]:
+                return lambda: ask_jev(gw, prepared, lg, reference=ref)
+
+            got = await gather(
+                [job(pr, ref) for c in ctxs for pr, ref in _cash_points(c)]
+            )
+            # why[name][band][state], pay[name][band][state]
+            why: dict[str, list[list[float | None]]] = {}
+            pay: dict[str, list[list[float | None]]] = {}
+            for name in CASH_WORDINGS:
+                why[name] = [[] for _ in RUNWAYS]
+                pay[name] = [[] for _ in RUNWAYS]
+            i = 0
+            for _ in ctxs:
+                for name in CASH_WORDINGS:
+                    for band in range(len(RUNWAYS)):
+                        ds = [d for d in got[i : i + REFERENCES] if d]
+                        i += REFERENCES
+                        why[name][band].append(
+                            statistics.fmean(d["why_not"]["cash_flow"] for d in ds)
+                            if ds
+                            else None
+                        )
+                        pay[name][band].append(
+                            statistics.fmean(d["pay_today"]["yes"] for d in ds)
+                            if ds
+                            else None
+                        )
+            row: dict[str, Any] = {
+                "n": len(ctxs),
+                "calls": ledger.calls,
+                "failed": ledger.failed,
+            }
+            for name in CASH_WORDINGS:
+                row[name] = {
+                    "p_cash_flow_by_band": [summary(b).mean for b in why[name]],
+                    "p_pay_by_band": [summary(b).mean for b in pay[name]],
+                }
+                if name == "incumbent":
+                    continue
+                rise = paired(why["incumbent"][1], why[name][1])
+                row[name]["thin_rise"] = rise.text()
+                shift = paired(pay["incumbent"][1], pay[name][1])
+                row[name]["pay_shift_thin"] = shift.text()
+                comfortable = summary(why[name][2]).mean or 0.0
+                tight = summary(why[name][0]).mean or 0.0
+                row[name]["keep"] = (
+                    rise.clear
+                    and (rise.delta or 0.0) > 0
+                    and comfortable < 0.05
+                    and tight >= 0.4
+                )
+            print(split, json.dumps(row, default=str), flush=True)
+            out[split] = row
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "cash.json").write_text(json.dumps(out, indent=1, default=str) + "\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="prompt_lab", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1175,9 +1308,15 @@ def main(argv: list[str] | None = None) -> int:
     late.add_argument("--from-db", required=True)
     late.add_argument("--dev", type=int, default=30)
     late.add_argument("--held-out", type=int, default=30)
+    money = sub.add_parser("cash")
+    money.add_argument("--from-db", required=True)
+    money.add_argument("--dev", type=int, default=30)
+    money.add_argument("--held-out", type=int, default=30)
     args = parser.parse_args(argv)
     if args.command == "lateness":
         return asyncio.run(lateness(args))
+    if args.command == "cash":
+        return asyncio.run(cash(args))
     if args.command == "orders":
         return asyncio.run(orders(args))
     if args.command == "audit":

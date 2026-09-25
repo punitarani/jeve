@@ -396,6 +396,17 @@ probability 0.77, on three seeds with 0.45, and on six with 0.20
 the time. The bar's turnover condition is a lottery at this scale, and the
 band is not widened to hide that.
 
+The final seeds drew badly. The hazard predicts 0.92 departures a world. Six
+final worlds drew 10 between them, a draw of probability 0.053. Eleven dev
+worlds drew 13, which is unremarkable (P(≥13) = 0.22). The world is calibrated
+in expectation, and the misses are the draw. The draw is keyed by person and
+month (CORE-0009), so a person reads the same uniform in every arm. A pushed
+person's threshold moves only by the relative risk they are judged to carry.
+Jev's worlds lost exactly as many people as the rules twin's on all six seeds.
+Production should therefore miss turnover on 20261203, 20261301 and 20261303
+as they did. The seeds were fixed
+before the trial, and choosing others would be choosing the result.
+
 ### Lateness reaches the chase, not the conversation
 
 The second session's lab found that neither model pressed harder in
