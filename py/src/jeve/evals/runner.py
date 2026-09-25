@@ -92,8 +92,14 @@ def cassette_for(arm: Arm, seed: int) -> Path:
     return EVAL_CASSETTES / f"{slug(arm.name)}-{seed}.jsonl"
 
 
-def run(arm: Arm, seed: int, days: int, *, calls: str = "record") -> int:
+def run(
+    arm: Arm, seed: int, days: int, *, calls: str = "record", resume: bool = False
+) -> int:
     """Seed the arm's world and run it to `days`. Returns the daemon's exit.
+
+    `resume` carries on a world that stopped short of its horizon (a halt on an
+    exhausted upstream budget, say) from its last committed tick, as the
+    daemon always resumes (SIM-0001), rather than seeding it again.
 
     Sets `JEVE_DATABASE_URL` for this process, as the soak does: the recorder,
     the ledger and the gateway each open their own connection, and all of them
@@ -118,7 +124,7 @@ def run(arm: Arm, seed: int, days: int, *, calls: str = "record") -> int:
     return daemon.main(
         [
             *("--seed", str(seed)),
-            "--seed-world",
+            *(() if resume else ("--seed-world",)),
             *("--until-day", str(days)),
             *("--day-minutes", "0"),
             *("--policy", arm.policy),

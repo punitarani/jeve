@@ -58,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--seed", type=int, required=True)
     run.add_argument("--days", type=int, default=7)
     run.add_argument("--calls", choices=("record", "replay"), default="record")
+    run.add_argument(
+        "--resume", action="store_true", help="carry on a world that stopped short"
+    )
 
     measure = sub.add_parser("measure", help="measure worlds that have run")
     measure.add_argument("--arms", required=True)
@@ -108,7 +111,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "judge":
         return _versus(args)
     if args.command == "run":
-        return runner.run(runner.arm(args.arm), args.seed, args.days, calls=args.calls)
+        return runner.run(
+            runner.arm(args.arm),
+            args.seed,
+            args.days,
+            calls=args.calls,
+            resume=args.resume,
+        )
     if args.command == "measure":
         for name in args.arms.split(","):
             for seed in _seeds(args.seeds):
