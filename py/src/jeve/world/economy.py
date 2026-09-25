@@ -48,6 +48,17 @@ if TYPE_CHECKING:
 
 WEEK = 7 * DAY
 MONTH = 28 * DAY
+CALENDAR_MONTH = 30.44 * DAY
+
+
+def per_month(rate: float) -> float:
+    """A calendar month's chance, as the chance in one of the world's 28-day
+    months. The sources count calendar months; drawn once per 28 days as they
+    stood, a year held thirteen draws and a rate came out 9% high."""
+
+    return 1.0 - float((1.0 - rate) ** (MONTH / CALENDAR_MONTH))
+
+
 """The world's month: `month.end` has always recurred every 28 days."""
 
 RENT_MONTHLY_CENTS: dict[str, int] = {
@@ -885,7 +896,7 @@ def careers(engine: Engine, report: TickReport) -> None:
         )
         if not pushed:
             rng = _month_rng(engine, report, str(person["id"]))
-            if rng.random() < QUITS_MONTHLY.get(org, QUITS_MONTHLY_DEFAULT):
+            if rng.random() < per_month(QUITS_MONTHLY.get(org, QUITS_MONTHLY_DEFAULT)):
                 point, total = rng.random() * sum(w for _, w in UNPUSHED_REASONS), 0.0
                 reason = UNPUSHED_REASONS[-1][0]
                 for name, weight in UNPUSHED_REASONS:
@@ -911,7 +922,9 @@ def careers(engine: Engine, report: TickReport) -> None:
     ):
         # The industry's rate, times how much likelier than an ordinary month
         # Jev judges this person to go; the same draw a content person gets.
-        base = QUITS_MONTHLY.get(str(person["org_id"]), QUITS_MONTHLY_DEFAULT)
+        base = per_month(
+            QUITS_MONTHLY.get(str(person["org_id"]), QUITS_MONTHLY_DEFAULT)
+        )
         risk = float(made.chosen.get("relative_risk", 1.0))
         if _month_rng(engine, report, str(person["id"])).random() < base * risk:
             reason = str(made.chosen.get("reason") or "other")

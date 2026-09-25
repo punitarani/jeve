@@ -222,7 +222,7 @@ def renewals(engine: Engine, report: TickReport) -> dict[int, float]:
             continue
         # Content customers are not asked, and not immortal either: an
         # ordinary month's chance of going for reasons of their own.
-        if _month_draw(engine, report, sub) < LAPSE_MONTHLY:
+        if _month_draw(engine, report, sub) < economy.per_month(LAPSE_MONTHLY):
             cancel(engine, report, sub, holder, None)
     if not at_risk:
         return discounts
@@ -299,7 +299,7 @@ def renewals(engine: Engine, report: TickReport) -> dict[int, float]:
         at_risk, engine.decide_many(report, contexts), strict=True
     ):
         risk = float(made.chosen.get("relative_risk", 1.0))
-        if _month_draw(engine, report, sub) >= LAPSE_MONTHLY * risk:
+        if _month_draw(engine, report, sub) >= economy.per_month(LAPSE_MONTHLY) * risk:
             continue
         cancel(engine, report, sub, holder, made)
         discounts.pop(int(sub["id"]), None)
