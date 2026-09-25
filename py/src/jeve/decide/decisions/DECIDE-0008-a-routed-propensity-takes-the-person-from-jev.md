@@ -42,7 +42,8 @@ conversation.
 
 For a routed set, Jev is asked about this person and about the same situation
 with every trait at the middle of its range, in the same batch. Tier 1 is asked
-about that average person. A judgement is the LLM's whole. A propensity is the
+about that average person. A judgement is the LLM's whole, so `done` is read
+off the conversation for the average person. A propensity is the
 LLM's answer times Jev's ratio for this person over the average person,
 renormalised (`escalation.transplant`, with a 0.01 floor on Jev's side). This
 amends DECIDE-0006's "sampled from the LLM's own distribution" for

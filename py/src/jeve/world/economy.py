@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
 WEEK = 7 * DAY
 MONTH = 28 * DAY
+"""The world's month: `month.end` has always recurred every 28 days."""
 CALENDAR_MONTH = 30.44 * DAY
 
 
@@ -58,8 +59,6 @@ def per_month(rate: float) -> float:
 
     return 1.0 - float((1.0 - rate) ** (MONTH / CALENDAR_MONTH))
 
-
-"""The world's month: `month.end` has always recurred every 28 days."""
 
 RENT_MONTHLY_CENTS: dict[str, int] = {
     "tallybird": 4_000_00,

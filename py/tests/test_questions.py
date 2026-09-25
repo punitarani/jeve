@@ -585,6 +585,20 @@ def test_the_question_that_ends_a_conversation_is_about_the_person() -> None:
     assert "said what they came to say" in asks["done"].question.instructions
 
 
+def test_cash_reads_in_three_bands_for_the_payer_and_for_the_one_owed() -> None:
+    from jeve.decide.policy import cash_band
+    from jeve.decide.questions import owed_cash_words, runway_words
+
+    assert [cash_band(d) for d in (5, 13.9, 14, 29.9, 30, 90, None)] == [
+        0, 0, 1, 1, 2, 2, 2
+    ]  # fmt: skip
+    payer = [runway_words(d) for d in (5, 20, 60)]
+    owed = [owed_cash_words(d) for d in (5, 20, 60)]
+    assert len(set(payer)) == len(set(owed)) == 3
+    # The firm that is owed is never told it has cash "to pay it".
+    assert not any("pay it" in w for w in owed)
+
+
 def test_the_holders_colleague_is_not_told_it_is_none_of_their_business() -> None:
     part = "their_part_in_it"
     for stake in ("outage", "invoice"):

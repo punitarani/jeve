@@ -589,6 +589,31 @@ def test_each_round_is_told_what_happened_in_the_last(
     conn.rollback()
 
 
+def test_the_holders_colleague_knows_it_is_their_firms_matter(
+    conn: Connection[DictRow],
+) -> None:
+    """Only one of the vendor's people holds an outage; another in the room is a
+    bystander, but it is their own firm's software (DECIDE-0008's renders)."""
+
+    engineer = "tallybird.engineer.2"
+    policy = Scripted(ROOT_SEED, {CUSTOMER: [{"act": "press"}]})
+    engine, report = fresh(conn, policy)
+    outage(engine, report)
+    present, made, by_id = stage(engine, conn, [CUSTOMER, VENDOR, engineer], Zone.CAFE)
+    episodes.run(
+        engine, report, SimTime(report.sim_time), present, made, by_id, ["invoicing"]
+    )
+    parts = {
+        ctx.person_id: (ctx.facts["role_in_stake"], ctx.facts["holder_firm"])
+        for ctx in policy.asked
+        if ctx.kind == "episode.round" and ctx.facts.get("stake") == "outage"
+    }
+    assert parts[CUSTOMER] == ("asker", False)
+    vendors = sorted(v for k, v in parts.items() if k.startswith("tallybird."))
+    assert vendors == [("bystander", True), ("holder", False)]
+    conn.rollback()
+
+
 def test_a_conversation_going_in_circles_ends_as_stalled(
     conn: Connection[DictRow],
 ) -> None:

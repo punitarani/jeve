@@ -280,3 +280,118 @@ after that:
   `en_US` macOS cluster it rejected a pair Python ordered the other way. It is
   `COLLATE "C"` now, which production (glibc `en_US`) needs as much as CI
   (musl).
+
+## Third session: instruments that can see, the person from Jev, and the bar
+
+The brief set a bar and asked for research towards it:
+
+1. Every banded prior is in band on every seed, for the rules twin and for
+   production, and no soak invariant fails on any seed.
+2. Production beats the world before this PR (e9a8c2b) on the paired contrasts
+   that matter, with intervals excluding zero, and loses clearly on nothing.
+3. Both validated judges prefer after over before, Wilson interval clear of 0.5.
+4. Persona survives: world-level gradients at least as strong as Jev's own.
+5. Every figure comes from committed JSON that can be regenerated.
+
+Each idea went hypothesis → dev A/B → held-out → keep or revert. Negative
+results are kept here beside the kept ones.
+
+### The judge prefers short accounts (EVAL-0003)
+
+Every challenger that lengthened conversations had been mildly dispreferred.
+`judge-validate` now plants a length-only variant: an episode against itself
+with one unremarkable exchange added before its last round. Neither judge was
+indifferent. On 20 pairs from the rules-twin trial worlds, Luna chose the
+shorter copy 0.88 of the time and Haiku 0.93. That is as strong as their
+preference for a clean record over a broken one
+(`ops/evals/judge/0-validation*.json`).
+
+Arms are now compared only on episodes of the same shape: stake, rounds and
+people. Re-judged that way, the earlier rejections stand. Haiku gave Luna
+0.43 [0.35, 0.51] over GLM, and gave Gemini 0.50 while Luna gave it 0.46.
+The tuned tier-1 prompt got 0.43 and 0.50. So length did not explain those
+results.
+
+### A judge that can see persona (EVAL-0004)
+
+Persona is a difference between people, and a judge reading one encounter at
+a time cannot see it. The persona judge shows one real moment twice: the
+person deciding is described once as outspoken and sociable and once as
+quiet and reserved, and each version shows what that person did. On planted
+defects, where both versions do the same thing (*flattened*) or each does
+the other's act (*swapped*), Luna caught 0.975 and Sonnet 5 caught 0.95.
+Haiku caught 0.61, mostly following position, so it is not a persona judge
+(`ops/evals/judge/0-validation-casts*.json`).
+
+### The person from Jev, the conversation from the LLM (DECIDE-0008)
+
+On the same routed decisions, Jev's persona gradients were about twice
+GLM's. Luna kept more persona but cost 30% more, and the ordinary judge did
+not prefer it.
+
+The transplant asks the LLM about the average person in the situation, and
+asks Jev about this person and the average person. The LLM's answer is then
+moved by Jev's ratio between the two. The laboratory
+(`transplant.json`, held-out states) showed GLM's gradients rising to Jev's
+level while P(done) stayed GLM's. The persona judge (`casts.json`, 60
+held-out moments × 2 draws) preferred transplanted acts over GLM's: Sonnet
+0.62 [0.53, 0.70], Luna 0.57 [0.48, 0.66]. It preferred them over Luna's too,
+at 0.56 [0.48, 0.65] (Sonnet).
+
+The first world A/B moved every routed answer by Jev's ratio, and was
+**rejected** (six 14-day dev worlds). Persona rose (press 0.16 → 0.31, small
+talk 0.19 → 0.29), but moving the judgement "has this person had their say?"
+lowered P(done). Conversations settled less, 0.84 → 0.72, and ran a third of
+a round longer. The kept version moves only propensities. It kept the persona
+gain (press 0.16 → 0.32, small talk 0.19 → 0.27, where Jev's own on the same
+decisions were 0.39 and 0.38) and closure improved: stalls 0.042 → 0.006 and
+rounds 1.38 → 1.21, both clear. Cost did not change, and the ordinary judge
+at equal length gave 0.55 with both judges.
+
+It cost one thing on the scorecard. The identifiability ratio fell from 38 to
+31, clearly. Distinctness between people did not change (0.238 → 0.232). What
+rose was each person's variety of topics over time (retest JSD 0.147 → 0.183),
+as more news travelled.
+
+### What the instruments found wrong with the world
+
+- **A filled desk was hired for again.** The vacancy query compared person ids
+  as text. `account_manager.24` sorts before `account_manager.7`, so one firm
+  hired four account managers in four weeks for one departure.
+- **Colleagues were told it was none of their business.** Only one vendor
+  person holds an outage, so a support lead in the room was told their own
+  firm's outage was "not their problem either way". The persona judge's
+  renders showed it.
+- **Twenty days of cash read as plenty.** Cash had two bands, and Jev gave
+  0.000 to cash flow as the reason for every late payer above 14 days. The
+  middle band ("enough, but not much to spare") sits below JPMorgan Chase
+  Institute's median buffer of 27 days.
+- **The firm owed money was told it had cash "to pay it".**
+- **Two invariants miscounted.** "Every week has friction" ignored creditors
+  chasing late bills: one quiet week held sixteen chases. "Support is still
+  hearing from people" counted tickets only, so an outage raised in person
+  with an engineer read as silence.
+- **Monthly rates were drawn every 28 days**, thirteen times a year, which
+  put quits and lapses about 9% high.
+
+### Calibrating the rules twin
+
+The rules twin paid most bills on the due date. Its pressure was set on six
+dev seeds (20261240–45), with the trial and confirmation seeds untouched:
+
+| measure | result | cited target |
+| --- | --- | --- |
+| late share | 0.40–0.51 | Atradius: 0.43 |
+| days late | 5.3–6.6 | Xero: 7.8 |
+| cash flow share of late bills | 0.30–0.43 | Atradius: 0.35 of mentions |
+
+### Turnover cannot pass on every seed
+
+Over 60 days, one departure among 24 staff reads 0.021 a month and two read
+0.042, on either side of the band's 0.035 ceiling. `scripts/band_power.py`
+computes the chance exactly, using the world's own quit rates and the heads
+who never quit. A world with nothing pushing anyone passes on one seed with
+probability 0.77, on three seeds with 0.45, and on six with 0.20
+(`ops/evals/band-power.json`). Even at 180 days six seeds pass only 0.69 of
+the time. The bar's turnover condition is a lottery at this scale, and the
+band is not widened to hide that.

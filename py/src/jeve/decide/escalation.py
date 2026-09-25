@@ -140,8 +140,10 @@ class Config:
     world acts on; every other escalated set stays in shadow.
 
     `route` names sets tier 1 answers *outright* (DECIDE-0006): every question,
-    every time, whatever Jev's confidence, and the world samples the LLM's
-    distribution itself rather than a mixture. `set:ask` routes one question
+    every time, whatever Jev's confidence. Tier 1 is asked about the average
+    person in the situation; the world takes its judgements whole and moves
+    its propensities to this person by Jev's ratio (DECIDE-0008), rather than
+    mixing the two answers. `set:ask` routes one question
     of a set and leaves the others to Jev. Jev is still asked, so each
     routed decision carries both answers — the cheapest way to measure whether
     a general-purpose model answers a set's typed questions any better. Routed
@@ -455,9 +457,10 @@ def applied(
     """What the world acts on when a set is live: the LLM's judgement, or an
     even mixture for a propensity (design/005, "what the second opinion does").
 
-    A routed set's judgement is the LLM's whole: that is what it was routed to
-    make. Its propensities are the LLM's answer for the average person in the
-    situation, moved to this person by Jev (DECIDE-0008). Moved as well, the
+    A routed set's judgement is the LLM's whole, about the average person in
+    the situation (it is what the set was routed for, and whether someone has
+    had their say is read off the conversation). Its propensities are the
+    same answer moved to this person by Jev (DECIDE-0008). Moved as well, the
     judgement of whether someone had had their say fell below one half more
     often: settled conversations 0.84 -> 0.72, a third of a round longer (six
     14-day worlds)."""

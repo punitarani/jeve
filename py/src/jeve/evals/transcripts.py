@@ -53,8 +53,8 @@ ENDINGS: dict[str, str] = {
 DEFECTS: tuple[str, ...] = ("wrong_actor", "loop", "phantom_effect", "closed_hours")
 PADDED = "padded (length only)"
 """Not a defect: the same account with one more unremarkable exchange. A judge
-with no taste for length gives it 0.50; both judges gave 0.77 or more to the
-shorter copy, which is why arms are compared on episodes of equal length."""
+with no taste for length gives it 0.50; Luna gave the shorter copy 0.88 and
+Haiku 0.93 (EVAL-0003), which is why arms are compared at equal length."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -190,10 +190,8 @@ class RulesPolicy:
             pressure += 0.35
         elif ctx.facts.get("chased") or ctx.facts.get("reminded_in_person"):
             pressure += 0.2
-        if runway_days < 14:
-            pressure -= 0.3
-        elif runway_days < 30:
-            pressure -= 0.1
+        band = cash_band(runway_days)
+        pressure -= (0.3, 0.1, 0.0)[band]
         draw, why = _uniform(rng), _uniform(rng)
         pay = draw < max(0.05, min(0.98, pressure))
         # Why not, when not: before the date, it is not due; cash, mostly, when
@@ -201,22 +199,27 @@ class RulesPolicy:
         # most cited reason in the trade surveys), a query while disputed;
         # otherwise the payment process (a batch, a sign-off — the next most
         # cited), other bills, oversight.
+        cash = (0.75, 0.15, 0.0)[band]
+        # What is left of the draw past the cash cut, spread over the process
+        # reasons: reused as it was, a payer short of cash could only ever have
+        # been late for other bills or forgetting, never a batch or a sign-off.
+        rest = (why - cash) / (1.0 - cash) if why >= cash else 0.0
         if pay:
             reason = "due"
         elif days_until_due > 0:
             reason = "not_due"
-        elif (runway_days < 14 and why < 0.75) or (runway_days < 30 and why < 0.15):
+        elif why < cash:
             reason = "cash_flow"
         elif ctx.facts.get("disputed"):
             reason = "query"
         else:
             reason = (
                 "routine"
-                if why < 0.45
+                if rest < 0.45
                 else "approval"
-                if why < 0.6
+                if rest < 0.6
                 else "other_bills"
-                if why < 0.85
+                if rest < 0.85
                 else "forgot"
             )
         return {"pay": pay, "reason": reason}, {"pay": draw, "why_not": why}
@@ -782,6 +785,21 @@ _CREDENCE: dict[int, float] = {0: 1.0, 1: 0.7, 2: 0.4}
 """How much of a report's weight hearsay carries, by removes from first hand."""
 
 _RECORD_URGE: dict[str, float] = {"broken": 0.2, "kept": -0.1}
+
+
+CASH_TIGHT_DAYS = 14
+CASH_THIN_DAYS = 30
+"""Days of outgoings in the bank: under 14 is tight, under 30 is thin (below
+JPMorgan Chase Institute's median small business, 27 days), and more is
+comfortable. Banded once, for every question that words cash and for the
+rules twin, so the twin is told the same world Jev is."""
+
+
+def cash_band(days: object, default: float = 30.0) -> int:
+    """0 tight, 1 thin, 2 comfortable."""
+
+    value = _num(days, default)
+    return 0 if value < CASH_TIGHT_DAYS else 1 if value < CASH_THIN_DAYS else 2
 
 
 def _num(value: object, default: float) -> float:

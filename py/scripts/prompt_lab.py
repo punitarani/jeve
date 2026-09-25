@@ -737,6 +737,9 @@ def casts_mode(args: argparse.Namespace) -> int:
             if any(arm.split("/")[0] == family for arm in (a, b)):
                 continue  # a judge never scores its own family (arXiv 2404.13076)
             valid = JUDGE_DIR / f"0-validation-casts{_suffix(model)}.json"
+            if not valid.exists():
+                print(f"{model}: not validated (judge-validate --casts); skipped")
+                continue
             if json.loads(valid.read_text())["accuracy"] < judge.MIN_ACCURACY:
                 continue
             run = judge.judge(conn, pairs, model=model, live=True)

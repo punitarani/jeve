@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from jeve.core.clock import SimTime
-from jeve.decide.policy import DecisionContext, approach_weight
+from jeve.decide.policy import DecisionContext, approach_weight, cash_band
 from jeve.llm.protocol import Choice, Noul, NoulCriteria, Prose, Score
 from jeve.memory.ties import Tie
 
@@ -255,19 +255,25 @@ def chased_words(
     return "nobody has chased them about it"
 
 
+_RUNWAY_WORDS: tuple[str, str, str] = (
+    "cash is tight; paying this leaves little in the account",
+    "there is enough cash to pay it, but not much to spare",
+    "there is comfortably enough cash to pay it",
+)
+_OWED_CASH_WORDS: tuple[str, str, str] = (
+    "their own cash is tight; they need this money in",
+    "they can manage without it for now, but not for long",
+    "they are not short of cash",
+)
+
+
 def runway_words(days: object) -> str:
-    """Three bands of a cash buffer, in days of outgoings. The middle band is
-    below JPMorgan Chase Institute's median small business (27 days): enough
-    to pay, but a payer there does think about it. With two bands, twenty
-    days' cash read as "comfortably enough", and Jev put 0.000 on cash flow for
+    """A payer's cash, in `cash_band`'s three bands. A payer in the middle one
+    has enough to pay but does think about it. With two bands, twenty days'
+    cash read as "comfortably enough", and Jev put 0.000 on cash flow for
     every payer who read it (the 60-day trial at f7af7c3)."""
 
-    value = _number(days, 30.0)
-    if value < 14:
-        return "cash is tight; paying this leaves little in the account"
-    if value < 30:
-        return "there is enough cash to pay it, but not much to spare"
-    return "there is comfortably enough cash to pay it"
+    return _RUNWAY_WORDS[cash_band(days)]
 
 
 def owed_cash_words(days: object) -> str:
@@ -275,12 +281,7 @@ def owed_cash_words(days: object) -> str:
     fit someone deciding whether to chase. It used to be told "there is
     comfortably enough cash to pay it", the payer's line."""
 
-    value = _number(days, 30.0)
-    if value < 14:
-        return "their own cash is tight; they need this money in"
-    if value < 30:
-        return "they can manage without it for now, but not for long"
-    return "they are not short of cash"
+    return _OWED_CASH_WORDS[cash_band(days)]
 
 
 def time_of_day_words(sim_time: int) -> str:

@@ -92,6 +92,25 @@ def test_a_band_passes_fails_and_says_when_it_cannot_tell() -> None:
 # -- effect sizes ----------------------------------------------------------------------
 
 
+def test_the_scorecard_says_better_only_where_it_was_written_down() -> None:
+    # A banded measure is scored by its distance from the band: into the band
+    # is better, whichever side it came from.
+    assert report.band_distance("invoice_late_share", 0.45) == 0.0
+    assert report.band_distance("invoice_late_share", 0.15) == pytest.approx(0.5)
+    late = ([0.13, 0.14, 0.15], [0.36, 0.34, 0.41])
+    assert report.verdict("invoice_late_share", *late) == "better"
+    assert report.verdict("invoice_late_share", late[1], late[0]) == "worse"
+    # Lower is better for stalls, higher for settling; a noisy change is neither.
+    stalls = ([0.06, 0.08, 0.05], [0.01, 0.012, 0.009])
+    assert report.verdict("episode_stalled_share", *stalls) == "better"
+    assert report.verdict("episode_settled_share", *stalls) == "worse"
+    assert (
+        report.verdict("episode_settled_share", [0.8, 0.9, 0.7], [0.9, 0.7, 0.8]) == ""
+    )
+    # Unscored: more entropy is not plainly a better town.
+    assert report.verdict("action_entropy", [0.7, 0.7, 0.7], [0.8, 0.8, 0.8]) == ""
+
+
 def test_a_contrast_is_paired_by_seed_and_its_interval_can_exclude_zero() -> None:
     same = stats.paired([1.0, 2.0, 3.0], [1.1, 2.1, 3.1])
     assert same.delta == pytest.approx(0.1)
