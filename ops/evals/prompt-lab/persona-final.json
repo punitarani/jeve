@@ -1,0 +1,28 @@
+{
+ "seeds": [
+  20261201,
+  20261202,
+  20261203,
+  20261301,
+  20261302,
+  20261303
+ ],
+ "jev-llm-rounds": {
+  "decisions": 2691,
+  "applied": {
+   "press_by_vocality": 0.3599233180446145,
+   "small_talk_by_sociability": 0.3596561284478319,
+   "p_done": 0.6248309178743962
+  },
+  "jev": {
+   "press_by_vocality": 0.4265536212736403,
+   "small_talk_by_sociability": 0.49795824103916636,
+   "p_done": 0.3716536603493125
+  },
+  "llm": {
+   "press_by_vocality": 0.04266374612672291,
+   "small_talk_by_sociability": 0.004405030756656769,
+   "p_done": 0.6248309178743962
+  }
+ }
+}
