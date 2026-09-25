@@ -1,7 +1,7 @@
 /**
  * Published field reports: frozen reads of the world, one page each (WEB-0007).
  *
- * A report is data (`day-1-in-prod/data.json`) plus the prose written against
+ * A report is data (`<slug>/data.json`) plus the prose written against
  * it, rendered by the same components as the live report at /reports. This
  * list is what /reports shows under "Published" and what the static export
  * pre-renders under /reports/<slug>; nothing is fetched to know it.
@@ -20,6 +20,16 @@ export type Published = {
 };
 
 export const REPORTS: readonly Published[] = [
+	{
+		slug: "day-3-in-prod",
+		title: "Day 3 in Prod",
+		headline: "Consequences arrived. Tallybird lasted 22 days.",
+		summary:
+			"Only what happened after Day 1: three deploys treated as experiments on a running world, Day 1's eight recommendations measured in production, and the first firm to fail.",
+		date: "2026-09-25",
+		run: "golden-20260920",
+		scope: "d232→d742 · 332,395 decisions · 3 deploys · 9 defects",
+	},
 	{
 		slug: "day-1-in-prod",
 		title: "Day 1 in Prod",

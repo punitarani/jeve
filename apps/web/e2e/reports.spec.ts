@@ -83,6 +83,47 @@ test("Day 1 in Prod is the report as published", async ({ page }) => {
 	);
 });
 
+test("Day 3 in Prod is the report as published", async ({ page }) => {
+	await page.goto("/reports/day-3-in-prod");
+	await expect(page.locator("h1")).toHaveText("Consequences arrived. Tallybird lasted 22 days.");
+
+	// Day 1's eight recommendations, then the eight reversal conditions.
+	const tables = page.locator("#scorecard table");
+	await expect(tables.nth(0).locator("tbody tr")).toHaveCount(8);
+	await expect(tables.nth(1).locator("tbody tr")).toHaveCount(8);
+	await expect(tables.nth(1)).toContainText("WORLD-0011");
+
+	// The collapse, in order, from the event log.
+	await expect(page.locator("#collapse .tl li")).toHaveCount(9);
+	await expect(page.locator("#collapse")).toContainText("Tallybird fails with $1,408");
+
+	// Hide a firm from the cash chart, and read a day off it.
+	const legend = page.locator("#economy .legend button");
+	await expect(legend).toHaveCount(4);
+	await legend.first().click();
+	await expect(legend.first()).toHaveAttribute("aria-pressed", "false");
+	await legend.first().click();
+	const chart = page.locator("#economy .chart svg").first();
+	await chart.scrollIntoViewIfNeeded();
+	const box = await chart.boundingBox();
+	if (!box) throw new Error("the cash chart has no box");
+	await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+	await expect(page.getByRole("tooltip")).toContainText(/day \d+/);
+
+	// The new question sets' answers, starting where the ontology gap shows.
+	await expect(page.locator("#model table").first()).toContainText("other");
+	await page.locator("#lt-sel").selectOption("vendor.trust");
+	await expect(page.locator("#model table").first()).toContainText("second time this month");
+
+	// The scale calculator answers its sliders.
+	const calls = page.locator(".calc .vital .n").first();
+	const before = await calls.textContent();
+	await page.locator("#calc-staff").fill("1000");
+	await expect(calls).not.toHaveText(before ?? "");
+
+	await expect(page.locator("#defects .d")).toHaveCount(9);
+});
+
 test("an unknown report is not a page", async ({ page }) => {
 	const response = await page.goto("/reports/no-such-report");
 	expect(response?.status()).toBe(404);

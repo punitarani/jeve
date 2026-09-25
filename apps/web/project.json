@@ -11,7 +11,7 @@
 		},
 		"build": { "command": "pnpm --filter @jeve/web build" },
 		"test": {
-			"command": "test -f apps/web/out/index.html && (test -f apps/web/out/world/index.html || test -f apps/web/out/world.html) && (test -f apps/web/out/reports/index.html || test -f apps/web/out/reports.html) && (test -f apps/web/out/reports/day-1-in-prod/index.html || test -f apps/web/out/reports/day-1-in-prod.html)",
+			"command": "test -f apps/web/out/index.html && (test -f apps/web/out/world/index.html || test -f apps/web/out/world.html) && (test -f apps/web/out/reports/index.html || test -f apps/web/out/reports.html) && (test -f apps/web/out/reports/day-1-in-prod/index.html || test -f apps/web/out/reports/day-1-in-prod.html) && (test -f apps/web/out/reports/day-3-in-prod/index.html || test -f apps/web/out/reports/day-3-in-prod.html)",
 			"dependsOn": ["build"]
 		},
 		"typecheck": { "command": "tsc --noEmit -p apps/web/tsconfig.json" },

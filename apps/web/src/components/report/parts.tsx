@@ -369,7 +369,16 @@ export function PeopleTable({ rows }: { rows: PersonRow[] }) {
 }
 
 /** Inputs that describe who someone is, as opposed to their situation. */
-const WHO = new Set(["temperament", "habit", "person", "client", "customer"]);
+const WHO = new Set([
+	"temperament",
+	"habit",
+	"work_habit",
+	"attitude_to_risk",
+	"speaks_up",
+	"person",
+	"client",
+	"customer",
+]);
 const niceInput = (k: string) =>
 	({ how_it_was_raised: "how it was raised", effect_on_customer: "effect on customer" })[k] ?? k.replace(/_/g, " ");
 

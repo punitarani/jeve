@@ -218,3 +218,66 @@ html:has(.rpt) { scroll-padding-top:64px; }
 .rpt .chart .c-esc { fill:var(--mark); }
 .rpt .mbar.mark { background:var(--mark); }
 .rpt .mbar.cafe { background:var(--tr); }
+
+/* -- Day 3: an experiment on a running world --------------------------------- */
+
+/* Three code regimes, each as wide as the sim-days it ran (171 / 108 / 231). */
+.rpt .regimes { display:grid; grid-template-columns:171fr 108fr 231fr; gap:6px; margin-top:6px; }
+@media (max-width:720px) {
+  .rpt .regimes { grid-template-columns:minmax(0,1fr); }
+}
+.rpt .rg { position:relative; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; min-width:0; }
+.rpt .rg b { display:block; font:700 12.5px/1.3 var(--mono); }
+.rpt .rg .rg-pr { font:500 11px/1 var(--mono); color:var(--mark); letter-spacing:.06em; text-transform:uppercase; }
+.rpt .rg p { font-size:13px; color:#aeb7c2; margin:6px 0 0; }
+.rpt .rg .n { font:12px/1.5 var(--mono); color:var(--muted-foreground); margin-top:8px; }
+.rpt .rg.r3 { border-color:#a78bfa66; background:linear-gradient(#a78bfa0d,#a78bfa0d),var(--panel); }
+.rpt .rg .fail { display:inline-flex; margin-top:8px; }
+.rpt .ident { font:12px/1.55 var(--mono); color:var(--muted-foreground); margin-top:10px; }
+
+/* How a decision is made, left to right. */
+.rpt .pipe { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; counter-reset:p; margin-top:12px; }
+@media (max-width:900px) {
+  .rpt .pipe { grid-template-columns:minmax(0,1fr); }
+}
+.rpt .pipe li { list-style:none; counter-increment:p; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+.rpt .pipe li::before { content:counter(p); font:700 12px/1 var(--mono); color:var(--mark); display:block; margin-bottom:6px; }
+.rpt .pipe b { display:block; font:600 14px/1.3 var(--sans); }
+.rpt .pipe span { display:block; font-size:13px; color:#aeb7c2; margin-top:4px; }
+.rpt ol.pipe { padding:0; margin:12px 0 0; }
+
+/* A dated sequence of events. */
+.rpt .tl { list-style:none; padding:0; margin:0; display:grid; gap:0; border-left:2px solid var(--line); }
+.rpt .tl li { position:relative; display:grid; grid-template-columns:78px minmax(0,1fr); gap:12px; padding:9px 0 9px 16px; }
+.rpt .tl li::before { content:""; position:absolute; left:-6px; top:15px; width:10px; height:10px; background:var(--dim); box-shadow:2px 2px 0 #0006; }
+.rpt .tl li.bad::before { background:var(--bad); }
+.rpt .tl li.mark::before { background:var(--mark); }
+.rpt .tl .when { font:700 12.5px/1.6 var(--mono); color:var(--muted-foreground); }
+.rpt .tl p { margin:0; font-size:14px; color:#c4ccd6; max-width:none; }
+
+/* Scorecard and reversal tables: wrapping cells, verdict at the end. */
+.rpt .score td { white-space:normal; vertical-align:top; font:12.5px/1.5 var(--sans); color:#c4ccd6; }
+.rpt .score td.id { font:700 12px/1.5 var(--mono); color:var(--mark); white-space:nowrap; }
+.rpt .score td.what { color:var(--text); font-weight:500; min-width:170px; }
+.rpt .score td.m { font-family:var(--mono); font-size:12px; min-width:200px; }
+.rpt .score td.v { white-space:nowrap; }
+
+/* What is new: claim, evidence, caveat. */
+.rpt .claims { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+@media (max-width:800px) {
+  .rpt .claims { grid-template-columns:minmax(0,1fr); }
+}
+.rpt .claim { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px 17px; display:flex; flex-direction:column; gap:8px; }
+.rpt .claim h3 { margin:0; font:600 16px/1.3 var(--sans); }
+.rpt .claim p { margin:0; font-size:14px; color:#aeb7c2; max-width:none; }
+.rpt .claim .caveat { font:12px/1.5 var(--mono); color:var(--dim); border-top:1px dashed var(--line); padding-top:8px; margin-top:auto; }
+
+/* The scale calculator: sliders on the left, what they imply on the right. */
+.rpt .calc { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px 24px; align-items:start; }
+@media (max-width:800px) {
+  .rpt .calc { grid-template-columns:minmax(0,1fr); }
+}
+.rpt .calc label { display:grid; gap:6px; font:12.5px/1.3 var(--mono); color:var(--muted-foreground); margin-bottom:14px; }
+.rpt .calc label b { color:var(--text); font-weight:700; }
+.rpt .calc input[type=range] { accent-color:var(--mark); width:100%; }
+.rpt .calc .vitals { margin-top:0; grid-template-columns:repeat(2,minmax(0,1fr)); }
