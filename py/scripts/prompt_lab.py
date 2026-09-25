@@ -1034,21 +1034,28 @@ def _gradient(rows: list[list[float | None]]) -> list[float | None]:
     ]
 
 
-def _chase_prepared(ctx: DecisionContext, *, history: bool) -> Prepared:
+def _chase_prepared(ctx: DecisionContext, wording: str) -> Prepared:
     prepared = QUESTION_SETS["chase.invoice"].prepare(ctx)
-    if not history:
-        return prepared
-    times = int(str(ctx.facts.get("times_chased") or 0))
-    state = {**(prepared.state or {}), "chased_before": history_words(times)}
+    state = dict(prepared.state or {})
+    if wording == "history":
+        times = int(str(ctx.facts.get("times_chased") or 0))
+        state["chased_before"] = history_words(times)
+    elif wording == "days":
+        state["invoice"] = f"the invoice is {ctx.facts['days_late']} days overdue"
     return replace(prepared, state=state)
 
 
-LADDERS: dict[str, tuple[bool, tuple[tuple[int, int], ...]]] = {
-    "incumbent": (False, LADDER),
-    "history": (True, LADDER),
-    "history, never chased": (True, tuple((d, 0) for d, _ in LADDER)),
+NEVER_CHASED = tuple((d, 0) for d, _ in LADDER)
+LADDERS: dict[str, tuple[str, tuple[tuple[int, int], ...]]] = {
+    "incumbent": ("incumbent", LADDER),
+    "history": ("history", LADDER),
+    "history, never chased": ("history", NEVER_CHASED),
+    "days": ("days", LADDER),
 }
-"""Each wording's ladder. The last isolates age from what was done about it."""
+"""Each wording's ladder. "history, never chased" isolates age from what was
+done about it. `days` gives the age as a count instead of the buckets of
+`lateness_words`, and says nothing of chases: the first run found that Jev
+read no bucket past a week differently from any other."""
 
 
 def _lateness_points(ctx: DecisionContext) -> list[tuple[Prepared, str]]:
@@ -1064,10 +1071,10 @@ def _lateness_points(ctx: DecisionContext) -> list[tuple[Prepared, str]]:
     ]
     refs = [f"ref-{rng.randrange(16**6):06x}" for rng in rngs]
     points: list[tuple[Prepared, str]] = []
-    for history, ladder in LADDERS.values():
+    for wording, ladder in LADDERS.values():
         for days, times in ladder:
             facts = {**ctx.facts, "days_late": days, "times_chased": times}
-            prepared = _chase_prepared(replace(ctx, facts=facts), history=history)
+            prepared = _chase_prepared(replace(ctx, facts=facts), wording)
             points += [(prepared, ref) for ref in refs]
     return points
 
@@ -1112,16 +1119,17 @@ async def lateness(args: argparse.Namespace) -> int:
                     "gradient": summary(_gradient(rows)).mean,
                 }
             # Paired by state: the same bill, asked both ways.
-            inc, hist = by_ladder["incumbent"], by_ladder["history"]
-            grad = paired(_gradient(inc), _gradient(hist))
-            first = paired([r[0] for r in inc], [r[0] for r in hist])
-            row["gradient_history_minus_incumbent"] = grad.text()
-            row["first_ask_history_minus_incumbent"] = first.text()
-            row["keep"] = (
-                grad.clear
-                and (grad.delta or 0.0) > 0
-                and abs(first.delta or 0.0) < 0.05
-            )
+            inc = by_ladder["incumbent"]
+            for name in ("history", "days"):
+                grad = paired(_gradient(inc), _gradient(by_ladder[name]))
+                first = paired([r[0] for r in inc], [r[0] for r in by_ladder[name]])
+                row[name]["gradient_minus_incumbent"] = grad.text()
+                row[name]["first_ask_minus_incumbent"] = first.text()
+                row[name]["keep"] = (
+                    grad.clear
+                    and (grad.delta or 0.0) > 0
+                    and abs(first.delta or 0.0) < 0.05
+                )
             print(split, json.dumps(row, default=str), flush=True)
             out[split] = row
     OUT.mkdir(parents=True, exist_ok=True)

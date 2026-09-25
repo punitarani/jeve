@@ -429,17 +429,53 @@ where lateness reaches a decision in finished worlds, using six seeds per arm
   are paid within days. Outside clients owe most late bills, and they are
   never in the room. Closing the gap in conversation would change nothing a
   world can measure, so it was not pursued.
-- **Chasing is where lateness matters, and Jev's chance of chasing is flat in
-  it.** The world asks daily from a week late, and again a week after each
-  chase. A bill still being asked about at three weeks has mostly been chased
-  already. `times_chased` is in the decision's facts, but the question never
-  says so. The hypothesis: told what they have already done, a credit
-  controller escalates with age. `prompt_lab.py lateness` tests it against a
-  pre-registered rule. The wording is kept only if its age gradient beats the
-  incumbent's on held-out states, with a paired interval clear of zero, while
-  the first ask (a week late, never chased) moves by less than 0.05. It needs
-  live Jev calls, so it waits on credits. Any change to the world goes in its
-  own PR with its own trial, so this PR's trial measures the code it merges.
+- **Chasing is where lateness matters, and Jev does not read a bill's age at
+  all.** The world asks daily from a week late, and again a week after each
+  chase, so a bill still being asked about at three weeks has mostly been
+  chased already. `times_chased` is in the decision's facts, but the question
+  never says so. `prompt_lab.py lateness` asked 30 held-out bills at 7, 14,
+  21 and 35 days late (`ops/evals/prompt-lab/lateness.json`). The keep rule
+  was set before the run: the age gradient must beat the incumbent's with a
+  paired interval clear of zero, and the first ask must move by less than
+  0.05.
+
+  | wording | P(chase) at 7 / 14 / 21 / 35 days | gradient | first ask vs incumbent | kept |
+  | --- | --- | --- | --- | --- |
+  | incumbent ("more than a week" … "more than a month overdue") | 0.68 / 0.67 / 0.67 / 0.67 | −0.01 | | |
+  | + chase history ("they have chased it twice, …") | 0.52 / 0.67 / 0.67 / 0.65 | +0.13 | −0.16 | no |
+  | + history, never chased | 0.53 / 0.51 / 0.51 / 0.52 | −0.01 | | |
+  | the age as a count ("35 days overdue") | 0.70 / 0.69 / 0.68 / 0.68 | −0.02 | +0.01 | no |
+
+  Both hypotheses are rejected. The history wording's "gradient" is a drop at
+  the first ask, where "they have not chased it yet" reads as a reason to
+  wait. It is not escalation. A count of days moves nothing. Jev judges this
+  question on the person and the cash, and age plays no part. If age is to
+  matter, it has to be structural. The pattern would be WORLD-0014's: a
+  dunning cadence set by rule from credit-control practice, with Jev judging
+  how the situation moves it. That is a design change for its own record and
+  PR, not a wording.
+- **Thin cash: the words answered the question** (`prompt_lab.py cash`,
+  `ops/evals/prompt-lab/cash.json`). Over 2,682 asked decisions in six
+  worlds, Jev gave cash flow as the reason for leaving an overdue bill 0.54
+  of the time when cash was tight, 0.036 when thin (14–30 days, where the
+  median small business sits: JPMorgan Chase Institute, 27 days) and 0.000
+  when comfortable. The thin band's words begin "there is enough cash to pay
+  it". I asked 30 held-out overdue bills at each band, under three wordings:
+
+  | wording | P(cash flow) tight / thin / comfortable | thin, change | P(pay today), thin |
+  | --- | --- | --- | --- |
+  | incumbent | 0.69 / 0.057 / 0.000 | | 0.32 |
+  | `thin`: "cash is thinner than they would like; paying this would take a fair bite out of it" | 0.69 / 0.63 / 0.000 | +0.58 [+0.50, +0.66] | 0.26 |
+  | `weeks`: the runway itself ("two to four weeks of cash in hand") in every band | 0.59 / 0.12 / 0.003 | +0.06 [+0.02, +0.11] | 0.24 |
+
+  Both pass the pre-registered lab rule. They disagree about what a thin
+  buffer means. Told the plain fact, Jev mostly still says "routine". Told
+  it feels thin, Jev treats it almost like tight. The world decides between
+  them. The measure is the cash-flow share of late bills, which sits at the
+  floor today (0.17–0.28 against 0.20–0.50, Atradius 0.35), together with
+  late share and days late. A share pushed past 0.50, or late share out of
+  band, would reject `thin`. That A/B changes the world, so it belongs in the
+  follow-up PR.
 - **A bill not yet due is described in conversation as "falls due today".**
   `Stake.days_late` is floored at zero (it has been since #14), so a bill due
   in two days reads as due today. This is left for the same follow-up PR,
@@ -452,7 +488,8 @@ where lateness reaches a decision in finished worlds, using six seeds per arm
 - **Jev alone:** the same, except that cash flow fell under the band on one
   seed. Jev gives cash flow for a payer whose cash is thin 0.02–0.03 of the
   time and "routine" 0.88–0.94. The middle band corrected the wording but did
-  not move Jev, which is the next thing for the prompt lab.
+  not move Jev. The lab has since found a wording that does (+0.58 on
+  held-out states, above). It waits on a world A/B in the follow-up PR.
 - **Persona (bar 4):** met in log-odds and not in probability. It reached 84%
   and 70% of Jev's own gradients on the same decisions, because GLM's
   average-person baseline for pressing and chatting is lower than Jev's.
