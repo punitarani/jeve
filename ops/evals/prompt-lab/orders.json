@@ -1,0 +1,42 @@
+{
+ "close.order": {
+  "n": 11,
+  "single_order_flip": 0.0,
+  "rotated_flip": 0.0
+ },
+ "cover.shift": {
+  "n": 4,
+  "single_order_flip": 0.0,
+  "rotated_flip": 0.0
+ },
+ "credit.decision": {
+  "n": 80,
+  "single_order_flip": 0.025,
+  "rotated_flip": 0.0625
+ },
+ "dispute.resolution": {
+  "n": 28,
+  "single_order_flip": 0.07142857142857142,
+  "rotated_flip": 0.0
+ },
+ "eng.allocation": {
+  "n": 49,
+  "single_order_flip": 0.12244897959183673,
+  "rotated_flip": 0.02040816326530612
+ },
+ "founder.review": {
+  "n": 49,
+  "single_order_flip": 0.10204081632653061,
+  "rotated_flip": 0.12244897959183673
+ },
+ "supplier.order": {
+  "n": 49,
+  "single_order_flip": 0.1836734693877551,
+  "rotated_flip": 0.02040816326530612
+ },
+ "ticket.triage": {
+  "n": 80,
+  "single_order_flip": 0.0,
+  "rotated_flip": 0.0
+ }
+}

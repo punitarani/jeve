@@ -23,7 +23,7 @@ jeve's own gateway: DSPy's calls would bypass `jeve.llm`). Selection is on a
 dev split; the winner and the incumbent are then scored on a held-out split
 nobody looked at. `models` compares tier-1 models on one prompt. `audit`
 scores Jev on every modelled set. Every figure is written to
-`ops/prompt-lab/`.
+`ops/evals/prompt-lab/`.
 
     uv run --env-file ../.env python scripts/prompt_lab.py tier1 --from-db NAME
 """
@@ -59,8 +59,9 @@ from jeve.llm.protocol import (
     NoulAnswer,
     ScoreAnswer,
 )
+from jeve.llm.protocol import Score as ScoreQuestion
 
-OUT = find_repo_root() / "ops" / "prompt-lab"
+OUT = find_repo_root() / "ops" / "evals" / "prompt-lab"
 LOW, HIGH = 0.1, 0.9
 PARALLEL = 12
 PROPOSER = "anthropic/claude-opus-5.5"
@@ -168,8 +169,9 @@ async def ask_jev(
     prepared: Prepared,
     ledger: Ledger,
     *,
-    questions: dict[str, Noul | Choice] | None = None,
+    questions: dict[str, Noul | Choice | ScoreQuestion] | None = None,
     reference: str | None = None,
+    keep_all: bool = False,
 ) -> Dist | None:
     state = dict(prepared.state or {})
     if reference is not None:
@@ -188,6 +190,12 @@ async def ask_jev(
     finally:
         ledger.calls += 1
         ledger.seconds += time.monotonic() - started
+    if keep_all:
+        return {
+            k: dict(v.probabilities or {v.choice: 1.0})
+            for k, v in reply.answers.items()
+            if isinstance(v, ChoiceAnswer)
+        }
     return _as_dist(dict(reply.answers), prepared.asks)
 
 
@@ -632,6 +640,114 @@ async def audit(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- orders (DECIDE-0007) --------------------------------------------------------
+
+
+def _arranged(ask: Ask, order: list[str]) -> Choice:
+    assert isinstance(ask.question, Choice)
+    criteria = dict(ask.question.criteria)
+    tail = {"other": criteria["other"]} if "other" in criteria else {}
+    return Choice(
+        instructions=ask.question.instructions,
+        criteria={**{o: criteria[o] for o in order}, **tail},
+    )
+
+
+def _verdict(dist: dict[str, float], body: Sequence[str]) -> str:
+    return max(body, key=lambda option: dist.get(option, 0.0))
+
+
+def _averaged(raw: Dist, ask: Ask) -> dict[str, float]:
+    """A judgement's rotated copies, as Jev answered them, averaged the way
+    the policy averages them."""
+
+    from jeve.decide.jev_policy import collapse_rotations
+
+    answers: dict[str, Answer] = {
+        key: ChoiceAnswer(choice=max(dist, key=dist.__getitem__), probabilities=dist)
+        for key, dist in raw.items()
+    }
+    got = collapse_rotations([ask], answers)[ask.key]
+    assert isinstance(got, ChoiceAnswer)
+    return got.distribution()
+
+
+async def orders(args: argparse.Namespace) -> int:
+    """How often a judgement's verdict changes with the order of its options:
+    one order against another, and every rotation (bundled in one request, as
+    `rotated_questions` asks) against every rotation of the reversed list, an
+    order set the first never saw."""
+
+    from jeve.decide import gates
+    from jeve.decide.jev_policy import rotated_questions
+
+    rows: dict[str, Any] = {}
+    async with Gateway(settings=load_settings()) as gw:
+        for kind in sorted(QUESTION_SETS):
+            pool: list[DecisionContext] = []
+            for db in args.from_db.split(","):
+                pool += [
+                    c for c in contexts(db, kind, args.n * 3) if gates.settle(c) is None
+                ]
+            jobs: list[Callable[[], Awaitable[Dist | None]]] = []
+            meta: list[tuple[Ask, Ask, list[str]]] = []
+            ledger = Ledger()
+            for c in pool[: args.n]:
+                prepared = QUESTION_SETS[kind].prepare(c)
+                judged = [
+                    a
+                    for a in prepared.asks
+                    if a.mode == "J" and isinstance(a.question, Choice)
+                ]
+                if prepared.state is None or not judged:
+                    continue
+                ask = judged[0]
+                body = [o for o in ask.options if o != "other"]
+                flipped = replace(ask, question=_arranged(ask, body[::-1]))
+                # The whole request, as production sends it: every question
+                # of the set, the judgement's copies with them.
+                rest = [a for a in prepared.asks if a.key != ask.key]
+                bundled = rotated_questions(prepared.asks)
+                bundled_flipped = rotated_questions([flipped, *rest])
+                rotated = {ask.key: _arranged(ask, body[1:] + body[:1])}
+                jobs += [
+                    lambda p=prepared, q=bundled, lg=ledger: ask_jev(
+                        gw, p, lg, questions=q, keep_all=True
+                    ),
+                    lambda p=prepared, q=bundled_flipped, lg=ledger: ask_jev(
+                        gw, p, lg, questions=q, keep_all=True
+                    ),
+                    lambda p=prepared, q=rotated, lg=ledger: ask_jev(
+                        gw, p, lg, questions=q
+                    ),
+                ]
+                meta.append((ask, flipped, body))
+            if not meta:
+                continue
+            got = await gather(jobs)
+            single = rotated_flips = n = 0
+            for i, (ask, flipped, body) in enumerate(meta):
+                declared, reversed_, other_order = got[3 * i : 3 * i + 3]
+                if declared is None or reversed_ is None or other_order is None:
+                    continue
+                single += _verdict(declared[ask.key], body) != _verdict(
+                    other_order[ask.key], body
+                )
+                rotated_flips += _verdict(_averaged(declared, ask), body) != _verdict(
+                    _averaged(reversed_, flipped), body
+                )
+                n += 1
+            rows[kind] = {
+                "n": n,
+                "single_order_flip": single / n if n else None,
+                "rotated_flip": rotated_flips / n if n else None,
+            }
+            print(kind, rows[kind], flush=True)
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "orders.json").write_text(json.dumps(rows, indent=1) + "\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="prompt_lab", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -647,10 +763,15 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--prompt", default="incumbent")
     m.add_argument("--dev", type=int, default=30)
     m.add_argument("--held-out", type=int, default=30)
+    o = sub.add_parser("orders")
+    o.add_argument("--from-db", required=True, help="comma-separated worlds")
+    o.add_argument("--n", type=int, default=80)
     a = sub.add_parser("audit")
     a.add_argument("--from-db", required=True)
     a.add_argument("--n", type=int, default=12)
     args = parser.parse_args(argv)
+    if args.command == "orders":
+        return asyncio.run(orders(args))
     if args.command == "audit":
         return asyncio.run(audit(args))
     if args.command == "tier1":

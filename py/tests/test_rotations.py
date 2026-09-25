@@ -27,7 +27,10 @@ PROPENSITY = Ask(
 YES_NO = Ask(
     "done",
     "J",
-    Noul(instructions="Done?", criteria=NoulCriteria(true_="Yes.", false_="No.")),
+    Noul(
+        instructions="Done?",
+        criteria=NoulCriteria.model_validate({"true": "Yes.", "false": "No."}),
+    ),
 )
 
 
@@ -41,7 +44,9 @@ def test_only_a_judgement_over_a_choice_is_rotated_and_other_stays_last() -> Non
         "done",
     ]
     orders = [
-        list(q.criteria) for k, q in questions.items() if k.startswith("allocation")
+        list(q.criteria)
+        for k, q in questions.items()
+        if k.startswith("allocation") and isinstance(q, Choice)
     ]
     assert orders == [
         ["features", "debt", "reliability", "other"],

@@ -1663,7 +1663,7 @@ def _prepare_episode_round(ctx: DecisionContext) -> Prepared:
         "time": time_of_day_words(ctx.sim_time),
         "who_is_here": who_is_here(ctx),
         "what_this_is_about": stake_words(ctx),
-        "their_part_in_it": _ROLE_WORDS[role],
+        "their_part_in_it": part_words(ctx),
         "so_far": so_far_words(ctx),
         "mood_of_the_room": tension_words(ctx.facts.get("tension")),
         "feeling": feeling_words(ctx.facts.get("mood")),
@@ -1687,6 +1687,21 @@ _ROLE_WORDS: dict[str, str] = {
     "asker": "It is their work that is held up, and they cannot fix it themselves.",
     "bystander": "It is not their problem either way.",
 }
+_BILL_ROLE_WORDS: dict[str, str] = {
+    "holder": "Their firm owes the money, and they are the one who could see it paid.",
+    "asker": "Their firm is owed the money, and they cannot make the other side pay.",
+    "bystander": "It is not their money either way.",
+}
+"""Over a bill, the asker is the creditor and the holder the payer. Told
+instead that their work was held up, neither Jev nor tier 1 pressed any harder
+for a bill weeks overdue than for one a few days late (the prompt lab's
+untargeted probe, 30 states each)."""
+
+
+def part_words(ctx: DecisionContext) -> str:
+    role = str(ctx.facts.get("role_in_stake", "bystander"))
+    words = _BILL_ROLE_WORDS if ctx.facts.get("stake") == "invoice" else _ROLE_WORDS
+    return words.get(role, words["bystander"])
 
 
 def _interpret_episode_round(

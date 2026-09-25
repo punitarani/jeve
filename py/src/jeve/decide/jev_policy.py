@@ -753,9 +753,9 @@ def rotated_questions(asks: Sequence[Ask]) -> dict[str, Noul | Choice | Score]:
     Reversing a firm-level judgement's options flipped Jev's verdict in 11-22%
     of real states (credit, engineering allocation, founder review). Averaged
     over every rotation — each option in each position once — a verdict held
-    under an order it never saw in 97% of 335 states, against 93% for one
-    order; bundled in one call, as here, as well as in separate calls
-    (`ops/prompt-lab/`)."""
+    under an order it never saw in 96% of 350 states, against 93% for one
+    order, bundled in one call as here (`prompt_lab.py orders`,
+    `ops/evals/prompt-lab/`)."""
 
     questions: dict[str, Noul | Choice | Score] = {}
     for ask in asks:

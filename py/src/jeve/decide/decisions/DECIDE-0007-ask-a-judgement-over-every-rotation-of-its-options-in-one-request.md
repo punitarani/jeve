@@ -42,13 +42,15 @@ per other cyclic order of its options (`key__r1`, `key__r2`, ...), in the same
 request; the copies are averaged back into one answer under its own key.
 
 The test was an order the method never saw: every rotation of the reversed
-list. Across 335 states in eight judgement sets, averaged verdicts disagreed
-with it in 3.0% of states. A single order disagreed in 6.9% (350 states,
-the same sets). Engineering
-allocation, supplier orders, dispute resolution and triage went to 0%. What
-remains, in credit (7.5%) and founder review (8.2%), is near-ties. Sharing a
-request moved an order's own answer by 0.01–0.04 (total variation).
-`ops/prompt-lab/` has the runs, and `scripts/prompt_lab.py` reproduces them.
+list, in a request shaped as production sends it (`prompt_lab.py orders`,
+six worlds). Across 350 states in eight judgement sets, averaged verdicts
+disagreed with it in 3.7% of states. A single order, against another,
+disagreed in 6.9%. Supplier orders went from 18% to 2%, engineering
+allocation from 12% to 2%, dispute resolution from 7% to 0%. Founder review
+(10% to 12%) and credit (2.5% to 6%) did not improve: their flips are
+near-ties, a handful of states either way. Sharing a request moved an order's
+own answer by 0.01–0.04 (total variation). `ops/evals/prompt-lab/` has the
+runs.
 
 ### Consequences
 
