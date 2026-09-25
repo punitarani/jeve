@@ -1,0 +1,35 @@
+{
+ "footer": "216 verdicts; $0.2654 spent on this run.",
+ "note": "Episodes from the two arms and the same seed, of the same shape (what was at stake, how many rounds, how many people), shown both ways round. *Right preferred* is how often the judge preferred `rounds-gemini`'s episode; 0.50 is no difference.",
+ "tallies": [
+  {
+   "consistent": 0,
+   "label": "rounds-gemini over rounds-glm (invoice)",
+   "n": 1,
+   "points": 0.5,
+   "ties": 0
+  },
+  {
+   "consistent": 43,
+   "label": "rounds-gemini over rounds-glm (news)",
+   "n": 93,
+   "points": 45.0,
+   "ties": 0
+  },
+  {
+   "consistent": 10,
+   "label": "rounds-gemini over rounds-glm (outage)",
+   "n": 14,
+   "points": 8.0,
+   "ties": 0
+  },
+  {
+   "consistent": 53,
+   "label": "rounds-gemini over rounds-glm (all)",
+   "n": 108,
+   "points": 53.5,
+   "ties": 0
+  }
+ ],
+ "title": "`rounds-gemini` against `rounds-glm`, 20261230,20261231,20261232,20261233,20261234,20261235 seeds (anthropic/claude-haiku-4.5)"
+}

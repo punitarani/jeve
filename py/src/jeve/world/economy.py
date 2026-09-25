@@ -1104,6 +1104,12 @@ def fail(
         engine.write_off(report, bill)
 
 
+def _joined(alias: str) -> str:
+    """The number a staff id ends in: the order people joined (`hire`)."""
+
+    return f"substring({alias}.id from '[0-9]+$')::int"
+
+
 @scheduler.job("hiring.review", office_hours_only=True)
 def hiring(
     engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
@@ -1113,12 +1119,17 @@ def hiring(
     engine.schedule(report.sim_time + WEEK, "hiring.review", org_id, {})
     if failed(engine, org_id):
         return
+    # A desk is empty when someone in the role left and nobody has been hired
+    # into it since. "Since" is the number `hire` gives a person, compared as a
+    # number: compared as text, `account_manager.25` came before
+    # `account_manager.7`, the desk never filled, and one firm hired four
+    # account managers in four weeks for the one who left.
     vacancy = engine.conn.execute(
-        "SELECT p.role FROM persons p WHERE p.org_id = %s AND p.kind = 'staff' "
-        "AND p.status = 'left' AND NOT EXISTS (SELECT 1 FROM persons q "
-        "  WHERE q.org_id = p.org_id AND q.kind = 'staff' AND q.status <> 'left' "
-        "  AND q.role = p.role AND q.id > p.id) "
-        "ORDER BY p.id DESC LIMIT 1",
+        f"SELECT p.role FROM persons p WHERE p.org_id = %s AND p.kind = 'staff' "
+        f"AND p.status = 'left' AND NOT EXISTS (SELECT 1 FROM persons q "
+        f"  WHERE q.org_id = p.org_id AND q.kind = 'staff' AND q.status <> 'left' "
+        f"  AND q.role = p.role AND {_joined('q')} > {_joined('p')}) "
+        f"ORDER BY {_joined('p')} DESC LIMIT 1",
         (org_id,),
     ).fetchone()
     if vacancy is None:

@@ -242,6 +242,29 @@ def test_an_empty_desk_is_filled_when_the_money_is_there(
     conn.rollback()
 
 
+def test_a_desk_filled_is_not_filled_again(conn: Connection[DictRow]) -> None:
+    """Person ids were compared as text: `account_manager.24` sorts before
+    `account_manager.7`, so the desk stayed empty after it was filled and the
+    firm was asked to hire again every week."""
+
+    engine, report = fresh(conn)
+    economy.leave(
+        engine, report, "tallybird.account_manager.7", "tallybird", reason="test",
+        cause=None,
+    )  # fmt: skip
+    new = economy.hire(
+        engine, report, "tallybird", "account_manager", decision_id=None,
+        decided_by="rules",
+    )  # fmt: skip
+    assert new.endswith(".24")
+    economy.hiring(engine, report, "tallybird", {})
+    asked = conn.execute(
+        "SELECT count(*) AS n FROM decisions WHERE question_set = 'hire.decision'"
+    ).fetchone()
+    assert asked is not None and asked["n"] == 0
+    conn.rollback()
+
+
 # -- households ---------------------------------------------------------------------
 
 

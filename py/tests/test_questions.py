@@ -585,6 +585,25 @@ def test_the_question_that_ends_a_conversation_is_about_the_person() -> None:
     assert "said what they came to say" in asks["done"].question.instructions
 
 
+def test_the_holders_colleague_is_not_told_it_is_none_of_their_business() -> None:
+    part = "their_part_in_it"
+    for stake in ("outage", "invoice"):
+        outsider = _state(
+            "episode.round", _round(stake=stake, role_in_stake="bystander")
+        )[part]
+        colleague = _state(
+            "episode.round",
+            _round(stake=stake, role_in_stake="bystander", holder_firm=True),
+        )[part]
+        assert "not their" in str(outsider) and "Their" in str(colleague)
+        assert "either way" not in str(colleague)
+    # Only a bystander is anyone's colleague: the holder is still the holder.
+    assert (
+        _state("episode.round", _round(holder_firm=True))[part]
+        == _state("episode.round", _round())[part]
+    )
+
+
 def test_a_payer_with_no_record_is_asked_what_they_always_were() -> None:
     about = "what_this_is_about"
     plain = str(_state("episode.round", _round(track_record=None))[about])

@@ -51,6 +51,10 @@ ENDINGS: dict[str, str] = {
     "rounds": "It was still going when they had to get back to work.",
 }
 DEFECTS: tuple[str, ...] = ("wrong_actor", "loop", "phantom_effect", "closed_hours")
+PADDED = "padded (length only)"
+"""Not a defect: the same account with one more unremarkable exchange. A judge
+with no taste for length gives it 0.50; both judges gave 0.77 or more to the
+shorter copy, which is why arms are compared on episodes of equal length."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +293,12 @@ _ANY: dict[str, str] = {
 }
 
 
+def did(stake: str, act: str) -> str:
+    """What someone doing `act` over `stake` is said to do."""
+
+    return _DID.get(stake, {}).get(act) or _ANY.get(act, act)
+
+
 def _clock(seconds: int) -> str:
     t = SimTime(seconds)
     minutes = (t.time_of_day % HOUR) // 60
@@ -315,14 +325,14 @@ def render(record: Record) -> str:
     for index, acts in enumerate(record.rounds, start=1):
         lines.append(f"Round {index}:")
         for act in acts:
-            did = _DID.get(record.stake, {}).get(act.act) or _ANY.get(act.act, act.act)
+            said = did(record.stake, act.act)
             told = " and tells the others the news" if act.mention else ""
             mood = (
                 f" ({MOODS[act.mood].rstrip('.').lower()})"
                 if act.mood is not None and 0 <= act.mood < len(MOODS)
                 else ""
             )
-            lines.append(f"- {names.get(act.person, act.person)} {did}{told}{mood}.")
+            lines.append(f"- {names.get(act.person, act.person)} {said}{told}{mood}.")
     lines.append(f"How it ended: {ENDINGS.get(record.ending, record.ending)}")
     after = " ".join(record.effects) if record.effects else "Nothing changed."
     lines.append(f"Afterwards: {after}")
@@ -389,3 +399,57 @@ def plant(record: Record, defect: str, rng: Any) -> Record | None:
         sunday = day + (6 - day % 7)
         return replace(record, when=sunday * DAY + 3 * HOUR + 40 * 60)
     raise ValueError(f"unknown defect {defect!r}")
+
+
+def padded(record: Record) -> Record | None:
+    """One more round before the last, in which the matter's askers ask and
+    its holders explain: nothing new happens, the account is only longer."""
+
+    if not record.rounds:
+        return None
+    extra = tuple(
+        Act(
+            p.id,
+            "ask"
+            if record.stake == "news" or p.org not in record.holder_orgs
+            else "explain",
+            None,
+            False,
+        )
+        for p in record.people
+    )
+    rounds = list(record.rounds)
+    rounds.insert(len(rounds) - 1, extra)
+    return replace(record, rounds=tuple(rounds))
+
+
+# -- pairing two arms ------------------------------------------------------------
+
+
+def shape(record: Record) -> tuple[str, int, int]:
+    """What an account's length follows from: a line per person per round."""
+
+    return record.stake, len(record.rounds), len(record.people)
+
+
+def matched(
+    a: list[Record], b: list[Record], n: int, rng: Any
+) -> list[tuple[Record, Record]]:
+    """Up to `n` pairs, one episode from each arm, of the same shape (EVAL-0003).
+
+    Within a shape the episodes are paired at random; the pairs of every shape
+    are pooled and `n` drawn, so a shape is judged about as often as both arms
+    produce it. An episode is used at most once."""
+
+    cells: dict[tuple[str, int, int], tuple[list[Record], list[Record]]] = {}
+    for side, records in ((0, a), (1, b)):
+        for r in records:
+            cells.setdefault(shape(r), ([], []))[side].append(r)
+    pool: list[tuple[Record, Record]] = []
+    for key in sorted(cells):
+        left, right = cells[key]
+        rng.shuffle(left)
+        rng.shuffle(right)
+        pool += list(zip(left, right, strict=False))
+    rng.shuffle(pool)
+    return pool[:n]

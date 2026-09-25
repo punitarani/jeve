@@ -25,6 +25,7 @@ from psycopg.rows import dict_row
 
 from jeve import db
 from jeve.config import find_repo_root
+from jeve.decide.policy import DecisionContext
 from jeve.decide.recorder import load_cassette
 from jeve.evals.arms import ARMS, Arm, slug
 from jeve.evals.metrics import Measures, measure
@@ -57,6 +58,34 @@ def ensure_database(name: str) -> str:
         if found is None:
             conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
     return dsn_for(name)
+
+
+def decision_contexts(
+    name: str, kind: str, n: int, *, offset: int = 0
+) -> list[DecisionContext]:
+    """`n` real decisions of `kind` from a finished world, as they were asked,
+    in a fixed order (by a hash of the row id, so a first `n` and the next
+    never overlap). Decisions keep their facts (WORLD-0013)."""
+
+    with psycopg.connect(dsn_for(name), autocommit=True, row_factory=dict_row) as conn:
+        rows = conn.execute(
+            "SELECT d.person_id, d.sim_time, d.facts, p.role, p.traits "
+            "FROM decisions d JOIN persons p ON p.id = d.person_id "
+            "WHERE d.question_set = %s AND d.facts IS NOT NULL "
+            "ORDER BY md5(d.id::text) OFFSET %s LIMIT %s",
+            (kind, offset, n),
+        ).fetchall()
+    return [
+        DecisionContext(
+            person_id=str(r["person_id"]),
+            role=str(r["role"]),
+            sim_time=int(r["sim_time"]),
+            kind=kind,
+            facts=dict(r["facts"] or {}),
+            traits=dict(r["traits"] or {}),
+        )
+        for r in rows
+    ]
 
 
 def cassette_for(arm: Arm, seed: int) -> Path:

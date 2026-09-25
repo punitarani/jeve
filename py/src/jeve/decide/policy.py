@@ -187,6 +187,8 @@ class RulesPolicy:
             pressure += 0.2
         if runway_days < 14:
             pressure -= 0.3
+        elif runway_days < 30:
+            pressure -= 0.1
         draw, why = _uniform(rng), _uniform(rng)
         pay = draw < max(0.05, min(0.98, pressure))
         # Why not, when not: before the date, it is not due; cash first when
@@ -197,7 +199,7 @@ class RulesPolicy:
             reason = "due"
         elif days_until_due > 0:
             reason = "not_due"
-        elif runway_days < 14:
+        elif runway_days < 14 or (runway_days < 30 and why < 0.35):
             reason = "cash_flow"
         elif ctx.facts.get("disputed"):
             reason = "query"

@@ -40,20 +40,28 @@ from psycopg.rows import DictRow
 from jeve.core.hashing import content_hash
 from jeve.core.seed import derive_rng
 from jeve.decide.recorder import insert_call
-from jeve.llm import ChatMessage, ChatRequest, Gateway
+from jeve.llm import ChatMessage, ChatRequest, ChatResponse, Gateway
 
 type Verdict = Literal["A", "B", "tie"]
 
 JUDGE = "openai/gpt-5.6-luna"
-JUDGES: tuple[str, ...] = (JUDGE, "anthropic/claude-haiku-4.5")
+JUDGES: tuple[str, ...] = (
+    JUDGE,
+    "anthropic/claude-haiku-4.5",
+    "anthropic/claude-sonnet-5",
+)
 """A jury of two families, neither answering for any role (arXiv 2404.18796:
-disjoint families beat one judge). Haiku is outside LLM-0006's order
-altogether, so no fallback can ever put it on both sides of a comparison."""
+disjoint families beat one judge). Anthropic's models are outside LLM-0006's
+order altogether, so no fallback can ever put them on both sides of a
+comparison. Sonnet is there for the persona judge, which Haiku failed."""
 KIND = "judge"
 MAX_TOKENS = 2000
 """Luna reasons before it answers and cannot be told not to reliably; a reply
 cut off mid-thought is empty (ChatRequest.reasoning)."""
 SEED = 7
+PARALLEL = 16
+"""Requests in flight at once. With all 220 of a validation run in flight,
+71 of Haiku's failed; sixteen at a time, none did."""
 MIN_ACCURACY = 0.8
 """Below this share of planted defects caught, the judge is not used."""
 
@@ -85,12 +93,16 @@ SCHEMA: dict[str, object] = {
 
 
 def request(
-    first: str, second: str, model: str = JUDGE, seed: int = SEED
+    first: str,
+    second: str,
+    model: str = JUDGE,
+    seed: int = SEED,
+    system: str = SYSTEM,
 ) -> ChatRequest:
     return ChatRequest(
         model=model,
         messages=[
-            ChatMessage(role="system", content=SYSTEM),
+            ChatMessage(role="system", content=system),
             ChatMessage(
                 role="user",
                 content=f"Account A:\n{first}\n\nAccount B:\n{second}\n\n"
@@ -128,6 +140,9 @@ class Pair:
     right: str
     label: str = ""
     """What the pair is about: a defect's name, or `arm-a vs arm-b`."""
+    system: str = SYSTEM
+    """What the judge is told to look for: one encounter each side (this
+    module), or one moment under two casts (`casts`, EVAL-0004)."""
 
 
 @dataclass(slots=True)
@@ -164,14 +179,16 @@ class Run:
     asked: int = 0
     missing: int = 0
     failed: int = 0
+    errors: Counter[str] = field(default_factory=Counter)
+    """Failures by exception class: a run with failures says what kind."""
     cost_usd: float = 0.0
 
 
 def _requests(pairs: Sequence[Pair], model: str, seed: int) -> dict[str, ChatRequest]:
     out: dict[str, ChatRequest] = {}
     for pair in pairs:
-        forward = request(pair.left, pair.right, model, seed)
-        backward = request(pair.right, pair.left, model, seed)
+        forward = request(pair.left, pair.right, model, seed, pair.system)
+        backward = request(pair.right, pair.left, model, seed, pair.system)
         for req in (forward, backward):
             out[request_key(req)] = req
     return out
@@ -191,14 +208,20 @@ def _cached(
 async def _ask(
     conn: Connection[DictRow], missing: dict[str, ChatRequest], run: Run
 ) -> None:
+    gate = asyncio.Semaphore(PARALLEL)
     async with Gateway() as gateway:
+
+        async def one(req: ChatRequest) -> ChatResponse:
+            async with gate:
+                return await gateway.complete(req, purpose="gate")
+
         replies = await asyncio.gather(
-            *(gateway.complete(req, purpose="gate") for req in missing.values()),
-            return_exceptions=True,
+            *(one(req) for req in missing.values()), return_exceptions=True
         )
     for (key, req), reply in zip(missing.items(), replies, strict=True):
         if isinstance(reply, BaseException):
             run.failed += 1
+            run.errors[type(reply).__name__] += 1
             continue
         run.cost_usd += reply.usage.cost_usd
         body = req.model_dump(mode="json")
@@ -243,8 +266,8 @@ def judge(
         verdicts = _cached(conn, list(requests))
     run.missing = sum(1 for k in requests if k not in verdicts)
     for pair in pairs:
-        fwd = request_key(request(pair.left, pair.right, model, seed))
-        bwd = request_key(request(pair.right, pair.left, model, seed))
+        fwd = request_key(request(pair.left, pair.right, model, seed, pair.system))
+        bwd = request_key(request(pair.right, pair.left, model, seed, pair.system))
         run.scored.append(Scored(pair, verdicts.get(fwd), verdicts.get(bwd)))
     return run
 

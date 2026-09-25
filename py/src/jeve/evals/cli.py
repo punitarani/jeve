@@ -17,7 +17,6 @@ import json
 import os
 import subprocess
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 import psycopg
@@ -27,7 +26,8 @@ from psycopg.rows import DictRow, dict_row
 from jeve import db
 from jeve.config import find_repo_root
 from jeve.core.seed import derive_rng
-from jeve.evals import judge, report, runner, transcripts
+from jeve.decide.policy import DecisionContext
+from jeve.evals import casts, judge, report, runner, transcripts
 from jeve.evals.arms import DEV_SEEDS, HELD_OUT_SEEDS
 
 JUDGE_DATABASE = "jeve_evals_judge"
@@ -68,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("--judge", default=judge.JUDGE, choices=judge.JUDGES)
     validate.add_argument(
         "--retest", action="store_true", help="judge again under another seed"
+    )
+    validate.add_argument(
+        "--casts", action="store_true", help="the persona judge (EVAL-0004)"
     )
 
     versus = sub.add_parser("judge", help="arm against arm, episode against episode")
@@ -211,6 +214,7 @@ def _say(run: judge.Run, tallies: list[judge.Tally]) -> None:
                 "asked": run.asked,
                 "missing": run.missing,
                 "failed": run.failed,
+                "errors": dict(run.errors),
                 "cost_usd": round(run.cost_usd, 5),
                 "tallies": [_row(t) for t in tallies],
             },
@@ -222,6 +226,8 @@ def _say(run: judge.Run, tallies: list[judge.Tally]) -> None:
 
 
 def _validate(args: argparse.Namespace) -> int:
+    if args.casts:
+        return _validate_casts(args)
     pool: list[tuple[str, object]] = []
     for spec in args.worlds.split(","):
         arm, _, seed = spec.partition(":")
@@ -237,6 +243,22 @@ def _validate(args: argparse.Namespace) -> int:
         assert isinstance(record, transcripts.Record)
         text = transcripts.render(record)
         pairs.append(judge.Pair(f"identical:{ident}", text, text, "identical"))
+    # One unremarkable exchange more (EVAL-0003): whatever the judge does here
+    # is its taste for length, and arms are then compared only at equal length.
+    for ident, record in derive_rng(17, "padded").sample(
+        pool, min(args.per_defect, len(pool))
+    ):
+        assert isinstance(record, transcripts.Record)
+        longer = transcripts.padded(record)
+        if longer is not None:
+            pairs.append(
+                judge.Pair(
+                    f"padded:{ident}",
+                    transcripts.render(longer),
+                    transcripts.render(record),
+                    transcripts.PADDED,
+                )
+            )
     conn = _judge_conn()
     run = judge.judge(conn, pairs, model=args.judge, live=args.live)
     tallies = judge.tally(run)
@@ -261,7 +283,7 @@ def _validate(args: argparse.Namespace) -> int:
                 f" Judged again under another seed, {sum(same)} of {len(same)} "
                 f"pairs got the same two verdicts ({sum(same) / len(same):.2f})."
             )
-    caught = [t for t in tallies if t.label != "identical"]
+    caught = [t for t in tallies if t.label not in ("identical", transcripts.PADDED)]
     n = sum(t.n for t in caught)
     accuracy = sum(t.points for t in caught) / n if n else 0.0
     _write(
@@ -273,11 +295,50 @@ def _validate(args: argparse.Namespace) -> int:
             f"chose the clean copy, both orders counted. Overall {accuracy:.2f} "
             f"on {n} pairs; the judge is used on arms only at "
             f"{judge.MIN_ACCURACY:.2f} or above. *identical* pairs show the "
-            "same account twice: anything but 0.50 is position bias." + retest,
+            "same account twice: anything but 0.50 is position bias. "
+            f"*{transcripts.PADDED}* is the account against itself with one "
+            "unremarkable exchange more: anything but 0.50 is a taste for "
+            "length, and neither counts toward accuracy." + retest,
             "tallies": [_row(t) for t in tallies],
             "accuracy": accuracy,
             "footer": f"{run.asked} verdicts; ${run.cost_usd:.4f} spent on this run "
             "(zero when every verdict came from the cache).",
+        },
+    )
+    return 0
+
+
+def _validate_casts(args: argparse.Namespace) -> int:
+    moments: list[tuple[str, DecisionContext]] = []
+    for spec in args.worlds.split(","):
+        arm, _, seed = spec.partition(":")
+        found = runner.decision_contexts(
+            runner.database(arm, int(seed)), casts.KIND, 4 * args.per_defect
+        )
+        moments += [(f"{arm}:{seed}:{i}", ctx) for i, ctx in enumerate(found)]
+    pairs = casts.planted(moments, args.per_defect, derive_rng(19, "casts"))
+    run = judge.judge(_judge_conn(), pairs, model=args.judge, live=args.live)
+    tallies = judge.tally(run)
+    _say(run, tallies)
+    if run.missing:
+        return 0
+    caught = [t for t in tallies if t.label in casts.DEFECTS]
+    n = sum(t.n for t in caught)
+    accuracy = sum(t.points for t in caught) / n if n else 0.0
+    _write(
+        "0-validation-casts" + _suffix(args.judge),
+        {
+            "title": f"Validation: the persona judge ({args.judge})",
+            "note": "One real moment, shown under two casts, against the same "
+            "moment with the casts' acts made the same (*flattened*) or "
+            "exchanged (*swapped*); *right preferred* is how often the judge "
+            f"chose the clean side, both orders counted. Overall {accuracy:.2f} "
+            f"on {n} pairs; the persona judge is used only at "
+            f"{judge.MIN_ACCURACY:.2f} or above. *identical* shows the same side "
+            "twice: anything but 0.50 is position bias.",
+            "tallies": [_row(t) for t in tallies],
+            "accuracy": accuracy,
+            "footer": f"{run.asked} verdicts; ${run.cost_usd:.4f} spent on this run.",
         },
     )
     return 0
@@ -295,27 +356,24 @@ def _versus(args: argparse.Namespace) -> int:
         )
     pairs: list[judge.Pair] = []
     for seed in _seeds(args.seeds):
-        by_stake: dict[str, tuple[list[transcripts.Record], ...]] = defaultdict(
-            lambda: ([], [])
+        # Of the same shape (EVAL-0003): both judges preferred an episode to
+        # itself with one unremarkable exchange added, so episodes of unequal
+        # length would be judged partly on length.
+        found = transcripts.matched(
+            _records(args.a, seed, args.judge),
+            _records(args.b, seed, args.judge),
+            args.per_seed,
+            derive_rng(seed, "pairs", args.a, args.b, "shape"),
         )
-        for side, arm in ((0, args.a), (1, args.b)):
-            for r in _records(arm, seed, args.judge):
-                by_stake[r.stake][side].append(r)
-        rng = derive_rng(seed, "pairs", args.a, args.b)
-        per_stake = max(1, args.per_seed // max(1, len(by_stake)))
-        for stake in sorted(by_stake):
-            a, b = by_stake[stake]
-            rng.shuffle(a)
-            rng.shuffle(b)
-            for x, y in list(zip(a, b, strict=False))[:per_stake]:
-                pairs.append(
-                    judge.Pair(
-                        f"{seed}:{x.episode_id}:{y.episode_id}",
-                        transcripts.render(x),
-                        transcripts.render(y),
-                        f"{args.b} over {args.a} ({stake})",
-                    )
+        for x, y in found:
+            pairs.append(
+                judge.Pair(
+                    f"{seed}:{x.episode_id}:{y.episode_id}",
+                    transcripts.render(x),
+                    transcripts.render(y),
+                    f"{args.b} over {args.a} ({x.stake})",
                 )
+            )
     run = judge.judge(_judge_conn(), pairs, model=args.judge, live=args.live)
     tallies = judge.tally(run)
     _say(run, tallies)
@@ -338,9 +396,10 @@ def _versus(args: argparse.Namespace) -> int:
         {
             "title": f"`{args.b}` against `{args.a}`, {args.seeds} seeds "
             f"({args.judge})",
-            "note": "Episodes from the two arms, matched by what was at stake and "
-            "by seed, shown both ways round. *Right preferred* is how often the "
-            f"judge preferred `{args.b}`'s episode; 0.50 is no difference.",
+            "note": "Episodes from the two arms and the same seed, of the same "
+            "shape (what was at stake, how many rounds, how many people), shown "
+            "both ways round. *Right preferred* is how often the judge preferred "
+            f"`{args.b}`'s episode; 0.50 is no difference.",
             "tallies": rows,
             "footer": f"{run.asked} verdicts; ${run.cost_usd:.4f} spent on this run.",
         },

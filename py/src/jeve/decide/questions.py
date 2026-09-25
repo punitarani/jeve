@@ -20,7 +20,7 @@ sent, so editing a sentence here re-records every call that contained it.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -174,6 +174,14 @@ def trait_words(name: str, value: object) -> str:
     return _TRAIT_WORDS[name][trait_level(name, value)]
 
 
+def average_traits(traits: Mapping[str, object]) -> dict[str, object]:
+    """The same person at the middle of every seeded range: who they are taken
+    out of a question, so what is left is their situation (DECIDE-0008)."""
+
+    middle = {name: (low + high) / 2 for name, (low, high) in _TRAIT_RANGE.items()}
+    return {**traits, **middle}
+
+
 TRAIT_PHRASES: frozenset[str] = frozenset(
     phrase for levels in _TRAIT_WORDS.values() for phrase in levels
 )
@@ -248,11 +256,31 @@ def chased_words(
 
 
 def runway_words(days: object) -> str:
-    return (
-        "cash is tight; paying this leaves little in the account"
-        if _number(days, 30.0) < 14
-        else "there is comfortably enough cash to pay it"
-    )
+    """Three bands of a cash buffer, in days of outgoings. The middle band is
+    below JPMorgan Chase Institute's median small business (27 days): enough
+    to pay, but a payer there does think about it. With two bands, twenty
+    days' cash read as "comfortably enough", and Jev put 0.000 on cash flow for
+    every payer who read it (the 60-day trial at f7af7c3)."""
+
+    value = _number(days, 30.0)
+    if value < 14:
+        return "cash is tight; paying this leaves little in the account"
+    if value < 30:
+        return "there is enough cash to pay it, but not much to spare"
+    return "there is comfortably enough cash to pay it"
+
+
+def owed_cash_words(days: object) -> str:
+    """The same bands, for the firm that is owed: its own cash, in words that
+    fit someone deciding whether to chase. It used to be told "there is
+    comfortably enough cash to pay it", the payer's line."""
+
+    value = _number(days, 30.0)
+    if value < 14:
+        return "their own cash is tight; they need this money in"
+    if value < 30:
+        return "they can manage without it for now, but not for long"
+    return "they are not short of cash"
 
 
 def time_of_day_words(sim_time: int) -> str:
@@ -1377,7 +1405,7 @@ def _prepare_chase(ctx: DecisionContext) -> Prepared:
                 if ctx.facts.get("large")
                 else "it is a modest amount"
             ),
-            "cash": runway_words(ctx.facts.get("runway_days")),
+            "cash": owed_cash_words(ctx.facts.get("runway_days")),
         },
     )
 
@@ -1713,9 +1741,28 @@ for a bill weeks overdue than for one a few days late (the prompt lab's
 untargeted probe, 30 states each)."""
 
 
+_COLLEAGUE_WORDS: dict[str, str] = {
+    "outage": (
+        "Their own firm makes the software, and a colleague here is the one to "
+        "answer for it."
+    ),
+    "invoice": "Their firm owes the money, but paying it is not their job.",
+}
+"""A colleague of the holder is a bystander, but they are not told it is not
+their problem: the persona judge's renders showed a support lead told that of
+their own firm's outage."""
+
+
 def part_words(ctx: DecisionContext) -> str:
     role = str(ctx.facts.get("role_in_stake", "bystander"))
-    words = _BILL_ROLE_WORDS if ctx.facts.get("stake") == "invoice" else _ROLE_WORDS
+    stake = str(ctx.facts.get("stake"))
+    if (
+        role == "bystander"
+        and ctx.facts.get("holder_firm")
+        and stake in _COLLEAGUE_WORDS
+    ):
+        return _COLLEAGUE_WORDS[stake]
+    words = _BILL_ROLE_WORDS if stake == "invoice" else _ROLE_WORDS
     return words.get(role, words["bystander"])
 
 

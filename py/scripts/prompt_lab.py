@@ -40,15 +40,12 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-import psycopg
-from psycopg.rows import dict_row
-
 from jeve.config import find_repo_root, load_settings
 from jeve.decide import escalation
 from jeve.decide.policy import DecisionContext
-from jeve.decide.questions import QUESTION_SETS, Ask, Prepared
+from jeve.decide.questions import QUESTION_SETS, Ask, Prepared, average_traits
 from jeve.errors import ResponseShapeError, TransportError
-from jeve.evals.runner import dsn_for
+from jeve.evals.runner import decision_contexts
 from jeve.llm import DECISION_PREFERENCE, DecisionRequest, Gateway
 from jeve.llm.protocol import (
     Answer,
@@ -76,28 +73,7 @@ type Dist = dict[str, dict[str, float]]
 
 
 def contexts(db: str, kind: str, n: int, *, offset: int = 0) -> list[DecisionContext]:
-    """`n` real decisions of `kind` from a finished world, in a fixed order
-    (by a hash of the row id, so dev and held-out never overlap)."""
-
-    with psycopg.connect(dsn_for(db), autocommit=True, row_factory=dict_row) as conn:
-        rows = conn.execute(
-            "SELECT d.person_id, d.sim_time, d.facts, p.role, p.traits "
-            "FROM decisions d JOIN persons p ON p.id = d.person_id "
-            "WHERE d.question_set = %s AND d.facts IS NOT NULL "
-            "ORDER BY md5(d.id::text) OFFSET %s LIMIT %s",
-            (kind, offset, n),
-        ).fetchall()
-    return [
-        DecisionContext(
-            person_id=str(r["person_id"]),
-            role=str(r["role"]),
-            sim_time=int(r["sim_time"]),
-            kind=kind,
-            facts=dict(r["facts"] or {}),
-            traits=dict(r["traits"] or {}),
-        )
-        for r in rows
-    ]
+    return decision_contexts(db, kind, n, offset=offset)
 
 
 def with_trait(ctx: DecisionContext, trait: str, value: float) -> DecisionContext:
@@ -200,6 +176,15 @@ async def ask_jev(
             if isinstance(v, ChoiceAnswer)
         }
     return _as_dist(dict(reply.answers), prepared.asks)
+
+
+def jev_answerer(
+    gw: Gateway, ledger: Ledger
+) -> Callable[[Prepared], Awaitable[Dist | None]]:
+    async def answer(prepared: Prepared) -> Dist | None:
+        return await ask_jev(gw, prepared, ledger)
+
+    return answer
 
 
 def llm_answerer(
@@ -322,6 +307,13 @@ async def probe_all(
     answer: Callable[[Prepared], Awaitable[Dist | None]],
 ) -> list[Probe]:
     kind = ctxs[0].kind
+    return await probe_contexts(ctxs, lambda c: answer(QUESTION_SETS[kind].prepare(c)))
+
+
+async def probe_contexts(
+    ctxs: Sequence[DecisionContext],
+    answer: Callable[[DecisionContext], Awaitable[Dist | None]],
+) -> list[Probe]:
     variants: list[DecisionContext] = []
     for c in ctxs:
         variants += [
@@ -333,8 +325,7 @@ async def probe_all(
             with_fact(c, "rounds_done", 0),
             with_fact(c, "rounds_done", 3),
         ]
-    prepared = [QUESTION_SETS[kind].prepare(v) for v in variants]
-    got = await gather([lambda p=p: answer(p) for p in prepared])
+    got = await gather([lambda v=v: answer(v) for v in variants])
     return [
         Probe(
             got[i],
@@ -530,6 +521,258 @@ async def models(args: argparse.Namespace) -> int:
     (OUT / "models.json").write_text(
         json.dumps({"prompt": prompt, "rows": rows}, indent=1, default=str) + "\n"
     )
+    return 0
+
+
+# -- the persona transplant (DECIDE-0008) -----------------------------------------
+
+
+def _answer_of(ask: Ask, dist: dict[str, float]) -> Answer:
+    best = max(ask.options, key=lambda o: dist.get(o, 0.0))
+    if isinstance(ask.question, Noul):
+        return NoulAnswer(noul=dist["yes"])
+    if isinstance(ask.question, Choice):
+        return ChoiceAnswer(choice=best, probabilities=dist)
+    return ScoreAnswer(score=float(best), probabilities=dist)
+
+
+class Once:
+    """Each distinct request asked once, however many variants share it."""
+
+    def __init__(self) -> None:
+        self._jobs: dict[str, asyncio.Task[Dist | None]] = {}
+
+    async def __call__(
+        self, key: str, job: Callable[[], Awaitable[Dist | None]]
+    ) -> Dist | None:
+        if key not in self._jobs:
+            self._jobs[key] = asyncio.ensure_future(job())
+        return await self._jobs[key]
+
+
+def transplanted(
+    gw: Gateway, model: str, llm: Ledger, jev: Ledger, once: Once
+) -> Callable[[DecisionContext], Awaitable[Dist | None]]:
+    """The LLM asked about the average person in this situation, moved by
+    Jev's own answer for this person over its answer for the average one."""
+
+    async def answer(ctx: DecisionContext) -> Dist | None:
+        qs = QUESTION_SETS[ctx.kind]
+        person = qs.prepare(ctx)
+        average = qs.prepare(replace(ctx, traits=average_traits(ctx.traits)))
+        key = json.dumps(average.state, sort_keys=True)
+        situation = await once(
+            f"{model}|{key}",
+            lambda: ask_llm(gw, average, escalation.SYSTEM, model, llm),
+        )
+        p = await once(
+            "jev|" + json.dumps(person.state, sort_keys=True),
+            lambda: ask_jev(gw, person, jev),
+        )
+        a = await once("jev|" + key, lambda: ask_jev(gw, average, jev))
+        if situation is None or p is None or a is None:
+            return None
+        out: Dist = {}
+        for ask in person.asks:
+            if ask.key in situation and ask.key in p and ask.key in a:
+                moved = escalation.transplant(
+                    ask,
+                    _answer_of(ask, situation[ask.key]),
+                    _answer_of(ask, p[ask.key]),
+                    _answer_of(ask, a[ask.key]),
+                )
+                out[ask.key] = escalation.distribution(ask, moved)
+        return out
+
+    return answer
+
+
+async def transplant(args: argparse.Namespace) -> int:
+    """Each model plain and transplanted, against Jev, on dev and held-out
+    states: persona should come out at Jev's strength, and the situation
+    (conversations ending as they go on) at the LLM's."""
+
+    splits = {
+        "dev": contexts(args.from_db, "episode.round", args.dev),
+        "held_out": contexts(
+            args.from_db, "episode.round", args.held_out, offset=args.dev
+        ),
+    }
+    out: dict[str, list[dict[str, Any]]] = {}
+    async with Gateway(settings=load_settings()) as gw:
+        for split, ctxs in splits.items():
+            rows: list[dict[str, Any]] = []
+            once = Once()
+            jl = Ledger()
+            rows.append(
+                _row(
+                    "jev",
+                    score(await probe_all(ctxs, jev_answerer(gw, jl))),
+                    jl,
+                )
+            )
+            for model in args.models.split(","):
+                plain = Ledger()
+                s = score(
+                    await probe_all(
+                        ctxs, llm_answerer(gw, escalation.SYSTEM, model, plain)
+                    )
+                )
+                rows.append(_row(model, s, plain))
+                llm, jev = Ledger(), Ledger()
+                s = score(
+                    await probe_contexts(ctxs, transplanted(gw, model, llm, jev, once))
+                )
+                rows.append(
+                    _row(f"{model} + Jev's persona", s, llm)
+                    | {"jev_calls": jev.calls, "jev_failed": jev.failed}
+                )
+            for row in rows:
+                print(split, json.dumps({k: row[k] for k in (
+                    "name", "press_by_vocality", "small_talk_by_sociability",
+                    "done_by_rounds", "p_done", "act_entropy", "other", "valid",
+                )}, default=str))  # fmt: skip
+            out[split] = rows
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "transplant.json").write_text(
+        json.dumps({"from": args.from_db, **out}, indent=1, default=str) + "\n"
+    )
+    return 0
+
+
+# -- the persona judge on arms (EVAL-0004) ----------------------------------------
+
+
+def _sampled(dist: dict[str, float], options: Sequence[str], u: float) -> str:
+    """The option a uniform `u` lands on, in declared order: every arm reads
+    the same `u` for the same moment and cast (common random numbers)."""
+
+    total = 0.0
+    for option in options:
+        total += dist.get(option, 0.0)
+        if u < total:
+            return option
+    return options[-1]
+
+
+type Acts = dict[str, dict[tuple[int, int], dict[str, str]]]
+
+
+async def cast_acts(
+    args: argparse.Namespace, states: Sequence[DecisionContext]
+) -> tuple[Acts, dict[str, Ledger]]:
+    """What each arm's person did in each moment under each cast, drawn from
+    the arm's answer with the same uniform for every arm."""
+
+    from jeve.core.seed import derive_rng
+    from jeve.evals import casts
+
+    arms: dict[str, Callable[[DecisionContext], Awaitable[Dist | None]]] = {}
+    once = Once()
+    ledgers: dict[str, Ledger] = {}
+    async with Gateway(settings=load_settings()) as gw:
+        for arm in args.arms.split(","):
+            ledgers[arm] = ledger = Ledger()
+            if arm == "jev":
+                answer = jev_answerer(gw, ledger)
+            elif arm.endswith("+jev"):
+                model = arm.removesuffix("+jev")
+                answer_ctx = transplanted(gw, model, ledger, Ledger(), once)
+                arms[arm] = answer_ctx
+                continue
+            else:
+                answer = llm_answerer(gw, escalation.SYSTEM, arm, ledger)
+            arms[arm] = lambda c, a=answer: a(QUESTION_SETS[c.kind].prepare(c))
+        variants = [
+            (i, name, casts.cast(ctx, traits))
+            for i, ctx in enumerate(states)
+            for name, traits in casts.CASTS
+        ]
+        got = {
+            arm: await gather([lambda v=v, f=f: f(v[2]) for v in variants])
+            for arm, f in arms.items()
+        }
+    acts: Acts = {a: {} for a in arms}
+    for arm in arms:
+        for (i, name, ctx), dist in zip(variants, got[arm], strict=True):
+            if dist is None or "act" not in dist:
+                continue
+            options = QUESTION_SETS[casts.KIND].prepare(ctx).asks[0].options
+            for k in range(args.draws):
+                u = derive_rng(20261250, "casts", ctx.person_id, ctx.sim_time, name, k)
+                acts[arm].setdefault((i, k), {})[name] = _sampled(
+                    dist["act"], options, u.random()
+                )
+    return acts, ledgers
+
+
+def casts_mode(args: argparse.Namespace) -> int:
+    """Each arm answers one moment under an outgoing and a reserved cast; the
+    persona judge compares arms side by side on the same moments."""
+
+    from jeve.evals import casts, judge, stats
+    from jeve.evals.cli import _judge_conn, _suffix
+    from jeve.evals.report import JUDGE_DIR
+
+    states = contexts(args.from_db, casts.KIND, args.n, offset=args.offset)
+    acts, ledgers = asyncio.run(cast_acts(args, states))
+    arms = list(acts)
+    rows: list[dict[str, Any]] = []
+    conn = _judge_conn()
+    for contrast in args.contrasts.split(","):
+        a, b = contrast.split(":")
+        pairs = [
+            judge.Pair(
+                f"cast:{a}:{b}:{i}:{k}",
+                casts.side(states[i], acts[a][(i, k)]),
+                casts.side(states[i], acts[b][(i, k)]),
+                f"{b} over {a}",
+                casts.SYSTEM,
+            )
+            for (i, k) in sorted(set(acts[a]) & set(acts[b]))
+            if len(acts[a][(i, k)]) == len(acts[b][(i, k)]) == len(casts.CASTS)
+        ]
+        for model in args.judges.split(","):
+            family = model.split("/")[0]
+            if any(arm.split("/")[0] == family for arm in (a, b)):
+                continue  # a judge never scores its own family (arXiv 2404.13076)
+            valid = JUDGE_DIR / f"0-validation-casts{_suffix(model)}.json"
+            if json.loads(valid.read_text())["accuracy"] < judge.MIN_ACCURACY:
+                continue
+            run = judge.judge(conn, pairs, model=model, live=True)
+            done = [s for s in run.scored if s.right_points is not None]
+            points = sum(s.right_points or 0.0 for s in done)
+            interval = stats.proportion_interval(points, len(done))
+            same = sum(s.pair.left == s.pair.right for s in done)
+            steady = sum(1 for s in done if s.consistent)
+            rows.append({
+                "contrast": f"{b} over {a}", "judge": model, "n": len(done),
+                "right_preferred": points / max(1, len(done)), "wilson": interval,
+                "identical_sides": same, "consistent": steady,
+                "cost_usd": run.cost_usd, "failed": run.failed,
+            })  # fmt: skip
+            print(json.dumps(rows[-1]))
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / "casts.json").write_text(
+        json.dumps(
+            {
+                "from": args.from_db,
+                "states": len(states),
+                "offset": args.offset,
+                "draws": args.draws,
+                "arms": {a: {"calls": ledgers[a].calls, "failed": ledgers[a].failed}
+                         for a in arms},
+                "rows": rows,
+                "acts": {
+                    arm: {f"{i}:{k}": v for (i, k), v in sorted(acts[arm].items())}
+                    for arm in arms
+                },
+            },
+            indent=1,
+            default=str,
+        )
+        + "\n"
+    )  # fmt: skip
     return 0
 
 
@@ -767,6 +1010,28 @@ def main(argv: list[str] | None = None) -> int:
     o = sub.add_parser("orders")
     o.add_argument("--from-db", required=True, help="comma-separated worlds")
     o.add_argument("--n", type=int, default=80)
+    c = sub.add_parser("casts")
+    c.add_argument("--from-db", required=True)
+    c.add_argument("--n", type=int, default=60)
+    c.add_argument("--offset", type=int, default=30)
+    c.add_argument("--draws", type=int, default=2)
+    c.add_argument(
+        "--arms",
+        default="jev,z-ai/glm-5.3-flash,z-ai/glm-5.3-flash+jev,openai/gpt-5.6-luna",
+    )
+    c.add_argument(
+        "--contrasts",
+        default="z-ai/glm-5.3-flash:z-ai/glm-5.3-flash+jev,"
+        "z-ai/glm-5.3-flash:openai/gpt-5.6-luna,"
+        "openai/gpt-5.6-luna:z-ai/glm-5.3-flash+jev,"
+        "jev:z-ai/glm-5.3-flash+jev,jev:z-ai/glm-5.3-flash",
+    )
+    c.add_argument("--judges", default="openai/gpt-5.6-luna,anthropic/claude-sonnet-5")
+    x = sub.add_parser("transplant")
+    x.add_argument("--from-db", required=True)
+    x.add_argument("--models", default="z-ai/glm-5.3-flash,openai/gpt-5.6-luna")
+    x.add_argument("--dev", type=int, default=30)
+    x.add_argument("--held-out", type=int, default=30)
     a = sub.add_parser("audit")
     a.add_argument("--from-db", required=True)
     a.add_argument("--n", type=int, default=12)
@@ -779,6 +1044,10 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(tier1(args))
     if args.command == "models":
         return asyncio.run(models(args))
+    if args.command == "transplant":
+        return asyncio.run(transplant(args))
+    if args.command == "casts":
+        return casts_mode(args)
     return 2
 
 

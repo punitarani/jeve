@@ -1,0 +1,185 @@
+{
+ "from": "jeve_eval_rules_20261210",
+ "dev": [
+  {
+   "name": "jev",
+   "valid": 1.0,
+   "p_done": 0.43833333333333335,
+   "act_entropy": 0.49597265474418095,
+   "other": 0.03933333333333333,
+   "press_by_vocality": 0.2642857142857143,
+   "small_talk_by_sociability": 0.26,
+   "done_by_rounds": 0.021666666666666667,
+   "n": 30,
+   "objective": 0.32706435710740955,
+   "notes": [
+    "acts collapsed"
+   ],
+   "calls": 210,
+   "failed": 0,
+   "seconds_per_call": 0.22785625115221983
+  },
+  {
+   "name": "z-ai/glm-5.3-flash",
+   "valid": 0.9952380952380953,
+   "p_done": 0.5836666666666667,
+   "act_entropy": 0.8351004213823846,
+   "other": 0.06633333333333333,
+   "press_by_vocality": 0.18142857142857144,
+   "small_talk_by_sociability": 0.13433333333333333,
+   "done_by_rounds": 0.03172413793103448,
+   "n": 30,
+   "objective": 0.33162397372742203,
+   "notes": [],
+   "calls": 210,
+   "failed": 1,
+   "seconds_per_call": 8.026765478961725
+  },
+  {
+   "name": "z-ai/glm-5.3-flash + Jev's persona",
+   "valid": 0.9714285714285714,
+   "p_done": 0.5760053191981963,
+   "act_entropy": 0.7620733732406451,
+   "other": 0.07376693729869084,
+   "press_by_vocality": 0.24735798579865947,
+   "small_talk_by_sociability": 0.25016929782286773,
+   "done_by_rounds": -0.006650483327301123,
+   "n": 30,
+   "objective": 0.4013448991007338,
+   "notes": [
+    "invalid replies"
+   ],
+   "calls": 76,
+   "failed": 1,
+   "seconds_per_call": 6.149501013697629,
+   "jev_calls": 225,
+   "jev_failed": 0
+  },
+  {
+   "name": "openai/gpt-5.6-luna",
+   "valid": 1.0,
+   "p_done": 0.6286666666666666,
+   "act_entropy": 0.7872901894729691,
+   "other": 0.07966666666666668,
+   "press_by_vocality": 0.2571428571428572,
+   "small_talk_by_sociability": 0.22733333333333333,
+   "done_by_rounds": 0.03300000000000001,
+   "n": 30,
+   "objective": 0.5009761904761905,
+   "notes": [],
+   "calls": 210,
+   "failed": 0,
+   "seconds_per_call": 5.117336140514366
+  },
+  {
+   "name": "openai/gpt-5.6-luna + Jev's persona",
+   "valid": 1.0,
+   "p_done": 0.5842752931425281,
+   "act_entropy": 0.7192895073838198,
+   "other": 0.07977803315678716,
+   "press_by_vocality": 0.19827490285776173,
+   "small_talk_by_sociability": 0.3080623483234614,
+   "done_by_rounds": 0.02543651793609141,
+   "n": 30,
+   "objective": 0.5190555101492689,
+   "notes": [],
+   "calls": 76,
+   "failed": 0,
+   "seconds_per_call": 3.2065996622367443,
+   "jev_calls": 0,
+   "jev_failed": 0
+  }
+ ],
+ "held_out": [
+  {
+   "name": "jev",
+   "valid": 1.0,
+   "p_done": 0.3766666666666667,
+   "act_entropy": 0.4399389800234636,
+   "other": 0.028333333333333332,
+   "press_by_vocality": 0.096,
+   "small_talk_by_sociability": 0.309,
+   "done_by_rounds": 0.019666666666666666,
+   "n": 30,
+   "objective": 0.09471129338026063,
+   "notes": [
+    "acts collapsed"
+   ],
+   "calls": 210,
+   "failed": 0,
+   "seconds_per_call": 0.27418081809079187
+  },
+  {
+   "name": "z-ai/glm-5.3-flash",
+   "valid": 0.9857142857142858,
+   "p_done": 0.5516666666666666,
+   "act_entropy": 0.820836272332459,
+   "other": 0.07,
+   "press_by_vocality": 0.16399999999999998,
+   "small_talk_by_sociability": 0.1268965517241379,
+   "done_by_rounds": -0.034482758620689655,
+   "n": 30,
+   "objective": 0.2522266009852219,
+   "notes": [
+    "invalid replies"
+   ],
+   "calls": 210,
+   "failed": 3,
+   "seconds_per_call": 13.063859344042916
+  },
+  {
+   "name": "z-ai/glm-5.3-flash + Jev's persona",
+   "valid": 0.9666666666666667,
+   "p_done": 0.5464538190259429,
+   "act_entropy": 0.7618848324959361,
+   "other": 0.050666009655369736,
+   "press_by_vocality": 0.2206467402660098,
+   "small_talk_by_sociability": 0.2588770677393032,
+   "done_by_rounds": 3.924536186225186e-05,
+   "n": 30,
+   "objective": 0.3628767640195776,
+   "notes": [
+    "invalid replies"
+   ],
+   "calls": 69,
+   "failed": 2,
+   "seconds_per_call": 9.372486320652081,
+   "jev_calls": 219,
+   "jev_failed": 0
+  },
+  {
+   "name": "openai/gpt-5.6-luna",
+   "valid": 1.0,
+   "p_done": 0.537,
+   "act_entropy": 0.7367906937681635,
+   "other": 0.067,
+   "press_by_vocality": 0.20600000000000002,
+   "small_talk_by_sociability": 0.24833333333333335,
+   "done_by_rounds": 0.03899999999999999,
+   "n": 30,
+   "objective": 0.4738333333333334,
+   "notes": [],
+   "calls": 210,
+   "failed": 0,
+   "seconds_per_call": 5.142066472623542
+  },
+  {
+   "name": "openai/gpt-5.6-luna + Jev's persona",
+   "valid": 1.0,
+   "p_done": 0.5496580722953358,
+   "act_entropy": 0.7044129698366856,
+   "other": 0.06307428419681091,
+   "press_by_vocality": 0.18960150272201842,
+   "small_talk_by_sociability": 0.33229416266187034,
+   "done_by_rounds": -0.006024602075457454,
+   "n": 30,
+   "objective": 0.51888336434616,
+   "notes": [],
+   "calls": 69,
+   "failed": 0,
+   "seconds_per_call": 3.3226877548408136,
+   "jev_calls": 0,
+   "jev_failed": 0
+  }
+ ]
+}

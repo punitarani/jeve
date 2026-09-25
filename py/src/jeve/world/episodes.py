@@ -124,6 +124,9 @@ class Stake:
     ref: str
     holder: str | None
     askers: frozenset[str]
+    holder_org: str | None = None
+    """The firm that answers for the matter. The holder's colleagues are in the
+    room as bystanders, but it is their firm's outage or their firm's bill."""
     causes: tuple[int, ...] = ()
     module_id: str | None = None
     incident_id: int | None = None
@@ -493,6 +496,7 @@ def _outage_stake(engine: Engine, group: list[Agent], down: list[str]) -> Stake 
         ref=f"incident:{incident['id']}",
         holder=vendor.id,
         askers=askers,
+        holder_org=vendor.org,
         causes=(incident["cause"],) if incident["cause"] else (),
         module_id=module,
         incident_id=incident["id"],
@@ -536,6 +540,7 @@ def _invoice_stake(engine: Engine, group: list[Agent], now: SimTime) -> Stake | 
                 ref=f"invoice:{int(bill['id'])}",
                 holder=str(payer["id"]),
                 askers=frozenset(by_org.get(creditor, [])),
+                holder_org=debtor,
                 causes=((int(bill["issued_seq"]),) if bill["issued_seq"] else ()),
                 invoice_id=int(bill["id"]),
                 days_late=max(0, (now.seconds - int(bill["due_sim"])) // DAY),
@@ -975,6 +980,7 @@ def _context(
             "days_late": stake.days_late,
             "large": stake.large,
             "role_in_stake": role,
+            "holder_firm": role == "bystander" and agent.org == stake.holder_org,
             "track_record": stake.track_record,
             "present": [
                 {

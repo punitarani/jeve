@@ -335,6 +335,30 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### EVAL-0003: Judge arms on episodes of equal length
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/evals/transcripts.py`, `py/src/jeve/evals/cli.py`, `py/tests/test_evals.py`  
+**Tags**: evals, judge, bias, agent-decided
+
+Arms are judged only on pairs of the same shape: what was at stake, how many rounds, and how many people. The planted-defect test also measures the judge's taste for length.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### EVAL-0004: A persona judge sees one moment under two casts
+
+**Status**: accepted (2026-09-25)  
+**Scope**: `py/src/jeve/evals/casts.py`, `py/src/jeve/evals/cli.py`, `py/src/jeve/evals/judge.py`, `py/scripts/prompt_lab.py`, `py/tests/test_evals.py`  
+**Tags**: evals, judge, persona, agent-decided
+
+Persona is judged on one moment under two casts. The judge must first catch planted flattened and swapped casts on real moments, at `MIN_ACCURACY` or better.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### GEN-0001: Dialogue is a projection — rendered on click, cached by content hash, never read back
 
 **Status**: accepted (2026-09-20)  

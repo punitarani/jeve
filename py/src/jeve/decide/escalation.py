@@ -455,6 +455,28 @@ def applied(ask: Ask, jev: Answer, llm: Answer, *, routed: bool = False) -> Answ
     return _answer(ask, {o: (a[o] + b[o]) / 2 for o in ask.options})
 
 
+FLOOR = 0.01
+"""Added to both of Jev's answers before one is divided by the other, so an
+option Jev all but rules out for the average person cannot blow up."""
+
+
+def transplant(ask: Ask, situation: Answer, person: Answer, average: Answer) -> Answer:
+    """DECIDE-0008: the LLM's answer for an average person in this situation,
+    moved by as much as Jev moves when the average person becomes this one.
+
+    Jev keeps people distinct and the LLM follows a conversation; each is
+    asked only for what it does well, and the product is still a
+    distribution over the declared options."""
+
+    s = distribution(ask, situation)
+    p, a = distribution(ask, person), distribution(ask, average)
+    weights = {o: s[o] * (p[o] + FLOOR) / (a[o] + FLOOR) for o in ask.options}
+    total = sum(weights.values())
+    if total <= 0.0:
+        return person
+    return _answer(ask, {o: w / total for o, w in weights.items()})
+
+
 def agrees(
     asks: Sequence[Ask], jev: Mapping[str, Answer], llm: Mapping[str, Answer]
 ) -> bool:

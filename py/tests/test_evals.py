@@ -23,9 +23,9 @@ from psycopg.rows import DictRow
 
 from jeve import db
 from jeve.core.clock import DAY, at
-from jeve.decide.policy import RulesPolicy
+from jeve.decide.policy import DecisionContext, RulesPolicy
 from jeve.decide.recorder import insert_call
-from jeve.evals import judge, report, stats, transcripts
+from jeve.evals import casts, judge, report, stats, transcripts
 from jeve.evals.metrics import measure
 from jeve.evals.priors import BY_MEASURE, Prior
 from jeve.sim import advance
@@ -165,6 +165,81 @@ def test_each_defect_breaks_the_account_in_the_way_it_says() -> None:
     assert transcripts.render(shut).split("\n")[1:] == text.split("\n")[1:]
 
     assert transcripts.plant(replace(clean, rounds=()), "loop", rng) is None
+
+
+def test_padding_adds_one_unremarkable_exchange_and_nothing_else() -> None:
+    clean = _record()
+    longer = transcripts.padded(clean)
+    assert longer is not None and len(longer.rounds) == 3
+    # Inserted before the last round: the ending still follows what ended it.
+    assert longer.rounds[0] == clean.rounds[0] and longer.rounds[2] == clean.rounds[1]
+    # The vendor explains its own outage; the customer asks about it.
+    assert [(a.person, a.act) for a in longer.rounds[1]] == [
+        ("a", "explain"),
+        ("b", "ask"),
+    ]
+    assert longer.effects == clean.effects and longer.ending == clean.ending
+    assert transcripts.padded(replace(clean, rounds=())) is None
+
+
+def test_arms_are_paired_only_on_accounts_of_the_same_shape() -> None:
+    clean = _record()
+    short = replace(clean, rounds=clean.rounds[:1])
+    news = replace(clean, stake="news")
+    three = replace(
+        clean,
+        people=(
+            *clean.people,
+            transcripts.Person("c", "Cy", "barista", "third_rail", {}),
+        ),
+    )
+    a = [replace(r, episode_id=i) for i, r in enumerate([clean, short, news, three])]
+    b = [replace(r, episode_id=10 + i) for i, r in enumerate([clean, clean, short])]
+    pairs = transcripts.matched(a, b, 10, random.Random(1))
+    assert all(transcripts.shape(x) == transcripts.shape(y) for x, y in pairs)
+    # One two-round and one one-round pair: news and the three-person episode
+    # have no partner, and each episode is used once.
+    assert sorted(len(x.rounds) for x, _ in pairs) == [1, 2]
+    assert len({y.episode_id for _, y in pairs}) == len(pairs)
+    assert len(transcripts.matched(a, b, 1, random.Random(1))) == 1
+
+
+def _moment(role: str) -> DecisionContext:
+    return DecisionContext(
+        person_id="halloran.paralegal.11",
+        role="paralegal",
+        sim_time=at(2, 12, 30),
+        kind=casts.KIND,
+        facts={"org": "halloran", "here": "cafe", "stake": "outage",
+               "role_in_stake": role, "present": []},
+        traits={"vocality": 0.5, "sociability": 0.5},
+    )  # fmt: skip
+
+
+def test_a_planted_cast_differs_only_in_what_the_person_did() -> None:
+    moments = [("asker", _moment("asker")), ("holder", _moment("holder"))]
+    pairs = casts.planted(moments, 1, random.Random(0))
+    # The one who could act is never planted: what they ought to do is not plain.
+    assert {p.id.split(":")[1] for p in pairs} == {"asker"}
+    by = {p.label: p for p in pairs}
+    assert set(by) == {"flattened", "swapped", "identical"}
+    clean = by["swapped"].right.split("\n")
+    did = [line for line in clean if line.startswith("What they did")]
+    assert did == [
+        "What they did: pushes the software company to fix it now.",
+        "What they did: breaks off and heads back to work.",
+    ]
+    for label in ("flattened", "swapped"):
+        broken = by[label].left.split("\n")
+        changed = [a for a, b in zip(broken, clean, strict=True) if a != b]
+        assert changed and all(c.startswith("What they did") for c in changed)
+    flat = [x for x in by["flattened"].left.split("\n") if x.startswith("What they")]
+    assert len(set(flat)) == 1
+    assert by["identical"].left == by["identical"].right
+    assert all(p.system == casts.SYSTEM for p in pairs)
+    # The two versions differ in who the person is, and in nothing else.
+    one, two = by["identical"].right.split("\n\nVersion 2:\n")
+    assert "Talkative" in one and "Keeps to themselves" in two
 
 
 # -- the judge ----------------------------------------------------------------------
