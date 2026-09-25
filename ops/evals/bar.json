@@ -1,0 +1,110 @@
+{
+ "1_bands_and_invariants": {
+  "holds": false,
+  "checked": 84,
+  "misses": [
+   "rules trial 20261203: staff_turnover_monthly = 0.0625",
+   "rules confirm 20261301: staff_turnover_monthly = 0.041666666666666664",
+   "rules confirm 20261303: staff_turnover_monthly = 0.0625",
+   "jev-llm-rounds trial 20261202: staff_turnover_monthly = 0.041666666666666664",
+   "jev-llm-rounds trial 20261203: staff_turnover_monthly = 0.0625",
+   "jev-llm-rounds confirm 20261301: late_reason_cash_flow = 0.17272727272727273",
+   "jev-llm-rounds confirm 20261301: staff_turnover_monthly = 0.041666666666666664",
+   "jev-llm-rounds confirm 20261303: staff_turnover_monthly = 0.0625"
+  ]
+ },
+ "2_beats_before": {
+  "trial": {
+   "better": [
+    "invoice_late_share",
+    "cafe_peak_hour",
+    "subscription_churn_monthly",
+    "detectors_firing",
+    "episode_settled_share",
+    "episode_stalled_share",
+    "ontology_gaps",
+    "event_payload_fields_mean",
+    "event_caused_share",
+    "decision_facts_share",
+    "late_bill_reason_share"
+   ],
+   "worse": [
+    "persona_signal"
+   ],
+   "holds": false
+  },
+  "confirm": {
+   "better": [
+    "invoice_late_share",
+    "cafe_peak_hour",
+    "subscription_churn_monthly",
+    "episode_settled_share",
+    "episode_stalled_share",
+    "ontology_gaps",
+    "event_payload_fields_mean",
+    "event_caused_share",
+    "decision_facts_share",
+    "late_bill_reason_share"
+   ],
+   "worse": [
+    "persona_signal"
+   ],
+   "holds": false
+  },
+  "holds": false
+ },
+ "3_judges_prefer_after": {
+  "trial.gpt-5.6-luna": {
+   "n": 120,
+   "after_preferred": 0.5354166666666667,
+   "wilson": [
+    0.44647110170369136,
+    0.6221650406413968
+   ],
+   "holds": false
+  },
+  "trial.claude-haiku-4.5": {
+   "n": 120,
+   "after_preferred": 0.44583333333333336,
+   "wilson": [
+    0.35995439411353064,
+    0.535072682299864
+   ],
+   "holds": false
+  },
+  "confirm.gpt-5.6-luna": {
+   "n": 120,
+   "after_preferred": 0.4791666666666667,
+   "wilson": [
+    0.3918257061525518,
+    0.5678000924679846
+   ],
+   "holds": false
+  },
+  "confirm.claude-haiku-4.5": {
+   "n": 120,
+   "after_preferred": 0.4583333333333333,
+   "wilson": [
+    0.37186128717406863,
+    0.5473903100670041
+   ],
+   "holds": false
+  },
+  "holds": false
+ },
+ "4_persona_at_least_jevs": {
+  "jev-llm-rounds": {
+   "decisions": 2691,
+   "press_by_vocality": {
+    "applied": 0.3599233180446145,
+    "jev": 0.4265536212736403
+   },
+   "small_talk_by_sociability": {
+    "applied": 0.3596561284478319,
+    "jev": 0.49795824103916636
+   },
+   "holds": false
+  },
+  "holds": false
+ }
+}

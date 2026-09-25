@@ -1,0 +1,73 @@
+{
+ "band": [
+  0.0,
+  0.035
+ ],
+ "staff": 24,
+ "horizons": [
+  {
+   "days": 60,
+   "reviews": 2,
+   "expected_departures": 0.921,
+   "expected_monthly": 0.0192,
+   "pass_one_seed": 0.7652,
+   "pass_three_seeds": 0.4481,
+   "pass_six_seeds": 0.2008,
+   "most_departures_in_band": 1
+  },
+  {
+   "days": 180,
+   "reviews": 6,
+   "expected_departures": 2.763,
+   "expected_monthly": 0.0192,
+   "pass_one_seed": 0.9406,
+   "pass_three_seeds": 0.8321,
+   "pass_six_seeds": 0.6924,
+   "most_departures_in_band": 5
+  },
+  {
+   "days": 365,
+   "reviews": 13,
+   "expected_departures": 5.986,
+   "expected_monthly": 0.0205,
+   "pass_one_seed": 0.9601,
+   "pass_three_seeds": 0.885,
+   "pass_six_seeds": 0.7832,
+   "most_departures_in_band": 10
+  }
+ ],
+ "drawn": {
+  "final": {
+   "per_world": {
+    "20261201": 1,
+    "20261202": 1,
+    "20261203": 3,
+    "20261301": 2,
+    "20261302": 0,
+    "20261303": 3
+   },
+   "total": 10,
+   "expected": 5.525,
+   "p_at_least_total": 0.0527
+  },
+  "dev": {
+   "per_world": {
+    "20261211": 2,
+    "20261212": 2,
+    "20261213": 1,
+    "20261214": 1,
+    "20261215": 2,
+    "20261240": 0,
+    "20261241": 4,
+    "20261242": 0,
+    "20261243": 1,
+    "20261244": 0,
+    "20261245": 0
+   },
+   "total": 13,
+   "expected": 10.13,
+   "p_at_least_total": 0.2185
+  }
+ },
+ "note": "Unpushed hazard only (the best case). A seed passes when departures / staff per 30 days is inside the band; the chance is exact (Poisson-binomial over each eligible person's draw at each month-end whose notice ends inside the run)."
+}

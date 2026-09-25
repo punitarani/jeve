@@ -1,0 +1,29 @@
+{
+ "accuracy": 0.95,
+ "footer": "98 verdicts; $0.4179 spent on this run.",
+ "note": "One real moment, shown under two casts, against the same moment with the casts' acts made the same (*flattened*) or exchanged (*swapped*); *right preferred* is how often the judge chose the clean side, both orders counted. Overall 0.95 on 40 pairs; the persona judge is used only at 0.80 or above. *identical* shows the same side twice: anything but 0.50 is position bias.",
+ "tallies": [
+  {
+   "consistent": 19,
+   "label": "flattened",
+   "n": 20,
+   "points": 19.5,
+   "ties": 0
+  },
+  {
+   "consistent": 20,
+   "label": "identical",
+   "n": 20,
+   "points": 10.0,
+   "ties": 40
+  },
+  {
+   "consistent": 17,
+   "label": "swapped",
+   "n": 20,
+   "points": 18.5,
+   "ties": 0
+  }
+ ],
+ "title": "Validation: the persona judge (anthropic/claude-sonnet-5)"
+}

@@ -63,6 +63,8 @@ class SetRow:
 
 
 def by_set(conn: Connection[DictRow]) -> list[SetRow]:
+    # Routed rows (DECIDE-0006) are not second opinions: the set was answered
+    # by tier 1 outright, and its agreement is not what the bands are about.
     rows = conn.execute(
         """
         SELECT question_set,
@@ -72,8 +74,10 @@ def by_set(conn: Connection[DictRow]) -> list[SetRow]:
                avg(agrees::int) FILTER (WHERE NOT sampled) AS banded_agree,
                count(*) FILTER (WHERE sampled) AS sampled,
                avg(agrees::int) FILTER (WHERE sampled) AS sampled_agree
-        FROM escalations GROUP BY question_set ORDER BY question_set
-        """
+        FROM escalations WHERE NOT triggers @> %s::jsonb
+        GROUP BY question_set ORDER BY question_set
+        """,
+        (escalation.ROUTED_ROW,),
     ).fetchall()
     return [
         SetRow(
@@ -134,8 +138,10 @@ def render(conn: Connection[DictRow]) -> str:
         """
         SELECT t->>'rule' AS rule, count(*) AS n, avg(e.agrees::int) AS agree
         FROM escalations e, jsonb_array_elements(e.triggers) t
+        WHERE NOT e.triggers @> %s::jsonb
         GROUP BY 1 ORDER BY 1
-        """
+        """,
+        (escalation.ROUTED_ROW,),
     ).fetchall()
     lines += ["", "## By rule", "", "| rule | fired | agree |", "|---|---:|---:|"]
     lines += [

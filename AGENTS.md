@@ -287,6 +287,90 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### DECIDE-0006: Route a question set to tier 1 outright, by name, when evals show Jev under-answers it
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/decide/escalation.py`, `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/config.py`, `py/src/jeve/sim/runner.py`, `py/tests/test_escalation.py`  
+**Tags**: escalation, llm, episodes, typed-decisions, agent-decided
+
+`JEVE_ESCALATION_ROUTE` names sets — or single questions, as `set:ask` — that tier 1 answers outright in Jev's typed shape, sampled from the LLM's own distribution; it defaults to `episode.round`.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### DECIDE-0007: Ask a judgement over every rotation of its options, in one request
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/sim/panel.py`, `py/tests/test_rotations.py`, `py/scripts/prompt_lab.py`  
+**Tags**: jev, robustness, position-bias, typed-decisions, agent-decided
+
+Each judgement over a choice is asked once in its declared order and once more per other cyclic order of its options (`key__r1`, `key__r2`, ...), in the same request; the copies are averaged back into one answer under its own key.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### DECIDE-0008: A routed propensity takes the person from Jev
+
+**Status**: accepted (2026-09-25)  
+**Scope**: `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/decide/escalation.py`, `py/src/jeve/decide/questions.py`, `py/tests/test_escalation.py`, `py/scripts/prompt_lab.py`, `py/scripts/persona_gradients.py`  
+**Tags**: escalation, persona, typed-decisions, llm, agent-decided
+
+For a routed set, Jev is asked about this person and about the same situation with every trait at the middle of its range, in the same batch. Tier 1 is asked about that average person. A judgement is the LLM's whole, so `done` is read off the conversation for the average person. A propensity is the LLM's answer times Jev's ratio for this person over the average person, renormalised (`escalation.transplant`, with a 0.01 floor on Jev's side). This amends DECIDE-0006's "sampled from the LLM's own distribution" for propensities only.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### EVAL-0001: An LLM role is kept only on a held-out, judged, paired A/B
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/evals/**`, `py/scripts/evals.py`, `py/tests/test_evals.py`, `py/tests/test_layering.py`  
+**Tags**: evals, measurement, llm, layering, agent-decided
+
+An LLM role is kept only when its held-out, paired-by-seed contrast against the arm without it shows a gain and no clear loss, and a judge that has passed a planted-defect test prefers it.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### EVAL-0002: Staff stay seeded; an LLM-written cast flattened them
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/world/seed_world.py`  
+**Tags**: persona, traits, llm, negative-result, agent-decided
+
+Staff traits stay seeded: the LLM-written cast lowered persona signal on held-out seeds and bought nothing the judge could see.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### EVAL-0003: Judge arms on episodes of equal length
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/evals/transcripts.py`, `py/src/jeve/evals/cli.py`, `py/tests/test_evals.py`  
+**Tags**: evals, judge, bias, agent-decided
+
+Arms are judged only on pairs of the same shape: what was at stake, how many rounds, and how many people. The planted-defect test also measures the judge's taste for length.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### EVAL-0004: A persona judge sees one moment under two casts
+
+**Status**: accepted (2026-09-25)  
+**Scope**: `py/src/jeve/evals/casts.py`, `py/src/jeve/evals/cli.py`, `py/src/jeve/evals/judge.py`, `py/scripts/prompt_lab.py`, `py/tests/test_evals.py`  
+**Tags**: evals, judge, persona, agent-decided
+
+Persona is judged on one moment under two casts. The judge must first catch planted flattened and swapped casts on real moments, at `MIN_ACCURACY` or better.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### GEN-0001: Dialogue is a projection — rendered on click, cached by content hash, never read back
 
 **Status**: accepted (2026-09-20)  
@@ -378,6 +462,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: memory, beliefs, diffusion, rumour, agent-decided
 
 A subscriber's trust in the vendor is `persons.beliefs.vendor_reliability`, 0 to 4, revised by a J `score` after each outage they ran into and recovering a level after a month without one; it gates renewal. Facts can now be about late wages, a firm short of money, a vendor losing customers or a broken promise, and `true_fact` is false for a rumour, which travels like any fact.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### MEM-0004: Who has met whom is a typed tie, and it shapes who is approached
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/memory/ties.py`, `py/migrations/0015_signal.sql`, `py/src/jeve/decide/policy.py`, `py/src/jeve/world/space.py`, `py/tests/test_ties.py`, `py/tests/test_query_plans.py`  
+**Tags**: memory, relationships, encounters, episodes, agent-decided
+
+`ties` holds one row per pair (`a < b`): meetings, warmth, first and last meeting, and the last topic. Encounters, episodes and promises write it, and questions read it as words.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 
@@ -666,6 +762,30 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Tags**: escalation, encounters, support, agent-decided
 
 A complaint raised with an engineer (the founder, an engineering lead, an engineer or an SRE) shortens the outage at once, as before; raised with anyone else, it becomes an `escalation.handoff` decision a quarter of an hour later — relay it to engineering, or leave it in the queue. Support escalates by rule once three blocked customers' tickets are triaged against one outage, and a customer can ring their account manager as a workaround (WORLD-0011).
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0013: Decisions and events carry their inputs, reasons and pressure
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/migrations/0015_signal.sql`, `py/src/jeve/world/engine.py`, `py/src/jeve/world/space.py`, `py/src/jeve/decide/questions.py`, `py/src/jeve/evals/metrics.py`, `py/tests/test_field_report.py`  
+**Tags**: signal, decisions, events, payments, typed-decisions, agent-decided
+
+Every decision stores the facts it was asked on (`decisions.facts`). A late bill carries a typed reason, and the pressure put on it is recorded: how often it was chased, whether it was raised in person, and any promise to pay. Events name what their consumers need to explain them.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
+### WORLD-0014: Calibrate to cited data, and make a monthly base rate a hazard, not a question
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/world/engine.py`, `py/src/jeve/world/economy.py`, `py/src/jeve/world/customers.py`, `py/src/jeve/decide/policy.py`, `py/src/jeve/evals/priors.py`, `py/tests/test_loops.py`  
+**Tags**: calibration, economy, hazards, typed-decisions, evals, agent-decided
+
+Rates are set from cited data. A month's base rate is a rule hazard, keyed by subject and month. Jev judges only how the situation moves it, for the people something pushes.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

@@ -315,6 +315,81 @@ def test_a_confident_customer_is_not_asked_whether_to_stay(
     conn.rollback()
 
 
+def test_the_content_are_not_asked_whether_to_leave_but_some_leave(
+    conn: Connection[DictRow],
+) -> None:
+    """A month's base rate is a hazard, not a question (WORLD-0014): asked,
+    Jev put a contented employee's resignation at about 0.10 a month. Nobody
+    in a fresh town has anything pushing them, so nobody is asked — and over
+    enough months, somebody still goes, for a reason Pew's survey names."""
+
+    engine, report = fresh(conn)
+    for month in range(12):
+        later = TickReport(
+            tick_seq=2 + month, sim_time=report.sim_time + month * 28 * DAY
+        )
+        economy.careers(engine, later)
+    assert (
+        count(
+            conn, "SELECT count(*) FROM decisions WHERE question_set = 'career.review'"
+        )
+        == 0
+    )
+    notices = conn.execute(
+        "SELECT payload FROM events WHERE kind = 'staff.notice'"
+    ).fetchall()
+    assert notices, "a year of hazards and nobody resigned"
+    for row in notices:
+        payload = dict(row["payload"])
+        assert payload["pushed"] is False and payload["decided_by"] == "rules"
+        assert payload["reason"] in {name for name, _ in economy.UNPUSHED_REASONS}
+    conn.rollback()
+
+
+def test_a_lapse_ends_a_subscription_quietly(conn: Connection[DictRow]) -> None:
+    """A subscription left to lapse (WORLD-0014) is cancelled by rule, says
+    why, and is not news that the vendor is in trouble."""
+
+    engine, report = fresh(conn)
+    sub = conn.execute(
+        "SELECT id, org_id, person_id, module_id, monthly_cents FROM subscriptions "
+        "WHERE active AND person_id IS NOT NULL ORDER BY id LIMIT 1"
+    ).fetchone()
+    assert sub is not None
+    customers.cancel(engine, report, dict(sub), str(sub["person_id"]), None)
+    event = conn.execute(
+        "SELECT decision_id, payload FROM events WHERE kind = 'subscription.cancelled'"
+    ).fetchone()
+    assert event is not None and event["decision_id"] is None
+    assert event["payload"]["decided_by"] == "rules"
+    assert event["payload"]["reason"] == "lapsed"
+    assert not memory.holders_of(conn, "churned:tallybird")
+    conn.rollback()
+
+
+def test_only_somebody_something_pushes_is_asked_whether_to_go(
+    conn: Connection[DictRow],
+) -> None:
+    engine, report = fresh(conn)
+    pair = conn.execute(
+        "SELECT a.id AS x, b.id AS y FROM persons a JOIN persons b "
+        "ON a.org_id = b.org_id AND a.id < b.id WHERE a.kind = 'staff' "
+        "AND b.kind = 'staff' AND a.org_id = 'ledgerline' "
+        "AND a.role <> 'principal' AND b.role <> 'principal' ORDER BY a.id LIMIT 1"
+    ).fetchone()
+    assert pair is not None
+    memory.warm(conn, str(pair["x"]), str(pair["y"]), -2, sim_time=report.sim_time)
+    economy.careers(engine, report)
+    asked = {
+        str(r["person_id"])
+        for r in conn.execute(
+            "SELECT person_id FROM decisions WHERE question_set = 'career.review'"
+        ).fetchall()
+    }
+    assert asked == {str(pair["x"]), str(pair["y"])}
+    conn.rollback()
+
+
 def test_a_disputed_bill_is_not_paid_until_the_issuer_answers(
     conn: Connection[DictRow],
 ) -> None:

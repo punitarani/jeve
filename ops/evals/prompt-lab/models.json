@@ -1,0 +1,92 @@
+{
+ "prompt": "You are deciding for one person in a simulation of a small town's businesses. You are given their situation and one or more questions. For each question, give a probability for every option: how likely this person is to choose it, or how likely it is to be the right answer, judging only by what you are told. A question's probabilities sum to one. Answer in the JSON shape required, and nothing else.",
+ "rows": [
+  {
+   "model": "z-ai/glm-5.3-flash",
+   "name": "z-ai/glm-5.3-flash",
+   "valid": 1.0,
+   "p_done": 0.6016666666666667,
+   "act_entropy": 0.8426706475112062,
+   "other": 0.06233333333333334,
+   "press_by_vocality": 0.146,
+   "small_talk_by_sociability": 0.136,
+   "done_by_rounds": -0.03566666666666666,
+   "n": 30,
+   "objective": 0.2641666666666667,
+   "notes": [],
+   "calls": 210,
+   "failed": 0,
+   "seconds_per_call": 3.721283844647717
+  },
+  {
+   "model": "google/gemini-3.8-flash",
+   "name": "google/gemini-3.8-flash",
+   "valid": 0.9904761904761905,
+   "p_done": 0.6293103448275862,
+   "act_entropy": 0.7377941287387073,
+   "other": 0.061724137931034484,
+   "press_by_vocality": 0.1,
+   "small_talk_by_sociability": 0.44551724137931037,
+   "done_by_rounds": 0.09233333333333332,
+   "n": 30,
+   "objective": 0.591683908045977,
+   "notes": [],
+   "calls": 210,
+   "failed": 2,
+   "seconds_per_call": 9.854093798609565
+  },
+  {
+   "model": "deepseek/deepseek-v4-flash",
+   "name": "deepseek/deepseek-v4-flash",
+   "valid": 1.0,
+   "p_done": 0.3733333333333333,
+   "act_entropy": 0.7786359886652229,
+   "other": 0.093,
+   "press_by_vocality": 0.158,
+   "small_talk_by_sociability": 0.3373333333333334,
+   "done_by_rounds": 0.10833333333333332,
+   "n": 30,
+   "objective": 0.5495000000000001,
+   "notes": [],
+   "calls": 210,
+   "failed": 0,
+   "seconds_per_call": 20.620754988080893
+  },
+  {
+   "model": "qwen/qwen3.8-flash",
+   "name": "qwen/qwen3.8-flash",
+   "valid": 0.8857142857142857,
+   "p_done": 0.6348148148148148,
+   "act_entropy": 0.6037222839001473,
+   "other": 0.04555555555555556,
+   "press_by_vocality": 0.04,
+   "small_talk_by_sociability": 0.24000000000000002,
+   "done_by_rounds": 0.16695652173913045,
+   "n": 30,
+   "objective": -0.15795031055900632,
+   "notes": [
+    "invalid replies"
+   ],
+   "calls": 210,
+   "failed": 24,
+   "seconds_per_call": 52.56586147839518
+  },
+  {
+   "model": "openai/gpt-5.6-luna",
+   "name": "openai/gpt-5.6-luna",
+   "valid": 1.0,
+   "p_done": 0.539,
+   "act_entropy": 0.7586723336356468,
+   "other": 0.07033333333333333,
+   "press_by_vocality": 0.238,
+   "small_talk_by_sociability": 0.25,
+   "done_by_rounds": 0.08099999999999999,
+   "n": 30,
+   "objective": 0.5285,
+   "notes": [],
+   "calls": 210,
+   "failed": 0,
+   "seconds_per_call": 4.895429376961935
+  }
+ ]
+}

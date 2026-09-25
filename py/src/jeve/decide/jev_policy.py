@@ -22,7 +22,7 @@ import json
 import threading
 import time
 from collections.abc import Coroutine, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from jeve import tracing
@@ -30,7 +30,13 @@ from jeve.config import Settings, load_settings
 from jeve.core.seed import derive_rng, path_of
 from jeve.decide import escalation, gates
 from jeve.decide.policy import Decision, DecisionContext, Escalated, Source
-from jeve.decide.questions import QUESTION_SETS, Ask, Prepared, Resolved
+from jeve.decide.questions import (
+    QUESTION_SETS,
+    Ask,
+    Prepared,
+    Resolved,
+    average_traits,
+)
 from jeve.decide.recorder import Recorder, ReplayMissError, StoredCall, call_key
 from jeve.decide.sampling import resolve
 from jeve.errors import JeveError, ModelVersionDriftError, TransportError
@@ -46,7 +52,7 @@ from jeve.llm import (
     RawDecision,
 )
 from jeve.llm.gateway import parse_decision
-from jeve.llm.protocol import Answer, Usage
+from jeve.llm.protocol import Answer, Choice, ChoiceAnswer, Noul, Score, Usage
 
 CALL_TIMEOUT_S = 180.0
 FAILED = ":failed"
@@ -224,17 +230,20 @@ class JevPolicy:
             metadata={"mode": self._recorder.mode},
         ) as span:
             prepared = [self._prepare(ctx) for ctx in contexts]
+            averages = [
+                self._average(ctx, item)
+                for ctx, item in zip(contexts, prepared, strict=True)
+            ]
             requests: dict[str, tuple[Prepared, DecisionRequest]] = {}
             hashes: list[str | None] = []
             for item in prepared:
-                if not item.needs_model:
-                    hashes.append(None)
-                    continue
-                request = self._request(item)
-                # Looked up under the build we are pinned to (DECIDE-0004).
-                digest = call_key(self._pin, request.wire_bytes())
-                hashes.append(digest)
-                requests.setdefault(digest, (item, request))
+                hashes.append(self._add(item, requests))
+            # Asked beside the people they stand in for, in the same batch: a
+            # routed decision waits on nothing it did not wait on before.
+            average_hashes = [
+                self._add(item, requests) if item is not None else None
+                for item in averages
+            ]
 
             stored = self._recorder.lookup(requests)
             lookups = 0
@@ -253,6 +262,10 @@ class JevPolicy:
                     "contexts": len(contexts),
                     "lookups": lookups,
                     "cache_hits": hits,
+                    # DECIDE-0008's requests for the average person share the
+                    # batch, so they are counted in `distinct_requests` and
+                    # `live_calls`; this says how many there were.
+                    "averages": sum(h is not None for h in average_hashes),
                     "distinct_requests": len(requests),
                     "live_calls": len(missing),
                 }
@@ -265,7 +278,15 @@ class JevPolicy:
                 self._answers(item, call) if call is not None else None
                 for item, call in zip(prepared, calls, strict=True)
             ]
-            opinions = self._second_opinions(contexts, prepared, answers)
+            average_answers = [
+                self._answers(item, stored[maybe])
+                if item is not None and maybe is not None
+                else None
+                for item, maybe in zip(averages, average_hashes, strict=True)
+            ]
+            opinions = self._second_opinions(
+                contexts, prepared, answers, averages, average_answers
+            )
             decisions = [
                 self._decide_one(ctx, item, call, jev, opinions.get(index))
                 for index, (ctx, item, call, jev) in enumerate(
@@ -292,12 +313,36 @@ class JevPolicy:
             return Prepared(ctx.kind, gated=settled)
         return QUESTION_SETS[ctx.kind].prepare(ctx)
 
+    def _average(self, ctx: DecisionContext, item: Prepared) -> Prepared | None:
+        """DECIDE-0008: for a routed set, the same situation with the person
+        at the middle of every trait. Tier 1 is asked about them, and Jev's
+        answer for them is what this person's answer is measured against."""
+
+        if not item.needs_model or not self._tier1.routes(ctx.kind):
+            return None
+        return QUESTION_SETS[ctx.kind].prepare(
+            replace(ctx, traits=average_traits(ctx.traits))
+        )
+
+    def _add(
+        self, item: Prepared, requests: dict[str, tuple[Prepared, DecisionRequest]]
+    ) -> str | None:
+        """Into the batch, once per distinct request; the key it is filed under."""
+
+        if not item.needs_model:
+            return None
+        request = self._request(item)
+        # Looked up under the build we are pinned to (DECIDE-0004).
+        digest = call_key(self._pin, request.wire_bytes())
+        requests.setdefault(digest, (item, request))
+        return digest
+
     def _request(self, item: Prepared) -> DecisionRequest:
         assert item.state is not None
         return DecisionRequest(
             model=self._model,
             state=item.state,
-            questions={ask.key: ask.question for ask in item.asks},
+            questions=rotated_questions(item.asks),
         )
 
     def _fill(
@@ -367,6 +412,14 @@ class JevPolicy:
 
     @staticmethod
     def _answers(item: Prepared, call: StoredCall) -> dict[str, Answer]:
+        return collapse_rotations(item.asks, JevPolicy._raw_answers(item, call))
+
+    @staticmethod
+    def _raw_answers(item: Prepared, call: StoredCall) -> dict[str, Answer]:
+        # Only the declared questions must be answered. A judgement's copies
+        # in other orders (DECIDE-0007) are averaged when present; a reply
+        # missing one is the declared order's answer, not a shape error the
+        # daemon would retry for ever (SIM-0002).
         return parse_decision(
             call.response,
             expected={ask.key for ask in item.asks},
@@ -398,7 +451,11 @@ class JevPolicy:
             for ask in item.asks:
                 if ask.key in opinion.answers:
                     used[ask.key] = escalation.applied(
-                        ask, jev[ask.key], opinion.answers[ask.key]
+                        ask,
+                        jev[ask.key],
+                        opinion.answers[ask.key],
+                        routed=opinion.routed,
+                        average=opinion.average.get(ask.key),
                     )
         # The same path whichever tier answered: a live escalation changes what
         # is drawn from, never the draws themselves.
@@ -425,6 +482,8 @@ class JevPolicy:
         contexts: Sequence[DecisionContext],
         prepared: Sequence[Prepared],
         answers: Sequence[dict[str, Answer] | None],
+        averages: Sequence[Prepared | None],
+        average_answers: Sequence[dict[str, Answer] | None],
     ) -> dict[int, _Opinion]:
         """Ask tier 1 about the answers Jev was unsure of, within today's room.
 
@@ -436,13 +495,30 @@ class JevPolicy:
         may, and its rows are measurement only.
         """
 
-        if self._tier1.mode == "off":
+        if self._tier1.mode == "off" and not self._tier1.route:
             return {}
         candidates: list[_Wanted] = []
+        routed: list[_Wanted] = []
         for index, (ctx, item, jev) in enumerate(
             zip(contexts, prepared, answers, strict=True)
         ):
-            if jev is None or escalation.stakes(ctx.kind) == "low":
+            if jev is not None and self._tier1.routes(ctx.kind):
+                # DECIDE-0006: every question, whatever Jev said, and outside
+                # the day's room — the set is answered by tier 1, not escalated.
+                # Asked about the average person in this situation (DECIDE-0008):
+                # who this person is comes from Jev.
+                keys = self._tier1.routed_asks(ctx.kind, item.asks)
+                average = averages[index]
+                if keys and average is not None:
+                    routed.append(
+                        _Wanted(index, ctx, average, keys, (escalation.ROUTED,), True)
+                    )
+                continue
+            if (
+                jev is None
+                or self._tier1.mode == "off"
+                or escalation.stakes(ctx.kind) == "low"
+            ):
                 continue
             fired = escalation.triggers(ctx.kind, item.asks, jev)
             if fired:
@@ -459,14 +535,18 @@ class JevPolicy:
                 # is there to measure where Jev was sure, never to overrule it.
                 acts = self._tier1.applies(ctx.kind) and bool(fired)
                 candidates.append(_Wanted(index, ctx, item, keys, tuple(fired), acts))
-        if not candidates:
+        if not candidates and not routed:
             return {}
 
         # In the order asked, against what is left of today's room once this
         # tick's earlier batches are counted: one batch of five decides exactly
         # as five batches of one would (the Policy contract).
-        room = escalation.room(self._recorder.connection(), candidates[0].ctx.sim_time)
-        chosen: list[_Wanted] = []
+        chosen: list[_Wanted] = list(routed)
+        room = (
+            escalation.room(self._recorder.connection(), candidates[0].ctx.sim_time)
+            if candidates
+            else escalation.Room(any=0, acting=0)
+        )
         for want in candidates:
             if want.acts:
                 if room.acting - self._tick_acting <= 0:
@@ -513,9 +593,12 @@ class JevPolicy:
             jev = answers[want.index]
             assert jev is not None
             asks = want.asks
+            routed_here = escalation.ROUTED in want.fired
             opinions[want.index] = _Opinion(
                 answers=llm,
                 applied=want.acts,
+                routed=routed_here,
+                average=(average_answers[want.index] or {}) if routed_here else {},
                 record=Escalated(
                     mode="live" if want.acts else "shadow",
                     sampled=not want.fired,
@@ -699,6 +782,90 @@ class _Opinion:
     answers: dict[str, Answer]
     applied: bool
     record: Escalated
+    routed: bool = False
+    average: dict[str, Answer] = field(default_factory=dict)
+    """Jev's answer for the average person in the same situation: what a
+    routed answer is moved from, to this person (DECIDE-0008)."""
+
+
+# -- judgements over every order (DECIDE-0007) -----------------------------------
+
+ROTATED = "__r"
+"""A judgement's copy in another order of its options: `allocation__r2`."""
+
+
+def _rotatable(ask: Ask) -> list[str]:
+    """The options a judgement over a choice is asked in every cyclic order of:
+    all but `other`, which stays last (it is the ontology gap, DECIDE-0001).
+    Empty for anything else: a propensity is sampled, and its position bias is
+    part of the distribution Jev gives, not a flipped verdict."""
+
+    if ask.mode != "J" or not isinstance(ask.question, Choice):
+        return []
+    return [o for o in ask.options if o != "other"]
+
+
+def rotated_questions(asks: Sequence[Ask]) -> dict[str, Noul | Choice | Score]:
+    """The questions as Jev is asked them: each once as declared, and each
+    judgement over a choice once more for every other cyclic order of its
+    options, under a suffixed key, in the same request.
+
+    Reversing a firm-level judgement's options flipped Jev's verdict in 11-22%
+    of real states (credit, engineering allocation, founder review). Averaged
+    over every rotation — each option in each position once — a verdict held
+    under an order it never saw in 96% of 350 states, against 93% for one
+    order, bundled in one call as here (`prompt_lab.py orders`,
+    `ops/evals/prompt-lab/`)."""
+
+    questions: dict[str, Noul | Choice | Score] = {}
+    for ask in asks:
+        questions[ask.key] = ask.question
+        body = _rotatable(ask)
+        if len(body) < 2:
+            continue
+        assert isinstance(ask.question, Choice)
+        criteria = dict(ask.question.criteria)
+        tail = {"other": criteria["other"]} if "other" in criteria else {}
+        for turn in range(1, len(body)):
+            order = body[turn:] + body[:turn]
+            questions[f"{ask.key}{ROTATED}{turn}"] = Choice(
+                instructions=ask.question.instructions,
+                criteria={**{o: criteria[o] for o in order}, **tail},
+            )
+    return questions
+
+
+def collapse_rotations(
+    asks: Sequence[Ask], answers: dict[str, Answer]
+) -> dict[str, Answer]:
+    """Each judgement's copies averaged back into one answer under its own
+    key; everything else as Jev gave it."""
+
+    out: dict[str, Answer] = {}
+    for ask in asks:
+        body = _rotatable(ask)
+        copies = [answers[ask.key]] + [
+            answers[f"{ask.key}{ROTATED}{turn}"]
+            for turn in range(1, len(body))
+            if f"{ask.key}{ROTATED}{turn}" in answers
+        ]
+        if len(copies) < 2 or not all(isinstance(c, ChoiceAnswer) for c in copies):
+            out[ask.key] = answers[ask.key]
+            continue
+        mean = {
+            option: sum(
+                c.distribution().get(option, 0.0)
+                for c in copies
+                if isinstance(c, ChoiceAnswer)
+            )
+            / len(copies)
+            for option in ask.options
+        }
+        out[ask.key] = ChoiceAnswer(
+            choice=max(ask.options, key=lambda option: mean[option]),
+            probabilities=mean,
+        )
+    return out
 
 
 def _parsed(call: StoredCall, asks: Sequence[Ask]) -> dict[str, Answer] | None:

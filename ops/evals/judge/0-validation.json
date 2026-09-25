@@ -1,0 +1,50 @@
+{
+ "accuracy": 0.978125,
+ "footer": "220 verdicts; $0.1601 spent on this run (zero when every verdict came from the cache).",
+ "note": "Each real episode against a copy of itself with one defect planted in its typed record; *right preferred* is how often the judge chose the clean copy, both orders counted. Overall 0.98 on 80 pairs; the judge is used on arms only at 0.80 or above. *identical* pairs show the same account twice: anything but 0.50 is position bias. *padded (length only)* is the account against itself with one unremarkable exchange more: anything but 0.50 is a taste for length, and neither counts toward accuracy. Judged again under another seed, 110 of 120 pairs got the same two verdicts (0.92).",
+ "tallies": [
+  {
+   "consistent": 20,
+   "label": "closed_hours",
+   "n": 20,
+   "points": 20.0,
+   "ties": 0
+  },
+  {
+   "consistent": 20,
+   "label": "identical",
+   "n": 20,
+   "points": 10.0,
+   "ties": 40
+  },
+  {
+   "consistent": 20,
+   "label": "loop",
+   "n": 20,
+   "points": 20.0,
+   "ties": 0
+  },
+  {
+   "consistent": 15,
+   "label": "padded (length only)",
+   "n": 20,
+   "points": 17.5,
+   "ties": 0
+  },
+  {
+   "consistent": 20,
+   "label": "phantom_effect",
+   "n": 20,
+   "points": 20.0,
+   "ties": 0
+  },
+  {
+   "consistent": 16,
+   "label": "wrong_actor",
+   "n": 20,
+   "points": 18.25,
+   "ties": 1
+  }
+ ],
+ "title": "Validation: planted defects (openai/gpt-5.6-luna)"
+}

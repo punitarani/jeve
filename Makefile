@@ -121,6 +121,10 @@ ontology-gaps: ## Where did `other` win? ops/ontology-gaps.md, free; PROPOSE=1 a
 episodes: ## Does giving a meeting rounds change anything? Two arms, one seed, free. DAYS= SEEDS=
 	$(UV) python scripts/episodes_report.py $(if $(DAYS),--days $(DAYS)) $(if $(SEEDS),--seeds $(SEEDS))
 
+.PHONY: evals
+evals: ## A/B arms over seeds (EVAL-0001): ARMS=rules,jev SEEDS=dev|held-out DAYS=7; a Jev arm spends money, CALLS=replay does not
+	$(UV) python scripts/evals.py sweep --arms $(or $(ARMS),rules,jev) --seeds $(or $(SEEDS),dev) --days $(or $(DAYS),7) $(if $(CALLS),--calls $(CALLS))
+
 .PHONY: sim
 sim: ## The ever-running world: Jev live, paced, budget-governed, restart-safe
 	npx nx run sim:run --args="--calls $(or $(CALLS),record) $(if $(POLICY),--policy $(POLICY)) --verbose"

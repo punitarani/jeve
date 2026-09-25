@@ -1,0 +1,118 @@
+{
+ "seeds": [
+  20261240,
+  20261241,
+  20261242,
+  20261243,
+  20261244,
+  20261245
+ ],
+ "jev": {
+  "per_seed": {
+   "20261240": {
+    "value": 0.2414443117239602,
+    "parts": "promptness\u2192payment.timing 0.23 (z 6.4); patience\u2192cafe.purchase 0.15 (z 20.0); sociability\u2192agent.tick 0.25 (z 30.5); vocality\u2192file.ticket 0.33 (z 5.1)"
+   },
+   "20261241": {
+    "value": 0.33345069532640437,
+    "parts": "promptness\u2192payment.timing 0.37 (z 9.5); patience\u2192cafe.purchase 0.16 (z 20.6); sociability\u2192agent.tick 0.38 (z 38.2); diligence\u2192ticket.answer 0.37 (z 4.0); vocality\u2192file.ticket 0.38 (z 4.6)"
+   },
+   "20261242": {
+    "value": 0.22967387634567454,
+    "parts": "promptness\u2192payment.timing 0.08 (z 2.1); patience\u2192cafe.purchase 0.15 (z 20.1); sociability\u2192agent.tick 0.44 (z 48.8); vocality\u2192file.ticket 0.25 (z 4.5)"
+   },
+   "20261243": {
+    "value": 0.30040429730435775,
+    "parts": "promptness\u2192payment.timing 0.28 (z 7.2); patience\u2192cafe.purchase 0.16 (z 22.3); sociability\u2192agent.tick 0.36 (z 36.6); diligence\u2192ticket.answer 0.34 (z 6.5); vocality\u2192file.ticket 0.35 (z 6.8)"
+   },
+   "20261244": {
+    "value": 0.2644855803228997,
+    "parts": "promptness\u2192payment.timing 0.22 (z 5.8); patience\u2192cafe.purchase 0.14 (z 18.3); sociability\u2192agent.tick 0.29 (z 32.2); diligence\u2192ticket.answer 0.35 (z 4.9); vocality\u2192file.ticket 0.32 (z 5.1)"
+   },
+   "20261245": {
+    "value": 0.267317589258482,
+    "parts": "promptness\u2192payment.timing 0.30 (z 7.1); patience\u2192cafe.purchase 0.14 (z 17.0); sociability\u2192agent.tick 0.31 (z 38.7); vocality\u2192file.ticket 0.31 (z 4.6)"
+   }
+  },
+  "pay_by_promptness": {
+   "asked": {
+    "low": 0.2403,
+    "high": 0.6,
+    "n_low": 2052,
+    "n_high": 90
+   },
+   "gated: disputed": {
+    "low": 0.0,
+    "high": 0.0,
+    "n_low": 1,
+    "n_high": 2
+   },
+   "gated: insufficient_cash": {
+    "low": 0.0,
+    "high": 0.0,
+    "n_low": 360,
+    "n_high": 696
+   },
+   "gated: standing_instruction": {
+    "low": null,
+    "high": 1.0,
+    "n_low": 0,
+    "n_high": 523
+   }
+  }
+ },
+ "jev-thin": {
+  "per_seed": {
+   "20261240": {
+    "value": 0.22572583124851958,
+    "parts": "promptness\u2192payment.timing 0.22 (z 6.3); patience\u2192cafe.purchase 0.15 (z 19.9); sociability\u2192agent.tick 0.25 (z 30.8); vocality\u2192file.ticket 0.28 (z 4.0)"
+   },
+   "20261241": {
+    "value": 0.29919777054958085,
+    "parts": "promptness\u2192payment.timing 0.39 (z 10.2); patience\u2192cafe.purchase 0.16 (z 20.8); sociability\u2192agent.tick 0.39 (z 39.5); diligence\u2192ticket.answer 0.29 (z 3.5); vocality\u2192file.ticket 0.27 (z 3.1)"
+   },
+   "20261242": {
+    "value": 0.23539658637199704,
+    "parts": "promptness\u2192payment.timing 0.09 (z 2.4); patience\u2192cafe.purchase 0.14 (z 19.2); sociability\u2192agent.tick 0.47 (z 51.0); vocality\u2192file.ticket 0.24 (z 4.0)"
+   },
+   "20261243": {
+    "value": 0.3257850729134176,
+    "parts": "promptness\u2192payment.timing 0.31 (z 8.4); patience\u2192cafe.purchase 0.16 (z 22.2); sociability\u2192agent.tick 0.37 (z 37.7); diligence\u2192ticket.answer 0.41 (z 7.7); vocality\u2192file.ticket 0.37 (z 7.0)"
+   },
+   "20261244": {
+    "value": 0.277185857652706,
+    "parts": "promptness\u2192payment.timing 0.23 (z 6.2); patience\u2192cafe.purchase 0.14 (z 18.3); sociability\u2192agent.tick 0.29 (z 31.8); diligence\u2192ticket.answer 0.32 (z 5.2); vocality\u2192file.ticket 0.41 (z 6.9)"
+   },
+   "20261245": {
+    "value": 0.2743771862502547,
+    "parts": "promptness\u2192payment.timing 0.31 (z 7.6); patience\u2192cafe.purchase 0.14 (z 16.7); sociability\u2192agent.tick 0.31 (z 38.5); vocality\u2192file.ticket 0.34 (z 4.9)"
+   }
+  },
+  "pay_by_promptness": {
+   "asked": {
+    "low": 0.2184,
+    "high": 0.5,
+    "n_low": 2244,
+    "n_high": 108
+   },
+   "gated: disputed": {
+    "low": 0.0,
+    "high": null,
+    "n_low": 2,
+    "n_high": 0
+   },
+   "gated: insufficient_cash": {
+    "low": 0.0,
+    "high": 0.0,
+    "n_low": 361,
+    "n_high": 695
+   },
+   "gated: standing_instruction": {
+    "low": null,
+    "high": 1.0,
+    "n_low": 0,
+    "n_high": 523
+   }
+  }
+ }
+}

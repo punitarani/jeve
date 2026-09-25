@@ -1,0 +1,35 @@
+{
+ "footer": "98 verdicts; $0.0345 spent on this run.",
+ "note": "Episodes from the two arms, matched by what was at stake and by seed, shown both ways round. *Right preferred* is how often the judge preferred `jev-llm-rounds`'s episode; 0.50 is no difference.",
+ "tallies": [
+  {
+   "consistent": 1,
+   "label": "jev-llm-rounds over rules (invoice)",
+   "n": 1,
+   "points": 1.0,
+   "ties": 0
+  },
+  {
+   "consistent": 21,
+   "label": "jev-llm-rounds over rules (news)",
+   "n": 30,
+   "points": 14.5,
+   "ties": 0
+  },
+  {
+   "consistent": 14,
+   "label": "jev-llm-rounds over rules (outage)",
+   "n": 18,
+   "points": 8.0,
+   "ties": 0
+  },
+  {
+   "consistent": 36,
+   "label": "jev-llm-rounds over rules (all)",
+   "n": 49,
+   "points": 23.5,
+   "ties": 0
+  }
+ ],
+ "title": "`jev-llm-rounds` against `rules`, held-out seeds (openai/gpt-5.6-luna)"
+}

@@ -22,14 +22,14 @@ from psycopg.rows import DictRow
 from jeve import db
 from jeve.core.clock import DAY, at
 from jeve.decide import escalation, jev_policy
-from jeve.decide.jev_policy import JevPolicy
+from jeve.decide.jev_policy import ROTATED, JevPolicy
 from jeve.decide.policy import (
     Decision,
     DecisionContext,
     Escalated,
     RulesPolicy,
 )
-from jeve.decide.questions import QUESTION_SETS, Ask, Prepared
+from jeve.decide.questions import QUESTION_SETS, Ask, Prepared, average_traits
 from jeve.decide.recorder import Mode as RecorderMode
 from jeve.decide.recorder import Recorder, ReplayMissError, call_key, insert_call
 from jeve.errors import TransportError
@@ -152,6 +152,27 @@ def test_a_reply_is_read_into_jevs_own_types() -> None:
         escalation.parse("I would say b.", asks[:1])
 
 
+def test_a_reply_that_reasons_first_is_still_read_and_one_cut_off_is_not() -> None:
+    """GLM on some providers writes its reasoning into the reply; the answer
+    after it is still the answer. A reply cut off mid-thought has none."""
+
+    asks = [_ask("x", "J", NOUL)]
+    thinking = (
+        'Let me think this through. {"note": 1} So: {"x": {"yes": 0.8, "no": 0.2}}'
+    )
+    assert escalation.parse(thinking, asks)["x"] == NoulAnswer(noul=0.8)
+    with pytest.raises(ValueError, match="not JSON"):
+        escalation.parse("Let me think this through carefully and then", asks)
+
+
+def test_tier_1_is_routed_away_from_the_provider_that_ignored_the_schema() -> None:
+    request = escalation.request_for(
+        _prepared("dispute.resolution"), ["resolution"], FIRST
+    )
+    assert request.provider is not None and request.provider.ignore == ["together"]
+    assert request.max_tokens >= 4000
+
+
 def test_live_takes_a_judgement_and_mixes_a_propensity() -> None:
     judged, felt = _ask("x", "J", NOUL), _ask("y", "P", NOUL)
     jev, llm = NoulAnswer(noul=0.45), NoulAnswer(noul=0.95)
@@ -220,6 +241,13 @@ def _teach_jev(
     """What Jev said about this situation, stored where a replay reads it."""
 
     request = policy._request(policy._prepare(ctx))
+    # Jev answers every question it is sent, a judgement's copies in other
+    # orders (DECIDE-0007) included, and the same way whatever the order.
+    answers = {
+        question: answers[question.split(ROTATED)[0]]
+        for question in request.questions
+        if question.split(ROTATED)[0] in answers
+    }
     key = call_key(DECISION_PIN, request.wire_bytes())
     conn.execute("DELETE FROM model_calls WHERE hash = %s", (key,))
     insert_call(
@@ -241,6 +269,7 @@ class _Flash:
     def __init__(self, replies: dict[str, dict[str, Any] | Exception]) -> None:
         self.replies = replies
         self.asked: list[tuple[str, Purpose]] = []
+        self.sent: list[ChatRequest] = []
 
     generative_models = (FIRST, SECOND)
 
@@ -254,6 +283,7 @@ class _Flash:
         out: list[ChatResponse | BaseException] = []
         for request, purpose in requests:
             self.asked.append((request.model, purpose))
+            self.sent.append(request)
             reply = self.replies[request.model]
             if isinstance(reply, TimeoutError):
                 raise reply  # what the bridge does when the round runs out
@@ -282,13 +312,14 @@ def _policy(
     *,
     mode: escalation.Mode,
     live: frozenset[str] = frozenset(),
+    route: frozenset[str] = frozenset(),
     calls: RecorderMode = "record",
     flash: _Flash | None = None,
 ) -> JevPolicy:
     policy = JevPolicy(
         ROOT_SEED,
         Recorder(mode=calls),
-        tier1=escalation.Config(mode=mode, live=live),
+        tier1=escalation.Config(mode=mode, live=live, route=route),
     )
     if flash is not None:
         monkeypatch.setattr(policy, "_live", lambda: flash)
@@ -510,18 +541,131 @@ def test_the_uniform_sample_asks_about_confident_answers_too(
 def test_a_propensity_escalated_live_samples_the_mixture(
     conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    flash = _Flash({FIRST: {"renew": {"yes": 0.9, "no": 0.1}}})
+    flash = _Flash({FIRST: {"dispute": {"yes": 0.9, "no": 0.1}}})
     policy = _policy(
         monkeypatch,
         mode="live",
-        live=frozenset({"subscription.renew"}),
+        live=frozenset({"invoice.dispute"}),
         flash=flash,
     )
-    ctx = _ctx("subscription.renew")
-    _teach_jev(conn, policy, ctx, renew={"type": "noul", "noul": 0.5})
+    ctx = _ctx("invoice.dispute")
+    _teach_jev(conn, policy, ctx, dispute={"type": "noul", "noul": 0.5})
     made = policy.decide(ctx)
     assert made.source == "llm"
-    assert made.distributions["renew"]["yes"] == pytest.approx(0.7)
+    assert made.distributions["dispute"]["yes"] == pytest.approx(0.7)
+
+
+def test_a_routed_set_is_answered_whole_by_tier_1(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DECIDE-0006: routed, a propensity samples the LLM's own distribution —
+    not the mixture a live escalation uses — on a confident Jev answer, in a
+    low-stakes set, with tier 1 otherwise off, and with no room left today."""
+
+    flash = _Flash({FIRST: {"dispute": {"yes": 0.9, "no": 0.1}}})
+    route = frozenset({"invoice.dispute"})
+    policy = _policy(monkeypatch, mode="off", route=route, flash=flash)
+    monkeypatch.setattr(
+        escalation, "room", lambda conn, now: escalation.Room(any=0, acting=0)
+    )
+    ctx = _ctx("invoice.dispute")
+    _teach_jev(conn, policy, ctx, dispute={"type": "noul", "noul": 0.02})
+    # Jev says the same of the average person: this one is nobody special.
+    _teach_jev(conn, policy, _average(ctx), dispute={"type": "noul", "noul": 0.02})
+    made = policy.decide(ctx)
+    assert made.source == "llm"
+    assert made.distributions["dispute"]["yes"] == pytest.approx(0.9)
+    second = made.escalation
+    assert second is not None and second.mode == "live"
+    assert second.triggers == [escalation.ROUTED.row()]
+    assert second.jev["dispute"]["yes"] == pytest.approx(0.02)
+    assert flash.asked == [(FIRST, "gate")]
+
+    replayed = _policy(monkeypatch, mode="off", route=route, calls="replay")
+    assert replayed.decide(ctx).draws == made.draws
+
+
+def _average(ctx: DecisionContext) -> DecisionContext:
+    return replace(ctx, traits=average_traits(ctx.traits))
+
+
+def test_a_routed_answer_is_the_llms_situation_and_jevs_person(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DECIDE-0008: tier 1 is asked about the average person in this
+    situation, and the answer is moved by as much as Jev moves when the
+    average person becomes this one."""
+
+    flash = _Flash({FIRST: {"dispute": {"yes": 0.9, "no": 0.1}}})
+    route = frozenset({"invoice.dispute"})
+    policy = _policy(monkeypatch, mode="off", route=route, flash=flash)
+    ctx = _ctx("invoice.dispute")
+    _teach_jev(conn, policy, ctx, dispute={"type": "noul", "noul": 0.02})
+    _teach_jev(conn, policy, _average(ctx), dispute={"type": "noul", "noul": 0.10})
+    made = policy.decide(ctx)
+    # Five times less likely than average, by Jev, give or take the floor.
+    floor = escalation.FLOOR
+    yes = 0.9 * (0.02 + floor) / (0.10 + floor)
+    no = 0.1 * (0.98 + floor) / (0.90 + floor)
+    assert made.distributions["dispute"]["yes"] == pytest.approx(yes / (yes + no))
+    # The LLM was told about the average person, not this one.
+    (sent,) = flash.sent
+    said = str(sent.messages[-1].content)
+    assert "will wait a few minutes" in said and "impatient" not in said
+    second = made.escalation
+    assert second is not None and second.llm["dispute"]["yes"] == pytest.approx(0.9)
+    assert second.jev["dispute"]["yes"] == pytest.approx(0.02)
+
+    replayed = _policy(monkeypatch, mode="off", route=route, calls="replay")
+    assert replayed.decide(ctx).draws == made.draws
+
+
+def test_a_routed_judgement_is_the_llms_and_only_a_propensity_is_moved() -> None:
+    """Moving whether someone had had their say by Jev's ratio pushed it under
+    one half more often, and conversations settled less (DECIDE-0008)."""
+
+    llm, person, average = (NoulAnswer(noul=p) for p in (0.6, 0.2, 0.5))
+    done = _ask("done", "J", NOUL)
+    assert escalation.applied(done, person, llm, routed=True, average=average) == llm
+    inclined = _ask("mention", "P", NOUL)
+    moved = escalation.applied(inclined, person, llm, routed=True, average=average)
+    assert isinstance(moved, NoulAnswer) and moved.noul < 0.6
+
+
+def test_one_question_of_a_set_can_be_routed_and_the_rest_stay_jevs() -> None:
+    config = escalation.Config(route=frozenset({"episode.round:done"}))
+    asks = [_ask("act", "P", CHOICE), _ask("done", "J", NOUL)]
+    assert config.routes("episode.round") and not config.routes("agent.tick")
+    assert config.routed_asks("episode.round", asks) == ("done",)
+    whole = escalation.Config(route=frozenset({"episode.round"}))
+    assert whole.routed_asks("episode.round", asks) == ("act", "done")
+
+
+def test_conversations_are_routed_by_default_and_the_switch_turns_it_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jeve.config import ESCALATION_ROUTE, load_settings
+
+    monkeypatch.delenv("JEVE_ESCALATION_ROUTE", raising=False)
+    assert load_settings().escalation_route == ESCALATION_ROUTE == ("episode.round",)
+    for off in ("off", ""):
+        monkeypatch.setenv("JEVE_ESCALATION_ROUTE", off)
+        assert load_settings().escalation_route == ()
+    monkeypatch.setenv("JEVE_ESCALATION_ROUTE", "episode.round:done, file.ticket")
+    assert load_settings().escalation_route == ("episode.round:done", "file.ticket")
+
+
+def test_a_routed_row_is_not_counted_against_the_days_room(
+    conn: Connection[DictRow],
+) -> None:
+    row = json.dumps([escalation.ROUTED.row()])
+    unsure = json.dumps([{"ask": "x", "rule": "choice.margin", "value": 0.1}])
+    found = conn.execute(
+        "SELECT %s::jsonb @> %s::jsonb AS routed, %s::jsonb @> %s::jsonb AS unsure",
+        (row, escalation.ROUTED_ROW, unsure, escalation.ROUTED_ROW),
+    ).fetchone()
+    assert found is not None
+    assert found["routed"] and not found["unsure"]
 
 
 def test_no_room_left_today_means_no_second_opinion(
@@ -670,6 +814,7 @@ class _PerRequest(_Flash):
         out: list[ChatResponse | BaseException] = []
         for request, purpose in requests:
             self.asked.append((request.model, purpose))
+            self.sent.append(request)
             large = "larger bills" in request.messages[1].content
             reply = self.by[(request.model, large)]
             if isinstance(reply, TimeoutError):

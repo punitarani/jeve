@@ -1,0 +1,35 @@
+{
+ "footer": "63 verdicts; $0.0420 spent on this run.",
+ "note": "Episodes from the two arms, matched by what was at stake and by seed, shown both ways round. *Right preferred* is how often the judge preferred `jev-tier1`'s episode; 0.50 is no difference.",
+ "tallies": [
+  {
+   "consistent": 4,
+   "label": "jev-tier1 over jev (invoice)",
+   "n": 5,
+   "points": 3.5,
+   "ties": 0
+  },
+  {
+   "consistent": 15,
+   "label": "jev-tier1 over jev (news)",
+   "n": 17,
+   "points": 7.5,
+   "ties": 2
+  },
+  {
+   "consistent": 5,
+   "label": "jev-tier1 over jev (outage)",
+   "n": 10,
+   "points": 6.5,
+   "ties": 0
+  },
+  {
+   "consistent": 24,
+   "label": "jev-tier1 over jev (all)",
+   "n": 32,
+   "points": 17.5,
+   "ties": 2
+  }
+ ],
+ "title": "`jev-tier1` against `jev`, dev seeds (openai/gpt-5.6-luna)"
+}

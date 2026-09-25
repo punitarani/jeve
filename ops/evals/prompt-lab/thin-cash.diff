@@ -1,0 +1,33 @@
+diff --git a/py/src/jeve/decide/questions.py b/py/src/jeve/decide/questions.py
+index 844e5c6..e0eb04f 100644
+--- a/py/src/jeve/decide/questions.py
++++ b/py/src/jeve/decide/questions.py
+@@ -257,7 +257,8 @@ def chased_words(
+ 
+ _RUNWAY_WORDS: tuple[str, str, str] = (
+     "cash is tight; paying this leaves little in the account",
+-    "there is enough cash to pay it, but not much to spare",
++    "cash is thinner than they would like; paying this would take a fair "
++    "bite out of it",
+     "there is comfortably enough cash to pay it",
+ )
+ _OWED_CASH_WORDS: tuple[str, str, str] = (
+diff --git a/py/src/jeve/evals/arms.py b/py/src/jeve/evals/arms.py
+index caa9fcb..8b936b1 100644
+--- a/py/src/jeve/evals/arms.py
++++ b/py/src/jeve/evals/arms.py
+@@ -72,6 +72,14 @@ ARMS: dict[str, Arm] = {
+             "as it ran in production before DECIDE-0006.",
+             {"JEVE_ESCALATION": "off", "JEVE_ESCALATION_ROUTE": "off"},
+         ),
++        Arm(
++            "jev-thin",
++            "jev",
++            "jev",
++            "Jev answers every question, with the thin cash band worded "
++            "\"thinner than they would like\" (thin-cash A/B).",
++            {"JEVE_ESCALATION": "off", "JEVE_ESCALATION_ROUTE": "off"},
++        ),
+         Arm(
+             "jev-tier1",
+             "jev",

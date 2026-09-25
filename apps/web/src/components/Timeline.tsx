@@ -101,10 +101,20 @@ function describe(event: SimEvent): string {
       return `${p.module_id} down · ${p.pending} clients waiting`;
     case "invoice.issued":
       return `${cents(p.amount_cents)} ${p.invoice_kind ?? ""}`.trim();
+    // WORLD-0013: what was owed, how late, and why it had been left.
     case "payment.made":
-      return join(cents(p.amount_cents), late(p.days_late, "d late"));
+      return join(
+        cents(p.amount_cents),
+        late(p.days_late, "d late"),
+        typeof p.late_reason === "string" && `left: ${words(p.late_reason)}`,
+      );
     case "payment.deferred":
-      return words(p.reason);
+      return join(
+        words(p.reason),
+        cents(p.amount_cents),
+        late(p.days_late, "d late"),
+        late(p.times_chased, "× chased"),
+      );
     case "ticket.opened":
     // Both halves of the same emit, so both carry `subject`.
     case "ticket.reopened":
@@ -116,7 +126,15 @@ function describe(event: SimEvent): string {
     case "cafe.walkout":
       return words(p.reason);
     case "encounter":
-      return join(words(p.zone), words(p.topic));
+      return join(
+        words(p.zone),
+        words(p.topic),
+        // MEM-0004: strangers, or how many times before.
+        typeof p.met_before === "number" &&
+          (p.met_before === 0
+            ? "first meeting"
+            : `met ${p.met_before}× before`),
+      );
     // The payload has only the id — no module, no subject — so this is the
     // ceiling without a join the client cannot do.
     case "ticket.answered":
@@ -157,7 +175,20 @@ function describe(event: SimEvent): string {
         p.carried_by === null && "collected",
       );
     case "invoice.chased":
-      return late(p.days_late, "d late");
+      return join(
+        cents(p.amount_cents),
+        late(p.days_late, "d late"),
+        typeof p.attempt === "number" && p.attempt > 1 && `chase ${p.attempt}`,
+      );
+    // WORLD-0014 and MEM-0004: who went and why, and who fell out over what.
+    case "staff.notice":
+      return join(words(p.role), words(p.reason));
+    case "staff.left":
+      return words(p.role);
+    case "subscription.cancelled":
+      return join(words(p.module_id), words(p.reason));
+    case "relationship.soured":
+      return join("fell out", words(p.over));
     case "invoice.written_off":
       return join(cents(p.amount_cents), late(p.days_late, "d late"));
     // WORLD-0006. A conversation with rounds. `depth` is the episode's own

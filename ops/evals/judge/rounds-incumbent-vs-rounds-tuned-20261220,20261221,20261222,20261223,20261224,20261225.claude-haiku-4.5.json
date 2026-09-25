@@ -1,0 +1,35 @@
+{
+ "footer": "294 verdicts; $0.3456 spent on this run.",
+ "note": "Episodes from the two arms and the same seed, of the same shape (what was at stake, how many rounds, how many people), shown both ways round. *Right preferred* is how often the judge preferred `rounds-tuned`'s episode; 0.50 is no difference.",
+ "tallies": [
+  {
+   "consistent": 3,
+   "label": "rounds-tuned over rounds-incumbent (invoice)",
+   "n": 5,
+   "points": 2.0,
+   "ties": 0
+  },
+  {
+   "consistent": 66,
+   "label": "rounds-tuned over rounds-incumbent (news)",
+   "n": 131,
+   "points": 56.5,
+   "ties": 0
+  },
+  {
+   "consistent": 6,
+   "label": "rounds-tuned over rounds-incumbent (outage)",
+   "n": 11,
+   "points": 5.5,
+   "ties": 0
+  },
+  {
+   "consistent": 75,
+   "label": "rounds-tuned over rounds-incumbent (all)",
+   "n": 147,
+   "points": 64.0,
+   "ties": 0
+  }
+ ],
+ "title": "`rounds-tuned` against `rounds-incumbent`, 20261220,20261221,20261222,20261223,20261224,20261225 seeds (anthropic/claude-haiku-4.5)"
+}

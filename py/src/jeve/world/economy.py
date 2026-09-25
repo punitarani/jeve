@@ -44,11 +44,21 @@ from jeve.decide.policy import DecisionContext
 from jeve.world import scheduler
 
 if TYPE_CHECKING:
-    from jeve.world.engine import Engine, TickReport
+    from jeve.world.engine import Engine, Made, TickReport
 
 WEEK = 7 * DAY
 MONTH = 28 * DAY
 """The world's month: `month.end` has always recurred every 28 days."""
+CALENDAR_MONTH = 30.44 * DAY
+
+
+def per_month(rate: float) -> float:
+    """A calendar month's chance, as the chance in one of the world's 28-day
+    months. The sources count calendar months; drawn once per 28 days as they
+    stood, a year held thirteen draws and a rate came out 9% high."""
+
+    return 1.0 - float((1.0 - rate) ** (MONTH / CALENDAR_MONTH))
+
 
 RENT_MONTHLY_CENTS: dict[str, int] = {
     "tallybird": 4_000_00,
@@ -787,6 +797,216 @@ def missed_payday(
             )
 
 
+NOTICE = 14 * DAY
+"""Two weeks' notice: somebody who decides to go works it out."""
+PAY_LATE_LOOKBACK = 56 * DAY
+QUITS_MONTHLY: dict[str, float] = {"thirdrail": 0.040}
+"""The month's chance that somebody with nothing pushing them resigns anyway —
+a better offer, a step up, a move (WORLD-0014). BLS JOLTS quits, seasonally
+adjusted, March-July 2026: accommodation and food services 3.5-4.2% a month;
+professional and business services 1.8-2.2%, the rest of the street."""
+QUITS_MONTHLY_DEFAULT = 0.020
+UNPUSHED_REASONS: tuple[tuple[str, float], ...] = (
+    ("better_offer", 37.0),
+    ("advancement", 33.0),
+    ("flexibility", 24.0),
+    ("moving_on", 22.0),
+)
+"""Why the content leave, weighted as Pew Research Center's February 2022
+survey of people who quit in 2021 named each a major reason: low pay 37%, no
+advancement 33%, inflexible hours 24%, relocating 22%."""
+
+
+def careers(engine: Engine, report: TickReport) -> None:
+    """Once a month, everyone but the head of each firm may move on
+    (WORLD-0014). Before, the only ways to leave were unpaid wages and a firm
+    failing, so a healthy town had no turnover at all; real small businesses
+    lose 2-4% of their staff a month to quits (BLS JOLTS).
+
+    Somebody with something pushing them — wages late, a colleague they have
+    fallen out with, a desk that is swamped, a firm in trouble, a bad month —
+    is asked (`career.review`) how much likelier than an ordinary month they
+    are to go, and faces their industry's quit rate times that. Somebody with
+    nothing pushing them is not asked and faces the rate as it is. Asked for
+    the chance outright, Jev put a contented employee's resignation at about
+    0.10 a month (three 60-day worlds), five times the rate at which people
+    actually quit: a month's base rate is data, the situation's effect on it
+    a judgement."""
+
+    from jeve.world.space import SWAMPED_AT  # space -> shocks -> economy
+
+    backlog = engine.conn.execute(
+        "SELECT count(*) AS n FROM tickets WHERE status IN ('open','triaged')"
+    ).fetchone()
+    swamped = bool(backlog and int(backlog["n"]) > SWAMPED_AT)
+    staff = engine.conn.execute(
+        "SELECT p.id, p.org_id, p.role, p.traits, COALESCE(s.mood, 2) AS mood "
+        "FROM persons p LEFT JOIN positions s ON s.person_id = p.id "
+        "WHERE p.kind = 'staff' AND p.status <> 'left' AND NOT EXISTS ("
+        "  SELECT 1 FROM scheduled q WHERE q.kind = 'staff.leaves' "
+        "  AND q.subject_id = p.id) ORDER BY p.id"
+    ).fetchall()
+    since = report.sim_time - PAY_LATE_LOOKBACK
+    # What is true of a firm is asked once per firm, not once per person in it.
+    troubles = {
+        str(r["org_id"]): (int(r["pay_late"]), int(r["struggling"]))
+        for r in engine.conn.execute(
+            "SELECT org_id, count(*) FILTER (WHERE kind IN ('payroll.held', "
+            "'payroll.missed')) AS pay_late, count(*) FILTER (WHERE kind = "
+            "'insolvency.warning') AS struggling FROM events WHERE kind IN "
+            "('payroll.held', 'payroll.missed', 'insolvency.warning') "
+            "AND sim_time >= %s GROUP BY org_id",
+            (since,),
+        ).fetchall()
+        if r["org_id"] is not None
+    }
+    contexts: list[DecisionContext] = []
+    asked: list[DictRow] = []
+    for person in staff:
+        org = str(person["org_id"])
+        if person["role"] == HEADS.get(org) or failed(engine, org):
+            continue
+        colleagues = [
+            memory.Tie(int(r["met"]), int(r["warmth"]))
+            for r in engine.conn.execute(
+                "SELECT t.met, t.warmth FROM ties t JOIN persons o ON o.id = "
+                "CASE WHEN t.a = %s THEN t.b ELSE t.a END "
+                "WHERE (t.a = %s OR t.b = %s) AND o.org_id = %s "
+                "AND o.status <> 'left'",
+                (person["id"], person["id"], person["id"], org),
+            ).fetchall()
+        ]
+        pay_late, struggling = troubles.get(org, (0, 0))
+        facts: dict[str, object] = {
+            "org": org,
+            "mood": int(person["mood"]),
+            "friends_at_work": sum(tie.friend for tie in colleagues),
+            "fallen_out_at_work": sum(tie.fallen_out for tie in colleagues),
+            "pay_late": pay_late > 0,
+            "firm_struggling": struggling > 0,
+            "swamped": org == "tallybird" and swamped,
+        }
+        pushed = (
+            facts["pay_late"]
+            or facts["firm_struggling"]
+            or facts["swamped"]
+            or int(facts["fallen_out_at_work"]) > 0  # type: ignore[call-overload]
+            or int(person["mood"]) == 0
+        )
+        if not pushed:
+            rng = _month_rng(engine, report, str(person["id"]))
+            if rng.random() < per_month(QUITS_MONTHLY.get(org, QUITS_MONTHLY_DEFAULT)):
+                point, total = rng.random() * sum(w for _, w in UNPUSHED_REASONS), 0.0
+                reason = UNPUSHED_REASONS[-1][0]
+                for name, weight in UNPUSHED_REASONS:
+                    total += weight
+                    if point < total:
+                        reason = name
+                        break
+                _give_notice(engine, report, person, reason, facts, made=None)
+            continue
+        asked.append(person)
+        contexts.append(
+            DecisionContext(
+                person_id=str(person["id"]),
+                role=str(person["role"]),
+                sim_time=report.sim_time,
+                kind="career.review",
+                facts=facts,
+                traits=dict(person["traits"] or {}),
+            )
+        )
+    for person, ctx, made in zip(
+        asked, contexts, engine.decide_many(report, contexts), strict=True
+    ):
+        # The industry's rate, times how much likelier than an ordinary month
+        # Jev judges this person to go; the same draw a content person gets.
+        base = per_month(
+            QUITS_MONTHLY.get(str(person["org_id"]), QUITS_MONTHLY_DEFAULT)
+        )
+        risk = float(made.chosen.get("relative_risk", 1.0))
+        if _month_rng(engine, report, str(person["id"])).random() < base * risk:
+            reason = str(made.chosen.get("reason") or "other")
+            _give_notice(engine, report, person, reason, ctx.facts, made=made)
+
+
+def _month_rng(engine: Engine, report: TickReport, person_id: str) -> Any:
+    """One draw per person per month (CORE-0009), content or pushed alike."""
+
+    return derive_rng(
+        engine.root_seed, "career.lapse", person_id, report.sim_time // MONTH
+    )
+
+
+def _give_notice(
+    engine: Engine,
+    report: TickReport,
+    person: DictRow,
+    reason: str,
+    facts: dict[str, object],
+    *,
+    made: Made | None,
+) -> None:
+    """Somebody resigns: said now, worked for two weeks, then gone. A notice
+    no decision made (the month's hazard) says so, with what was true of them
+    all the same."""
+
+    decided_by = made.source if made is not None else "rules"
+    seq = engine.emit(
+        report,
+        "staff.notice",
+        actor_id=str(person["id"]),
+        org_id=str(person["org_id"]),
+        decision_id=made.id if made is not None else None,
+        payload={
+            "person_id": str(person["id"]),
+            "role": str(person["role"]),
+            "reason": reason,
+            "pushed": made is not None,
+            "mood": facts.get("mood"),
+            "pay_late": facts.get("pay_late"),
+            "fallen_out_at_work": facts.get("fallen_out_at_work"),
+            "leaves_sim": report.sim_time + NOTICE,
+            "decided_by": decided_by,
+        },
+    )
+    engine.schedule(
+        report.sim_time + NOTICE,
+        "staff.leaves",
+        str(person["id"]),
+        {
+            "org": str(person["org_id"]),
+            "reason": reason,
+            "cause": seq,
+            "decision_id": made.id if made is not None else None,
+            "decided_by": decided_by,
+        },
+    )
+
+
+@scheduler.job("staff.leaves")
+def _job_staff_leaves(
+    engine: Engine, report: TickReport, subject: str, payload: dict[str, Any]
+) -> None:
+    """The notice is worked; they go."""
+
+    row = engine.conn.execute(
+        "SELECT status FROM persons WHERE id = %s", (subject,)
+    ).fetchone()
+    if row is None or row["status"] == "left":
+        return
+    leave(
+        engine,
+        report,
+        subject,
+        str(payload.get("org", "")),
+        reason=str(payload.get("reason", "other")),
+        cause=int(payload["cause"]) if payload.get("cause") else None,
+        decision_id=int(payload["decision_id"]) if payload.get("decision_id") else None,
+        decided_by=str(payload.get("decided_by", "rules")),
+    )
+
+
 def leave(
     engine: Engine,
     report: TickReport,
@@ -808,6 +1028,9 @@ def leave(
         "WHERE person_id = %s",
         (person_id,),
     )
+    role = engine.conn.execute(
+        "SELECT role FROM persons WHERE id = %s", (person_id,)
+    ).fetchone()
     engine.emit(
         report,
         "staff.left",
@@ -818,6 +1041,7 @@ def leave(
         payload={
             "person_id": person_id,
             "org_id": org_id,
+            "role": str(role["role"]) if role else None,
             "reason": reason,
             "decided_by": decided_by,
         },
@@ -892,6 +1116,12 @@ def fail(
         engine.write_off(report, bill)
 
 
+def _joined(alias: str) -> str:
+    """The number a staff id ends in: the order people joined (`hire`)."""
+
+    return f"substring({alias}.id from '[0-9]+$')::int"
+
+
 @scheduler.job("hiring.review", office_hours_only=True)
 def hiring(
     engine: Engine, report: TickReport, org_id: str, payload: dict[str, Any]
@@ -901,12 +1131,17 @@ def hiring(
     engine.schedule(report.sim_time + WEEK, "hiring.review", org_id, {})
     if failed(engine, org_id):
         return
+    # A desk is empty when someone in the role left and nobody has been hired
+    # into it since. "Since" is the number `hire` gives a person, compared as a
+    # number: compared as text, `account_manager.25` came before
+    # `account_manager.7`, the desk never filled, and one firm hired four
+    # account managers in four weeks for the one who left.
     vacancy = engine.conn.execute(
-        "SELECT p.role FROM persons p WHERE p.org_id = %s AND p.kind = 'staff' "
-        "AND p.status = 'left' AND NOT EXISTS (SELECT 1 FROM persons q "
-        "  WHERE q.org_id = p.org_id AND q.kind = 'staff' AND q.status <> 'left' "
-        "  AND q.role = p.role AND q.id > p.id) "
-        "ORDER BY p.id DESC LIMIT 1",
+        f"SELECT p.role FROM persons p WHERE p.org_id = %s AND p.kind = 'staff' "
+        f"AND p.status = 'left' AND NOT EXISTS (SELECT 1 FROM persons q "
+        f"  WHERE q.org_id = p.org_id AND q.kind = 'staff' AND q.status <> 'left' "
+        f"  AND q.role = p.role AND {_joined('q')} > {_joined('p')}) "
+        f"ORDER BY {_joined('p')} DESC LIMIT 1",
         (org_id,),
     ).fetchone()
     if vacancy is None:

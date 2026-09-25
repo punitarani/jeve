@@ -84,11 +84,42 @@ found missing. `ops/field-report-v2.md` sets the base commit against the result,
   rounds escalate what one shot does not. Recalibrating the one-shot question
   is the open item.
 
+## Since then: LLMs where they measurably help (EVAL-0001, DECIDE-0006, EVAL-0002)
+
+An overnight, autonomous session with a $10 budget. `docs/ops/llm-integration.md`
+is the log; `ops/evals.md` the numbers; `docs/research/04-llm-integration.md`
+the research and the ranked candidates.
+
+* **`make evals` (EVAL-0001).** `jeve.evals`, outermost in the layering: arms
+  over dev and held-out seeds, each world on its own database through the one
+  run loop, measured for plausibility (six stylized facts against cited
+  bands), depth, believability (GPT-5.6 Luna on episodes rendered from typed
+  records, both orders, validated on planted defects: 0.98) and non-regression.
+  Paired-by-seed effect sizes with intervals. `ops/evals/runs/*.json` are
+  committed; the eval cassettes (~50 MB) are not.
+* **Kept: conversations are answered by tier 1 (DECIDE-0006).** Under Jev, 0%
+  of episodes ended settled and 48% stalled; with `episode.round` routed to
+  the flash LLM in Jev's typed shape, +0.59 settled and −0.40 stalled over six
+  held-out seeds, and the judge prefers the result in 36 of 48 pairs. It
+  costs ~4.5× the decision bill ($0.0039 → $0.0176 a sim-day) and weakens how
+  differently outspoken and quiet people press. On by default;
+  `JEVE_ESCALATION_ROUTE=off` undoes it.
+* **Reverted: LLM-written staff (EVAL-0002)** — persona signal −0.050 for no
+  judged gain. **Not adopted:** tier 1 live on every set it allows (nothing
+  moved but cost); routing only `done` (half the closure).
+* **Found, not an LLM job:** bills are paid ~on time (real small businesses:
+  7.8 days late) because four fifths of clients auto-pay; the cafe peaks at
+  noon (real cafes: 8–10am). Both are rules.
+
 ### Needs a key, and a person
 
-* **Re-record the golden cassette** with `LIVE=1 make e2e`: nearly every
-  question set's wording changed, so replay tests skip and `make e2e` in replay
-  exits early until it is committed.
+* **GLM's format failures.** 17% of GLM 5.3 Flash's tier-1 replies are
+  reasoning text, not JSON; they fall through to Gemini at several times the
+  price. Per-request `provider.require_parameters` (LLM-0003) is the likely
+  fix; it changes request bytes, so re-record after.
+* **Jev, reworded, against routing.** If a reworded `done` and act set lets Jev
+  end conversations, it would be cheaper and keep the pressing gradient
+  (DECIDE-0006's reverse-if).
 * `make situation-probe` (does the situation now move Jev as much as the
   person?), `make providers` (can each model return a typed tier-1 answer?),
   and after a week of shadow, `make escalation-report` before naming any set

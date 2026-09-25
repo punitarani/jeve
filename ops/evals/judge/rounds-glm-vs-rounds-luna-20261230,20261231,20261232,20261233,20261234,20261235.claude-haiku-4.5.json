@@ -1,0 +1,35 @@
+{
+ "footer": "264 verdicts; $0.3369 spent on this run.",
+ "note": "Episodes from the two arms and the same seed, of the same shape (what was at stake, how many rounds, how many people), shown both ways round. *Right preferred* is how often the judge preferred `rounds-luna`'s episode; 0.50 is no difference.",
+ "tallies": [
+  {
+   "consistent": 2,
+   "label": "rounds-luna over rounds-glm (invoice)",
+   "n": 2,
+   "points": 1.0,
+   "ties": 0
+  },
+  {
+   "consistent": 55,
+   "label": "rounds-luna over rounds-glm (news)",
+   "n": 112,
+   "points": 47.5,
+   "ties": 0
+  },
+  {
+   "consistent": 12,
+   "label": "rounds-luna over rounds-glm (outage)",
+   "n": 18,
+   "points": 8.0,
+   "ties": 0
+  },
+  {
+   "consistent": 69,
+   "label": "rounds-luna over rounds-glm (all)",
+   "n": 132,
+   "points": 56.5,
+   "ties": 0
+  }
+ ],
+ "title": "`rounds-luna` against `rounds-glm`, 20261230,20261231,20261232,20261233,20261234,20261235 seeds (anthropic/claude-haiku-4.5)"
+}

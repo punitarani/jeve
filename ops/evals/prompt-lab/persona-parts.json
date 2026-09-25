@@ -1,0 +1,106 @@
+{
+ "seeds": [
+  20261201,
+  20261202,
+  20261203,
+  20261301,
+  20261302,
+  20261303
+ ],
+ "before": {
+  "per_seed": {
+   "20261201": {
+    "value": 0.36748070848747366,
+    "parts": "promptness\u2192payment.timing 0.62 (z 10.4); patience\u2192cafe.purchase 0.16 (z 20.6); sociability\u2192agent.tick 0.32 (z 40.4); vocality\u2192file.ticket 0.36 (z 5.9)"
+   },
+   "20261202": {
+    "value": 0.33050118304700893,
+    "parts": "promptness\u2192payment.timing 0.54 (z 9.1); patience\u2192cafe.purchase 0.15 (z 20.3); sociability\u2192agent.tick 0.37 (z 38.9); diligence\u2192ticket.answer 0.29 (z 3.8); vocality\u2192file.ticket 0.30 (z 4.1)"
+   },
+   "20261203": {
+    "value": 0.3325749919104917,
+    "parts": "promptness\u2192payment.timing 0.52 (z 8.7); patience\u2192cafe.purchase 0.16 (z 21.0); sociability\u2192agent.tick 0.29 (z 42.9); diligence\u2192ticket.answer 0.31 (z 4.3); vocality\u2192file.ticket 0.37 (z 5.9)"
+   },
+   "20261301": {
+    "value": 0.3338913317334109,
+    "parts": "promptness\u2192payment.timing 0.68 (z 11.5); patience\u2192cafe.purchase 0.15 (z 19.8); sociability\u2192agent.tick 0.39 (z 37.8); diligence\u2192ticket.answer 0.24 (z 3.2); vocality\u2192file.ticket 0.22 (z 3.0)"
+   },
+   "20261302": {
+    "value": 0.371528397907928,
+    "parts": "promptness\u2192payment.timing 0.55 (z 9.0); patience\u2192cafe.purchase 0.17 (z 21.4); sociability\u2192agent.tick 0.36 (z 35.5); vocality\u2192file.ticket 0.41 (z 5.5)"
+   },
+   "20261303": {
+    "value": 0.3303106123116007,
+    "parts": "promptness\u2192payment.timing 0.54 (z 9.5); patience\u2192cafe.purchase 0.15 (z 17.8); sociability\u2192agent.tick 0.33 (z 48.2); vocality\u2192file.ticket 0.30 (z 4.7)"
+   }
+  },
+  "pay_by_promptness": {
+   "asked": {
+    "low": 0.2419,
+    "high": 0.5604,
+    "n_low": 1170,
+    "n_high": 91
+   },
+   "gated: standing_instruction": {
+    "low": 1.0,
+    "high": 1.0,
+    "n_low": 204,
+    "n_high": 518
+   }
+  }
+ },
+ "jev-llm-rounds": {
+  "per_seed": {
+   "20261201": {
+    "value": 0.3058192495940754,
+    "parts": "promptness\u2192payment.timing 0.44 (z 10.1); patience\u2192cafe.purchase 0.15 (z 19.5); sociability\u2192agent.tick 0.30 (z 36.0); vocality\u2192file.ticket 0.33 (z 6.9)"
+   },
+   "20261202": {
+    "value": 0.29785558168013226,
+    "parts": "promptness\u2192payment.timing 0.38 (z 8.8); patience\u2192cafe.purchase 0.14 (z 19.3); sociability\u2192agent.tick 0.34 (z 34.3); diligence\u2192ticket.answer 0.29 (z 4.6); vocality\u2192file.ticket 0.34 (z 5.5)"
+   },
+   "20261203": {
+    "value": 0.30694049036692783,
+    "parts": "promptness\u2192payment.timing 0.29 (z 7.1); patience\u2192cafe.purchase 0.15 (z 19.3); sociability\u2192agent.tick 0.32 (z 42.9); diligence\u2192ticket.answer 0.42 (z 6.0); vocality\u2192file.ticket 0.36 (z 5.7)"
+   },
+   "20261301": {
+    "value": 0.30647770001721536,
+    "parts": "promptness\u2192payment.timing 0.35 (z 9.9); patience\u2192cafe.purchase 0.15 (z 20.2); sociability\u2192agent.tick 0.42 (z 38.2); diligence\u2192ticket.answer 0.28 (z 3.5); vocality\u2192file.ticket 0.32 (z 4.4)"
+   },
+   "20261302": {
+    "value": 0.2538388927420357,
+    "parts": "promptness\u2192payment.timing 0.25 (z 6.3); patience\u2192cafe.purchase 0.15 (z 18.5); sociability\u2192agent.tick 0.33 (z 32.5); vocality\u2192file.ticket 0.29 (z 5.9)"
+   },
+   "20261303": {
+    "value": 0.2509804320573068,
+    "parts": "promptness\u2192payment.timing 0.34 (z 8.0); patience\u2192cafe.purchase 0.12 (z 15.2); sociability\u2192agent.tick 0.31 (z 43.7); vocality\u2192file.ticket 0.23 (z 4.0)"
+   }
+  },
+  "pay_by_promptness": {
+   "asked": {
+    "low": 0.2284,
+    "high": 0.5306,
+    "n_low": 2250,
+    "n_high": 98
+   },
+   "gated: disputed": {
+    "low": 0.0,
+    "high": null,
+    "n_low": 1,
+    "n_high": 0
+   },
+   "gated: insufficient_cash": {
+    "low": 0.0,
+    "high": 0.0,
+    "n_low": 379,
+    "n_high": 473
+   },
+   "gated: standing_instruction": {
+    "low": null,
+    "high": 1.0,
+    "n_low": 0,
+    "n_high": 539
+   }
+  }
+ }
+}

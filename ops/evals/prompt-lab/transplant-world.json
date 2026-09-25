@@ -1,0 +1,64 @@
+{
+ "seeds": [
+  20261260,
+  20261261,
+  20261262,
+  20261263,
+  20261264,
+  20261265
+ ],
+ "rounds-plain": {
+  "decisions": 773,
+  "applied": {
+   "press_by_vocality": 0.16275735294117644,
+   "small_talk_by_sociability": 0.1889449244932569,
+   "p_done": 0.6168564036222509
+  },
+  "jev": {
+   "press_by_vocality": 0.2933823529411765,
+   "small_talk_by_sociability": 0.4067112654041832,
+   "p_done": 0.3791591203104786
+  },
+  "llm": {
+   "press_by_vocality": 0.16275735294117644,
+   "small_talk_by_sociability": 0.1889449244932569,
+   "p_done": 0.6168564036222509
+  }
+ },
+ "rounds-persona": {
+  "decisions": 930,
+  "applied": {
+   "press_by_vocality": 0.31290679799595617,
+   "small_talk_by_sociability": 0.2941586563156475,
+   "p_done": 0.5772336604487355
+  },
+  "jev": {
+   "press_by_vocality": 0.3608731711229946,
+   "small_talk_by_sociability": 0.35187126050324297,
+   "p_done": 0.3911505376344086
+  },
+  "llm": {
+   "press_by_vocality": -0.0076470588235294235,
+   "small_talk_by_sociability": -0.02493139076301293,
+   "p_done": 0.6491290322580644
+  }
+ },
+ "rounds-persona2": {
+  "decisions": 776,
+  "applied": {
+   "press_by_vocality": 0.3234706535042685,
+   "small_talk_by_sociability": 0.26462856639427657,
+   "p_done": 0.6301030927835052
+  },
+  "jev": {
+   "press_by_vocality": 0.38585606666666666,
+   "small_talk_by_sociability": 0.3798502528222101,
+   "p_done": 0.3742268041237113
+  },
+  "llm": {
+   "press_by_vocality": 0.02708333333333332,
+   "small_talk_by_sociability": -0.056725869387755146,
+   "p_done": 0.6301030927835052
+  }
+ }
+}

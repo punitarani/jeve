@@ -124,6 +124,9 @@ class Stake:
     ref: str
     holder: str | None
     askers: frozenset[str]
+    holder_org: str | None = None
+    """The firm that answers for the matter. The holder's colleagues are in the
+    room as bystanders, but it is their firm's outage or their firm's bill."""
     causes: tuple[int, ...] = ()
     module_id: str | None = None
     incident_id: int | None = None
@@ -493,6 +496,7 @@ def _outage_stake(engine: Engine, group: list[Agent], down: list[str]) -> Stake 
         ref=f"incident:{incident['id']}",
         holder=vendor.id,
         askers=askers,
+        holder_org=vendor.org,
         causes=(incident["cause"],) if incident["cause"] else (),
         module_id=module,
         incident_id=incident["id"],
@@ -536,6 +540,7 @@ def _invoice_stake(engine: Engine, group: list[Agent], now: SimTime) -> Stake | 
                 ref=f"invoice:{int(bill['id'])}",
                 holder=str(payer["id"]),
                 askers=frozenset(by_org.get(creditor, [])),
+                holder_org=debtor,
                 causes=((int(bill["issued_seq"]),) if bill["issued_seq"] else ()),
                 invoice_id=int(bill["id"]),
                 days_late=max(0, (now.seconds - int(bill["due_sim"])) // DAY),
@@ -959,6 +964,9 @@ def _context(
     agent = seat.agent
     role = stake.role_of(agent.id)
     news = tellable.get(agent.id)
+    ties = memory.ties_of(
+        engine.conn, agent.id, [o.agent.id for o in standing if o is not seat]
+    )
     return DecisionContext(
         person_id=agent.id,
         role=agent.role,
@@ -972,6 +980,7 @@ def _context(
             "days_late": stake.days_late,
             "large": stake.large,
             "role_in_stake": role,
+            "holder_firm": role == "bystander" and agent.org == stake.holder_org,
             "track_record": stake.track_record,
             "present": [
                 {
@@ -979,11 +988,15 @@ def _context(
                     "org": other.agent.org,
                     "role": other.agent.role,
                     "last_act": local.last_acts.get(other.agent.id),
+                    **ties.get(other.agent.id, memory.Tie()).as_facts(),
                 }
                 for other in standing
                 if other.agent.id != agent.id
             ],
             "my_last_act": local.last_acts.get(agent.id),
+            # How they feel now: this conversation's last word on it, else how
+            # they came in (WORLD-0013).
+            "mood": local.moods.get(agent.id, agent.mood),
             "rounds_done": local.rounds_done,
             "raised": local.raised,
             "pressed": local.pressed,
@@ -1091,6 +1104,26 @@ def _fold(
     return bool(remaining) and all(remaining)
 
 
+def pair_warmth(x: str, y: str, stake: Stake, local: Local) -> int:
+    """How a conversation moved one pair's tie, from what each did last
+    (MEM-0004): a refusal to the one asking cools it, a promise warms it,
+    pressing someone hard when tempers are up cools it, and two people who
+    ended on small talk part a little warmer."""
+
+    acts = {x: local.last_acts.get(x, ""), y: local.last_acts.get(y, "")}
+    delta = 0
+    for me, them in ((x, y), (y, x)):
+        if acts[me] == "decline" and them in stake.askers:
+            delta -= 1
+        elif acts[me] == "promise" and them in stake.askers:
+            delta += 1
+        elif acts[me] == "press" and them == stake.holder and local.tension >= 2:
+            delta -= 1
+    if acts[x] == acts[y] == "small_talk":
+        delta += 1
+    return max(-2, min(2, delta))
+
+
 def _close(
     engine: Engine,
     report: TickReport,
@@ -1140,6 +1173,31 @@ def _close(
     for person, mood in sorted(local.moods.items()):
         engine.conn.execute(
             "UPDATE positions SET mood = %s WHERE person_id = %s", (mood, person)
+        )
+
+    # Everyone at the table has now met everyone else, and how it went moves
+    # how they get on (MEM-0004).
+    people = [seat.agent.id for seat in seats]
+    for i, x in enumerate(people):
+        for y in people[i + 1 :]:
+            by = pair_warmth(x, y, stake, local)
+            before = memory.meet(
+                engine.conn,
+                x,
+                y,
+                sim_time=report.sim_time,
+                warmth=by,
+                topic=stake.kind,
+            )
+            note_soured(
+                engine, report, x, y, before, by, over=stake.kind, cause=closed_seq
+            )
+    if local.pressed and stake.kind == "invoice" and stake.invoice_id is not None:
+        # A bill pressed in person is a reminder its payer is told about
+        # (WORLD-0013); before, only a promise changed anything.
+        engine.conn.execute(
+            "UPDATE invoices SET reminded_sim = %s WHERE id = %s AND paid_sim IS NULL",
+            (report.sim_time, stake.invoice_id),
         )
 
     for teller in sorted(local.told):
@@ -1451,6 +1509,44 @@ def _carry_the_news(
         return
 
 
+def note_soured(
+    engine: Engine,
+    report: TickReport,
+    x: str,
+    y: str,
+    before: memory.Tie,
+    by: int,
+    *,
+    over: str,
+    cause: int | None,
+) -> None:
+    """Two people who got on, or were neither here nor there, have fallen out
+    (MEM-0004). Said as an event, because a falling-out is friction — the
+    kind the soak looks for every week — and it happened between two people
+    over something, which a changed row alone would not say."""
+
+    if not memory.soured(before, by):
+        return
+    org = engine.conn.execute(
+        "SELECT org_id FROM persons WHERE id = %s", (x,)
+    ).fetchone()
+    engine.emit(
+        report,
+        "relationship.soured",
+        actor_id=x,
+        org_id=str(org["org_id"]) if org and org["org_id"] else None,
+        causes=[cause] if cause is not None else [],
+        payload={
+            "a": x,
+            "b": y,
+            "over": over,
+            "met_before": before.met,
+            "warmth_before": before.warmth,
+            "warmth": max(memory.ties.WARMTH_MIN, before.warmth + by),
+        },
+    )
+
+
 # -- a promise falls due --------------------------------------------------------
 
 
@@ -1481,7 +1577,7 @@ def commitment_due(
     )
     if not settled:
         return
-    engine.emit(
+    seq = engine.emit(
         report,
         "promise.broken",
         actor_id=open_promise.from_person_id,
@@ -1492,4 +1588,29 @@ def commitment_due(
             "to": open_promise.to_person_id,
             "days_promised": (report.sim_time - open_promise.made_sim) // DAY,
         },
+    )
+    # The creditor now knows something they can pass on (MEM-0003's topic,
+    # which nothing ever recorded), and thinks less of the one who broke it.
+    fact = memory.Fact.promise_broken(open_promise.from_person_id)
+    memory.record_fact(engine.conn, fact, sim_time=report.sim_time, seq=seq)
+    memory.learn(
+        engine.conn, open_promise.to_person_id, fact.id,
+        sim_time=report.sim_time, seq=seq,
+    )  # fmt: skip
+    before = memory.warm(
+        engine.conn,
+        open_promise.from_person_id,
+        open_promise.to_person_id,
+        -2,
+        sim_time=report.sim_time,
+    )
+    note_soured(
+        engine,
+        report,
+        open_promise.to_person_id,
+        open_promise.from_person_id,
+        before,
+        -2,
+        over="promise_broken",
+        cause=seq,
     )

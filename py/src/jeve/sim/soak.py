@@ -79,10 +79,15 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
         "SELECT count(*) FROM incidents WHERE started_sim >= %s",
         (end - 14 * DAY,),
     )
+    # By any way the vendor can hear of an outage: a ticket, or a word in
+    # person or by phone (WORLD-0012). Counting tickets alone, a 30-minute
+    # outage raised with an engineer in the cafe and phoned in to an account
+    # manager read as support hearing from nobody.
     late_tickets = _one(
         conn,
-        "SELECT count(*) FROM events WHERE kind IN ('ticket.opened','ticket.reopened') "
-        "AND sim_time >= %s",
+        "SELECT count(*) FROM events WHERE kind IN ('ticket.opened', "
+        "'ticket.reopened', 'ticket.escalated', 'escalation.relayed', "
+        "'escalation.dropped') AND sim_time >= %s",
         (end - 14 * DAY,),
     )
     stale = _one(
@@ -94,7 +99,7 @@ def checks(conn: Connection[DictRow], *, days: int) -> list[Check]:
         Check(
             "tickets end, and support is still hearing from people",
             stale == 0 and (late_incidents == 0 or late_tickets > 0),
-            f"{late_tickets} ticket(s) opened in the last 14 days against "
+            f"{late_tickets} report(s) in the last 14 days against "
             f"{late_incidents} incident(s); {stale} answered ticket(s) left open "
             "more than four days",
         )

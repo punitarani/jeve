@@ -1,0 +1,35 @@
+{
+ "footer": "240 verdicts; $0.2923 spent on this run.",
+ "note": "Episodes from the two arms and the same seed, of the same shape (what was at stake, how many rounds, how many people), shown both ways round. *Right preferred* is how often the judge preferred `jev-llm-rounds`'s episode; 0.50 is no difference.",
+ "tallies": [
+  {
+   "consistent": 13,
+   "label": "jev-llm-rounds over before (invoice)",
+   "n": 15,
+   "points": 4.0,
+   "ties": 0
+  },
+  {
+   "consistent": 35,
+   "label": "jev-llm-rounds over before (news)",
+   "n": 93,
+   "points": 45.0,
+   "ties": 0
+  },
+  {
+   "consistent": 5,
+   "label": "jev-llm-rounds over before (outage)",
+   "n": 12,
+   "points": 4.5,
+   "ties": 0
+  },
+  {
+   "consistent": 53,
+   "label": "jev-llm-rounds over before (all)",
+   "n": 120,
+   "points": 53.5,
+   "ties": 0
+  }
+ ],
+ "title": "`jev-llm-rounds` against `before`, trial seeds (anthropic/claude-haiku-4.5)"
+}

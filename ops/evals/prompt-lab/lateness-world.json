@@ -1,0 +1,93 @@
+{
+ "seeds": [
+  20261201,
+  20261202,
+  20261203,
+  20261301,
+  20261302,
+  20261303
+ ],
+ "jev": {
+  "p_chase": {
+   "1-3": 0.2966,
+   "4-6": 0.2599,
+   "7-9": 0.41,
+   "10-20": 0.3583,
+   "21+": 0.385
+  },
+  "chase_decisions": {
+   "1-3": 163,
+   "4-6": 84,
+   "7-9": 323,
+   "10-20": 232,
+   "21+": 42
+  },
+  "invoice_round_decisions": {
+   "not late": 260,
+   "1-3": 96
+  },
+  "creditor_p_press": {
+   "not late": 0.1135,
+   "1-3": 0.055
+  },
+  "why_by_cash_band": {
+   "tight": {
+    "asked": 593,
+    "approval": 0.0,
+    "cash_flow": 0.5402,
+    "forgot": 0.0005,
+    "other": 0.0,
+    "other_bills": 0.0134,
+    "query": 0.0,
+    "routine": 0.446
+   },
+   "thin": {
+    "asked": 668,
+    "approval": 0.0002,
+    "cash_flow": 0.0355,
+    "forgot": 0.0281,
+    "other": 0.0088,
+    "other_bills": 0.0521,
+    "query": 0.0023,
+    "routine": 0.8731
+   },
+   "comfortable": {
+    "asked": 1421,
+    "approval": 0.0004,
+    "cash_flow": 0.0,
+    "forgot": 0.0423,
+    "other": 0.0265,
+    "other_bills": 0.0055,
+    "query": 0.0031,
+    "routine": 0.9222
+   }
+  }
+ },
+ "rules": {
+  "p_chase": {
+   "1-3": 0.375,
+   "4-6": 0.4444,
+   "7-9": 0.4727,
+   "10-20": 0.6095,
+   "21+": 0.9375
+  },
+  "chase_decisions": {
+   "1-3": 24,
+   "4-6": 18,
+   "7-9": 385,
+   "10-20": 105,
+   "21+": 16
+  },
+  "invoice_round_decisions": {
+   "not late": 876,
+   "1-3": 276,
+   "4-6": 22
+  },
+  "creditor_p_press": {
+   "not late": 0.2489,
+   "1-3": 0.3043,
+   "4-6": 0.2727
+  },
+  "why_by_cash_band": {}
+ }
+}

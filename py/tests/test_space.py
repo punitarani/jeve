@@ -277,23 +277,47 @@ def test_a_conversation_in_the_cafe_reaches_an_invoice(
     reached = conn.execute(
         """
         WITH RECURSIVE downstream AS (
-            SELECT seq, kind, 0 AS depth FROM events
+            SELECT seq, kind, causes, 0 AS depth FROM events
             WHERE kind IN ('encounter', 'episode.closed') AND seq IN (
                 SELECT unnest(causes) FROM events
                 WHERE kind IN ('ticket.escalated', 'escalation.relayed')
                   AND payload->>'module_id' = 'invoicing')
             UNION
-            SELECT e.seq, e.kind, d.depth + 1
+            SELECT e.seq, e.kind, e.causes, d.depth + 1
             FROM events e JOIN downstream d ON d.seq = ANY(e.causes)
         )
-        SELECT kind, min(depth) AS depth FROM downstream GROUP BY kind
+        SELECT seq, kind, causes, min(depth) AS depth FROM downstream
+        GROUP BY seq, kind, causes
         """
     ).fetchall()
-    depth = {str(r["kind"]): int(r["depth"]) for r in reached}
-    assert 0 in (depth.get("encounter"), depth.get("episode.closed"))
-    assert depth["ticket.escalated"] in (1, 2)
-    assert depth["incident.ended"] == depth["ticket.escalated"] + 1
-    assert depth["invoice.issued"] == depth["incident.ended"] + 1
+    at_depth = {int(r["seq"]): (str(r["kind"]), int(r["depth"])) for r in reached}
+
+    def back(seq: int, kind: str) -> int:
+        """The cause of `seq` that is a `kind`, one step nearer the talk."""
+
+        causes = next(r["causes"] for r in reached if int(r["seq"]) == seq)
+        depth = at_depth[seq][1]
+        return next(int(c) for c in causes if at_depth.get(int(c)) == (kind, depth - 1))
+
+    # Follow one chain back from the nearest invoice: a week can hold more than
+    # one outage, and the one a talk shortened need not be the one that held up
+    # the bills, so depths are read along a single path, not per kind.
+    invoice = min(
+        (seq for seq, (kind, _) in at_depth.items() if kind == "invoice.issued"),
+        key=lambda seq: at_depth[seq][1],
+    )
+    ended = back(invoice, "incident.ended")
+    escalated = back(ended, "ticket.escalated")
+    assert at_depth[escalated][1] in (1, 2)
+    origin = escalated
+    while at_depth[origin][1] > 0:
+        causes = next(r["causes"] for r in reached if int(r["seq"]) == origin)
+        origin = next(
+            int(c)
+            for c in causes
+            if int(c) in at_depth and at_depth[int(c)][1] == at_depth[origin][1] - 1
+        )
+    assert at_depth[origin][0] in ("encounter", "episode.closed")
 
 
 def test_an_outage_is_escalated_at_most_once(conn: Connection[DictRow]) -> None:

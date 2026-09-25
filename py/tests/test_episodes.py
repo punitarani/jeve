@@ -589,6 +589,31 @@ def test_each_round_is_told_what_happened_in_the_last(
     conn.rollback()
 
 
+def test_the_holders_colleague_knows_it_is_their_firms_matter(
+    conn: Connection[DictRow],
+) -> None:
+    """Only one of the vendor's people holds an outage; another in the room is a
+    bystander, but it is their own firm's software (DECIDE-0008's renders)."""
+
+    engineer = "tallybird.engineer.2"
+    policy = Scripted(ROOT_SEED, {CUSTOMER: [{"act": "press"}]})
+    engine, report = fresh(conn, policy)
+    outage(engine, report)
+    present, made, by_id = stage(engine, conn, [CUSTOMER, VENDOR, engineer], Zone.CAFE)
+    episodes.run(
+        engine, report, SimTime(report.sim_time), present, made, by_id, ["invoicing"]
+    )
+    parts = {
+        ctx.person_id: (ctx.facts["role_in_stake"], ctx.facts["holder_firm"])
+        for ctx in policy.asked
+        if ctx.kind == "episode.round" and ctx.facts.get("stake") == "outage"
+    }
+    assert parts[CUSTOMER] == ("asker", False)
+    vendors = sorted(v for k, v in parts.items() if k.startswith("tallybird."))
+    assert vendors == [("bystander", True), ("holder", False)]
+    conn.rollback()
+
+
 def test_a_conversation_going_in_circles_ends_as_stalled(
     conn: Connection[DictRow],
 ) -> None:
@@ -1057,6 +1082,8 @@ def test_a_world_begun_before_episodes_carries_on_with_them(
     conn.execute("DROP TABLE spend_totals")
     conn.execute("DROP INDEX events_kind_tick")
     conn.execute("DROP INDEX ledger_entries_account")
+    # 0014: tier 1's daily room reads decisions by sim time.
+    conn.execute("DROP INDEX decisions_time")
     conn.execute(
         "CREATE INDEX ledger_entries_account ON ledger_entries (account_id, id)"
     )
@@ -1066,14 +1093,16 @@ def test_a_world_begun_before_episodes_carries_on_with_them(
     conn.execute("DELETE FROM schema_migrations WHERE name >= '0009'")
     # And what those later migrations added outside 0009's tables, which would
     # otherwise already exist when they are applied again.
-    conn.execute("DROP TABLE timesheets, rota, escalations")
+    conn.execute("DROP TABLE timesheets, rota, escalations, ties")
     conn.execute(
         "ALTER TABLE outage_notices DROP COLUMN workaround; "
         "ALTER TABLE subscriptions DROP COLUMN cancelled_sim; "
         "ALTER TABLE invoices DROP COLUMN dispute_asked, DROP COLUMN disputed_sim, "
         "  DROP COLUMN dispute_resolution, DROP COLUMN manual, "
-        "  DROP COLUMN reconciled; "
-        "ALTER TABLE positions DROP COLUMN mind"
+        "  DROP COLUMN reconciled, DROP COLUMN reminded_sim, "
+        "  DROP COLUMN late_reason, DROP COLUMN chases; "
+        "ALTER TABLE positions DROP COLUMN mind; "
+        "ALTER TABLE decisions DROP COLUMN facts"
     )
     _hand_the_world_to_the_daemon(conn)
 

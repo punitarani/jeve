@@ -160,34 +160,49 @@ test("clicking a person shows the distribution behind their last decision", asyn
   await ready(page, "explore");
   await expect(page.getByTestId("world-hint")).toBeVisible();
 
-  // Somebody who is on the map and standing still, found from the model and
-  // clicked at the pixel they are drawn at.
-  const target = await page.evaluate(() => {
-    const handle = (window as unknown as {
-      __jeveWorld: Record<
-        string,
-        {
-          status(): { agents: { id: string; visible: boolean }[] };
-          screenPositionOf(id: string): { x: number; y: number } | null;
-        }
-      >;
-    }).__jeveWorld.explore!;
-    for (const agent of handle.status().agents) {
-      const at = agent.visible ? handle.screenPositionOf(agent.id) : null;
-      if (at && at.x > 40 && at.y > 40) return { id: agent.id, ...at };
-    }
-    return null;
-  });
-  expect(target, "nobody is on the map to click").not.toBeNull();
-
+  // Somebody on the map, found from the model and clicked at the pixel they
+  // are drawn at. The paced daemon keeps people walking, so a position read
+  // and then clicked can be stale by the time the click lands — and a click
+  // that misses a person picks the building under it. Read each position
+  // just before its click, and move on to the next person if a building's
+  // panel came up instead.
   const canvas = page.getByTestId("world-canvas");
-  await canvas.click({ position: { x: target!.x, y: target!.y } });
-
   const panel = page.getByTestId("agent-panel");
+  const tried: string[] = [];
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const target = await page.evaluate((skip) => {
+      const handle = (window as unknown as {
+        __jeveWorld: Record<
+          string,
+          {
+            status(): { agents: { id: string; visible: boolean }[] };
+            screenPositionOf(id: string): { x: number; y: number } | null;
+          }
+        >;
+      }).__jeveWorld.explore!;
+      for (const agent of handle.status().agents) {
+        if (skip.includes(agent.id)) continue;
+        const at = agent.visible ? handle.screenPositionOf(agent.id) : null;
+        if (at && at.x > 40 && at.y > 40) return { id: agent.id, ...at };
+      }
+      return null;
+    }, tried);
+    expect(target, "nobody is on the map to click").not.toBeNull();
+    tried.push(target!.id);
+    await canvas.click({ position: { x: target!.x, y: target!.y } });
+    const opened = await panel
+      .waitFor({ state: "visible", timeout: 2500 })
+      .then(() => true)
+      .catch(() => false);
+    if (opened) break;
+  }
+
   await expect(panel).toBeVisible();
   // Picking is nearest-person: whoever was clicked, a person came up.
   await expect(panel).toHaveAttribute("data-person", /\w+\.\w+\.\d+/);
-  await expect(panel.getByTestId("decided-by")).toHaveText("jev");
+  // Jev, or tier 1 when their last act was in a conversation (DECIDE-0006);
+  // either way the call it rests on is Jev's.
+  await expect(panel.getByTestId("decided-by")).toHaveText(/^(jev|llm)$/);
   await expect(panel).toContainText("typesafe/jev");
 
   const bars = panel.getByTestId("distribution-bar");

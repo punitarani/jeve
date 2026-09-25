@@ -1,0 +1,35 @@
+{
+ "footer": "48 verdicts; $0.0294 spent on this run.",
+ "note": "Episodes from the two arms, matched by what was at stake and by seed, shown both ways round. *Right preferred* is how often the judge preferred `jev`'s episode; 0.50 is no difference.",
+ "tallies": [
+  {
+   "consistent": 2,
+   "label": "jev over rules (invoice)",
+   "n": 3,
+   "points": 1.5,
+   "ties": 0
+  },
+  {
+   "consistent": 11,
+   "label": "jev over rules (news)",
+   "n": 12,
+   "points": 2.5,
+   "ties": 0
+  },
+  {
+   "consistent": 7,
+   "label": "jev over rules (outage)",
+   "n": 9,
+   "points": 4.0,
+   "ties": 0
+  },
+  {
+   "consistent": 20,
+   "label": "jev over rules (all)",
+   "n": 24,
+   "points": 8.0,
+   "ties": 0
+  }
+ ],
+ "title": "`jev` against `rules`, dev seeds (openai/gpt-5.6-luna)"
+}

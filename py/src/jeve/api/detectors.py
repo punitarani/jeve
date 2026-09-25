@@ -26,6 +26,7 @@ from psycopg import Connection
 from psycopg.rows import DictRow
 
 from jeve.core.clock import DAY, HOUR, SimTime
+from jeve.decide import escalation
 from jeve.decide.questions import trait_level
 from jeve.world.engine import FRICTION, SUPPORT_ROLES
 from jeve.world.map import ORG_ZONE, Zone
@@ -53,7 +54,6 @@ ACTIONS: tuple[tuple[str, str], ...] = (
     ("vendor.trust", "trust"),
     ("time.log", "log"),
     ("invoice.dispute", "dispute"),
-    ("subscription.renew", "renew"),
     ("episode.round", "act"),
 )
 ROLE_INFORMATION = 0.05
@@ -383,10 +383,13 @@ def tier1_redundant(conn: Connection[DictRow], since: int) -> Reading:
     """Tier 1 agreeing with Jev nearly always inside the band buys nothing
     (DECIDE-0005)."""
 
+    # A routed row is not a second opinion (DECIDE-0006), and since DECIDE-0008
+    # its `agrees` sets Jev's answer for this person against the LLM's for the
+    # average one: counted here, routing would read as tier 1 agreeing.
     row = conn.execute(
         "SELECT count(*) AS n, avg(agrees::int) AS agree FROM escalations "
-        "WHERE NOT sampled AND sim_time >= %s",
-        (since,),
+        "WHERE NOT sampled AND sim_time >= %s AND NOT triggers @> %s::jsonb",
+        (since, escalation.ROUTED_ROW),
     ).fetchone()
     n = int(row["n"]) if row else 0
     agree = float(row["agree"]) if row and row["agree"] is not None else None

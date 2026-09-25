@@ -87,6 +87,15 @@ ASKING: dict[str, dict[str, object]] = {
         "tellable_topic": "price_rise",
     },
     "leave.consider": {"org": "tallybird", "weeks_behind": 2},
+    "career.review": {
+        "org": "tallybird",
+        "mood": 1,
+        "friends_at_work": 1,
+        "fallen_out_at_work": 1,
+        "pay_late": True,
+        "firm_struggling": False,
+        "swamped": True,
+    },
     "eng.allocation": {
         "debt_level": 1.3,
         "incidents_last_week": 2,
@@ -120,7 +129,7 @@ ASKING: dict[str, dict[str, object]] = {
     },
     "invoice.dispute": {
         "issuer": "halloran",
-        "large": True,
+        "larger_than_expected": True,
         "price_rise": True,
         "firm": False,
     },
@@ -576,6 +585,39 @@ def test_the_question_that_ends_a_conversation_is_about_the_person() -> None:
     assert "said what they came to say" in asks["done"].question.instructions
 
 
+def test_cash_reads_in_three_bands_for_the_payer_and_for_the_one_owed() -> None:
+    from jeve.decide.policy import cash_band
+    from jeve.decide.questions import owed_cash_words, runway_words
+
+    assert [cash_band(d) for d in (5, 13.9, 14, 29.9, 30, 90, None)] == [
+        0, 0, 1, 1, 2, 2, 2
+    ]  # fmt: skip
+    payer = [runway_words(d) for d in (5, 20, 60)]
+    owed = [owed_cash_words(d) for d in (5, 20, 60)]
+    assert len(set(payer)) == len(set(owed)) == 3
+    # The firm that is owed is never told it has cash "to pay it".
+    assert not any("pay it" in w for w in owed)
+
+
+def test_the_holders_colleague_is_not_told_it_is_none_of_their_business() -> None:
+    part = "their_part_in_it"
+    for stake in ("outage", "invoice"):
+        outsider = _state(
+            "episode.round", _round(stake=stake, role_in_stake="bystander")
+        )[part]
+        colleague = _state(
+            "episode.round",
+            _round(stake=stake, role_in_stake="bystander", holder_firm=True),
+        )[part]
+        assert "not their" in str(outsider) and "Their" in str(colleague)
+        assert "either way" not in str(colleague)
+    # Only a bystander is anyone's colleague: the holder is still the holder.
+    assert (
+        _state("episode.round", _round(holder_firm=True))[part]
+        == _state("episode.round", _round())[part]
+    )
+
+
 def test_a_payer_with_no_record_is_asked_what_they_always_were() -> None:
     about = "what_this_is_about"
     plain = str(_state("episode.round", _round(track_record=None))[about])
@@ -614,3 +656,19 @@ def test_the_rules_twin_acts_on_hearsay_less_than_on_what_it_saw() -> None:
         return bool(policy._file_ticket(ctx, Fixed())[0]["file"])
 
     assert files(0) and not files(1) and not files(3)
+
+
+def test_not_due_is_a_reason_only_before_the_date() -> None:
+    """Past its date a bill cannot be left because it is not due yet; offered
+    anyway, a sampled answer wrote exactly that on overdue bills."""
+
+    def why_not(days_until_due: int) -> tuple[str, ...]:
+        prepared = _prepare(
+            "payment.timing",
+            {**ASKING["payment.timing"], "days_until_due": days_until_due},
+        )
+        return next(a.options for a in prepared.asks if a.key == "why_not")
+
+    assert "not_due" in why_not(2)
+    assert "not_due" not in why_not(0)
+    assert "not_due" not in why_not(-4)

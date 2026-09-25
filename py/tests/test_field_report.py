@@ -100,7 +100,10 @@ def test_prompt_clients_are_never_asked_about_a_bill(
     ]
     assert prompt, "no prompt client had a bill fall due in two weeks"
     reasons = {str(r["chosen"]["reason"]) for r in prompt}
-    assert reasons == {"standing_instruction"}
+    # A standing instruction, or — when the account is short — the bounce that
+    # comes before it (WORLD-0014: clients' cash is finite). Gates both.
+    assert "standing_instruction" in reasons
+    assert reasons <= {"standing_instruction", "insufficient_cash"}
     assert {str(r["source"]) for r in prompt} == {"rules"}
 
 
@@ -120,6 +123,44 @@ def test_a_payment_row_and_its_event_agree_about_who_decided(
     assert disagree is not None and int(disagree["n"]) == 0
     paid = conn.execute("SELECT count(*) AS n FROM payments").fetchone()
     assert paid is not None and int(paid["n"]) > 0
+
+
+# -- WORLD-0013: a record explains itself --------------------------------------
+
+
+def test_a_decision_keeps_what_it_was_asked_on(conn: Connection[DictRow]) -> None:
+    """The facts at the moment of deciding are gone a tick later: a runway
+    moves, the room empties. So every decision keeps its own."""
+
+    two_weeks(conn)
+    row = conn.execute(
+        "SELECT count(*) AS n, count(*) FILTER (WHERE facts IS NULL) AS bare "
+        "FROM decisions"
+    ).fetchone()
+    assert row is not None and int(row["n"]) > 0 and int(row["bare"]) == 0
+    runway = conn.execute(
+        "SELECT count(*) AS n FROM decisions WHERE question_set = 'payment.timing' "
+        "AND NOT facts ? 'runway_days'"
+    ).fetchone()
+    assert runway is not None and int(runway["n"]) == 0
+
+
+def test_a_late_bill_says_why_and_what_was_done_about_it(
+    conn: Connection[DictRow],
+) -> None:
+    two_weeks(conn)
+    unexplained = conn.execute(
+        "SELECT count(*) AS n FROM invoices WHERE deferrals > 0 AND late_reason IS NULL"
+    ).fetchone()
+    assert unexplained is not None and int(unexplained["n"]) == 0
+    deferred = conn.execute(
+        "SELECT payload FROM events WHERE kind = 'payment.deferred'"
+    ).fetchall()
+    assert deferred, "no bill was left past its date in two weeks"
+    for row in deferred:
+        payload = dict(row["payload"])
+        assert {"reason", "amount_cents", "days_late", "times_chased"} <= set(payload)
+        assert payload["reason"] not in ("", "deferred")
 
 
 # -- defect 3: an episode's outcome counts its rounds --------------------------

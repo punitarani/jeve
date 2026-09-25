@@ -1,0 +1,35 @@
+{
+ "footer": "294 verdicts; $0.1973 spent on this run.",
+ "note": "Episodes from the two arms and the same seed, of the same shape (what was at stake, how many rounds, how many people), shown both ways round. *Right preferred* is how often the judge preferred `rounds-tuned`'s episode; 0.50 is no difference.",
+ "tallies": [
+  {
+   "consistent": 2,
+   "label": "rounds-tuned over rounds-incumbent (invoice)",
+   "n": 5,
+   "points": 1.5,
+   "ties": 0
+  },
+  {
+   "consistent": 89,
+   "label": "rounds-tuned over rounds-incumbent (news)",
+   "n": 131,
+   "points": 67.75,
+   "ties": 3
+  },
+  {
+   "consistent": 7,
+   "label": "rounds-tuned over rounds-incumbent (outage)",
+   "n": 11,
+   "points": 4.0,
+   "ties": 0
+  },
+  {
+   "consistent": 98,
+   "label": "rounds-tuned over rounds-incumbent (all)",
+   "n": 147,
+   "points": 73.25,
+   "ties": 3
+  }
+ ],
+ "title": "`rounds-tuned` against `rounds-incumbent`, 20261220,20261221,20261222,20261223,20261224,20261225 seeds (openai/gpt-5.6-luna)"
+}

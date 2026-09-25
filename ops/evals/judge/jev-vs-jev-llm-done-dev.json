@@ -1,0 +1,35 @@
+{
+ "footer": "66 verdicts; $0.0375 spent on this run.",
+ "note": "Episodes from the two arms, matched by what was at stake and by seed, shown both ways round. *Right preferred* is how often the judge preferred `jev-llm-done`'s episode; 0.50 is no difference.",
+ "tallies": [
+  {
+   "consistent": 4,
+   "label": "jev-llm-done over jev (invoice)",
+   "n": 5,
+   "points": 2.5,
+   "ties": 0
+  },
+  {
+   "consistent": 14,
+   "label": "jev-llm-done over jev (news)",
+   "n": 19,
+   "points": 8.0,
+   "ties": 2
+  },
+  {
+   "consistent": 10,
+   "label": "jev-llm-done over jev (outage)",
+   "n": 11,
+   "points": 6.0,
+   "ties": 2
+  },
+  {
+   "consistent": 28,
+   "label": "jev-llm-done over jev (all)",
+   "n": 35,
+   "points": 16.5,
+   "ties": 4
+  }
+ ],
+ "title": "`jev-llm-done` against `jev`, dev seeds (openai/gpt-5.6-luna)"
+}
