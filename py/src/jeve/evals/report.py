@@ -17,7 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jeve.evals.arms import ARMS, DEV_SEEDS, HELD_OUT_SEEDS, TRIAL_SEEDS, slug
+from jeve.evals.arms import (
+    ARMS,
+    CONFIRM_SEEDS,
+    DEV_SEEDS,
+    HELD_OUT_SEEDS,
+    TRIAL_SEEDS,
+    slug,
+)
 from jeve.evals.priors import BY_MEASURE, PRIORS
 from jeve.evals.runner import RUNS
 from jeve.evals.stats import paired, proportion_interval, summary
@@ -355,10 +362,11 @@ def _judge_section() -> list[str]:
 
 
 def render(arms: Sequence[str]) -> str:
-    worlds = load(arms, [*DEV_SEEDS, *HELD_OUT_SEEDS, *TRIAL_SEEDS])
+    worlds = load(arms, [*DEV_SEEDS, *HELD_OUT_SEEDS, *TRIAL_SEEDS, *CONFIRM_SEEDS])
     held = [s for s in HELD_OUT_SEEDS if any((a, s) in worlds for a in arms)]
     dev = [s for s in DEV_SEEDS if any((a, s) in worlds for a in arms)]
     trial = [s for s in TRIAL_SEEDS if any((a, s) in worlds for a in arms)]
+    confirm = [s for s in CONFIRM_SEEDS if any((a, s) in worlds for a in arms)]
     days = sorted({w.days for w in worlds.values()})
     lines = [
         "# Evals: realism, depth and quality as numbers",
@@ -371,12 +379,14 @@ def render(arms: Sequence[str]) -> str:
         f"Arms: {', '.join(f'`{a}`' for a in arms)}. Dev seeds: "
         f"{', '.join(map(str, dev)) or 'none'}. Held-out seeds: "
         f"{', '.join(map(str, held)) or 'none yet'}. Trial seeds: "
-        f"{', '.join(map(str, trial)) or 'none yet'}. Horizon: "
+        f"{', '.join(map(str, trial)) or 'none yet'}. Confirmation seeds: "
+        f"{', '.join(map(str, confirm)) or 'none yet'}. Horizon: "
         f"{', '.join(f'{d} sim-days' for d in days)}. Cells are mean ± sd over seeds.",
         "",
     ]
     for label, seeds in (
         ("60-day trial seeds", trial),
+        ("confirmation seeds: the trial again, on seeds nobody had run", confirm),
         ("held-out seeds", held),
         ("dev seeds", dev),
     ):
@@ -413,7 +423,7 @@ def render(arms: Sequence[str]) -> str:
             "",
             *(
                 _trial_contrasts(worlds, seeds)
-                if seeds is trial
+                if seeds is trial or seeds is confirm
                 else _contrasts(worlds, here, seeds, everything)
             ),
         ]

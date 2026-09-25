@@ -34,6 +34,9 @@ HELD_OUT_SEEDS: tuple[int, ...] = (
 TRIAL_SEEDS: tuple[int, ...] = (20261201, 20261202, 20261203)
 """The long-horizon trial: sixty sim-days, where monthly facts (churn,
 turnover, careers, a second month-end) can be measured at all."""
+CONFIRM_SEEDS: tuple[int, ...] = (20261301, 20261302, 20261303)
+"""The trial again on seeds nobody had run, once the code was final: whatever
+the trial seeds said is confirmed here or it is not claimed."""
 
 
 def _escalating() -> str:

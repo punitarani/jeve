@@ -28,7 +28,7 @@ from jeve.config import find_repo_root
 from jeve.core.seed import derive_rng
 from jeve.decide.policy import DecisionContext
 from jeve.evals import casts, judge, report, runner, transcripts
-from jeve.evals.arms import DEV_SEEDS, HELD_OUT_SEEDS
+from jeve.evals.arms import CONFIRM_SEEDS, DEV_SEEDS, HELD_OUT_SEEDS, TRIAL_SEEDS
 
 JUDGE_DATABASE = "jeve_evals_judge"
 """Where verdicts are cached and the judge's spend is metered: one ledger for
@@ -40,6 +40,10 @@ def _seeds(text: str) -> list[int]:
         return list(DEV_SEEDS)
     if text == "held-out":
         return list(HELD_OUT_SEEDS)
+    if text == "trial":
+        return list(TRIAL_SEEDS)
+    if text == "confirm":
+        return list(CONFIRM_SEEDS)
     if text == "all":
         return [*DEV_SEEDS, *HELD_OUT_SEEDS]
     return [int(s) for s in text.split(",") if s.strip()]
