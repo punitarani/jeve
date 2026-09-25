@@ -23,34 +23,40 @@ absent (`None`), never zero.
 
 Three trial seeds (20261201–03) and three confirmation seeds (20261301–03)
 nobody had run. Each cell is mean ± sd over seeds, and the count is the seeds in
-band. The rules twin ran at 84a759a. Jev alone ran at 42dcce7; the world code it
-runs did not change after that. The production world (Jev, with conversations
-routed to GLM and the person from Jev, DECIDE-0008) is **pending**: the
-OpenRouter account ran out of credits with its worlds at day 18–32
-(`evals.py run --resume` carries them on). The whole table, contrasts
-included, is `ops/evals.md`; the bar is checked by `scripts/bar_check.py`.
+band. The rules twin ran at 84a759a and Jev alone at 42dcce7. The production
+world (Jev, with conversations routed to GLM and the person from Jev,
+DECIDE-0008) ran at 2f4b620. Its worlds halted when the OpenRouter account ran
+out of credits, and `evals.py run --resume` carried them on. The world code
+did not change between those commits. The whole table, contrasts included, is
+`ops/evals.md`. The bar is checked by `scripts/bar_check.py` into
+`ops/evals/bar.json`.
 
-| measure | band | rules, trial | rules, confirmation | Jev, trial | Jev, confirmation |
-| --- | --- | ---: | ---: | ---: | ---: |
-| `invoice_late_share` | 0.3–0.6 | 0.444 ± 0.038 (3/3) | 0.485 ± 0.025 (3/3) | 0.364 ± 0.043 (3/3) | 0.427 ± 0.012 (3/3) |
-| `days_late_mean` | 4.5–20 | 5.70 ± 0.58 (3/3) | 5.88 ± 0.27 (3/3) | 6.37 ± 0.92 (3/3) | 6.42 ± 0.33 (3/3) |
-| `late_reason_cash_flow` | 0.2–0.5 | 0.346 ± 0.059 (3/3) | 0.341 ± 0.058 (3/3) | 0.247 ± 0.041 (3/3) | 0.234 ± 0.057 (2/3) |
-| `cafe_peak_hour` | 8–10 | 8 (3/3) | 8 (3/3) | 8 (3/3) | 8 (3/3) |
-| `ticket_close_hours_median` | 0.5–72 | 31.2 ± 13.7 (3/3) | 23.3 ± 0.6 (3/3) | 23.7 ± 1.8 (3/3) | 24.1 ± 0.2 (3/3) |
-| `subscription_churn_monthly` | 0.005–0.061 | 0.025 ± 0.007 (3/3) | 0.024 ± 0.010 (3/3) | 0.027 ± 0.003 (3/3) | 0.021 ± 0.010 (3/3) |
-| `staff_turnover_monthly` | 0–0.035 | 0.035 ± 0.024 (2/3) | 0.042 ± 0.021 (1/3) | 0.035 ± 0.024 (2/3) | 0.042 ± 0.021 (1/3) |
+| measure | band | rules, trial | rules, confirmation | Jev, trial | Jev, confirmation | production, trial | production, confirmation |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `invoice_late_share` | 0.3–0.6 | 0.444 ± 0.038 (3/3) | 0.485 ± 0.025 (3/3) | 0.364 ± 0.043 (3/3) | 0.427 ± 0.012 (3/3) | 0.357 ± 0.039 (3/3) | 0.432 ± 0.021 (3/3) |
+| `days_late_mean` | 4.5–20 | 5.70 ± 0.58 (3/3) | 5.88 ± 0.27 (3/3) | 6.37 ± 0.92 (3/3) | 6.42 ± 0.33 (3/3) | 6.61 ± 0.50 (3/3) | 6.57 ± 0.72 (3/3) |
+| `late_reason_cash_flow` | 0.2–0.5 | 0.346 ± 0.059 (3/3) | 0.341 ± 0.058 (3/3) | 0.247 ± 0.041 (3/3) | 0.234 ± 0.057 (2/3) | 0.253 ± 0.029 (3/3) | 0.234 ± 0.059 (2/3) |
+| `cafe_peak_hour` | 8–10 | 8 (3/3) | 8 (3/3) | 8 (3/3) | 8 (3/3) | 8 (3/3) | 8 (3/3) |
+| `ticket_close_hours_median` | 0.5–72 | 31.2 ± 13.7 (3/3) | 23.3 ± 0.6 (3/3) | 23.7 ± 1.8 (3/3) | 24.1 ± 0.2 (3/3) | 24.8 ± 2.3 (3/3) | 23.7 ± 0.4 (3/3) |
+| `subscription_churn_monthly` | 0.005–0.061 | 0.025 ± 0.007 (3/3) | 0.024 ± 0.010 (3/3) | 0.027 ± 0.003 (3/3) | 0.021 ± 0.010 (3/3) | 0.025 ± 0.005 (3/3) | 0.017 ± 0.007 (3/3) |
+| `staff_turnover_monthly` | 0–0.035 | 0.035 ± 0.024 (2/3) | 0.042 ± 0.021 (1/3) | 0.035 ± 0.024 (2/3) | 0.042 ± 0.021 (1/3) | 0.042 ± 0.021 (1/3) | 0.042 ± 0.021 (1/3) |
 
-No soak invariant failed on any of these twelve worlds.
+No soak invariant failed on any of these eighteen worlds.
 
 Two misses are worth reading closely:
 
 - **Turnover** is a count of one or two departures among 24 staff. A
   perfectly calibrated world passes the band on one seed with probability
   0.77, and on six seeds with probability 0.20 (`scripts/band_power.py`,
-  `ops/evals/band-power.json`).
-- **Cash flow** as the reason a bill is late falls below the band for Jev on
-  one seed. Jev gives cash flow for tight-cash payers about half the time.
-  For payers whose cash is only thin it almost never does (0.02–0.03).
+  `ops/evals/band-power.json`). The draw is keyed by person and month, so the
+  arms miss on the same seeds. Production also lost a pushed senior
+  accountant on 20261202.
+- **Cash flow** as the reason a bill is late falls below the band on
+  20261301, for Jev alone (0.168) and for production (0.173). Payments are
+  Jev's in both. Jev gives cash flow for tight-cash payers about half the
+  time. For payers whose cash is only thin it almost never does (0.036).
+  `prompt_lab.py cash` found wording that moves it (+0.58 on held-out
+  states). That wording needs a world A/B of its own.
 
 ## Plausibility: against a cited band
 
@@ -168,6 +174,19 @@ pairs, and 50/50 unchanged on retest. Claude Haiku 4.5 is the second judge.
 Both judges prefer a shorter account. Against an episode with one
 unremarkable exchange added, Luna chose the shorter copy 0.88 of the time and
 Haiku 0.93, which is why arms are compared at equal length.
+
+On the final trial, production against the world before this PR, 40 pairs a
+seed (`ops/evals/judge/before-vs-jev-llm-rounds-*.json`), the share of
+verdicts preferring production, with its Wilson interval:
+
+| round | Luna | Haiku |
+| --- | --- | --- |
+| trial (20261201–03) | 0.535 [0.45, 0.62] | 0.446 [0.36, 0.54] |
+| confirmation (20261301–03) | 0.479 [0.39, 0.57] | 0.458 [0.37, 0.55] |
+
+Neither judge sees a difference either way. The before world already routed
+conversations to GLM. What changed since then is mostly in the economy and
+the records, which an episode does not show.
 
 ## Believability: the persona judge
 

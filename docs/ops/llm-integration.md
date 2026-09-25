@@ -404,8 +404,11 @@ month (CORE-0009), so a person reads the same uniform in every arm. A pushed
 person's threshold moves only by the relative risk they are judged to carry.
 Jev's worlds lost exactly as many people as the rules twin's on all six seeds.
 Production should therefore miss turnover on 20261203, 20261301 and 20261303
-as they did. The seeds were fixed
-before the trial, and choosing others would be choosing the result.
+as they did, and it did. It also missed on 20261202, where a senior
+accountant who had fallen out with a colleague in conversation was judged at
+a raised relative risk and left, which the other arms had no conversation to
+cause. The seeds were fixed before the trial, and choosing others would be
+choosing the result.
 
 ### Lateness reaches the chase, not the conversation
 
@@ -483,19 +486,35 @@ where lateness reaches a decision in finished worlds, using six seeds per arm
 
 ### Where the bar stands
 
-- **Rules twin (final, six seeds):** every band holds on every seed except
-  turnover, which missed on three. No invariant failed.
-- **Jev alone:** the same, except that cash flow fell under the band on one
-  seed. Jev gives cash flow for a payer whose cash is thin 0.02–0.03 of the
-  time and "routine" 0.88–0.94. The middle band corrected the wording but did
-  not move Jev. The lab has since found a wording that does (+0.58 on
-  held-out states, above). It waits on a world A/B in the follow-up PR.
-- **Persona (bar 4):** met in log-odds and not in probability. It reached 84%
-  and 70% of Jev's own gradients on the same decisions, because GLM's
-  average-person baseline for pressing and chatting is lower than Jev's.
-- **The production world, the before/after contrasts and the judges:** not
-  finished. The OpenRouter account behind the key ran out of credits during
-  the final trial, and every routed world halted with a 402 between day 18
-  and day 32. Production shares the account and will wait at its next live
-  call (SIM-0003). `scripts/evals.py run --resume` carries a halted world on
-  from its last committed tick.
+The final trial finished after the account was topped up. Six production
+worlds (`jev-llm-rounds`, 2f4b620's world code) and the before world on the
+confirmation seeds ran 60 days each. `scripts/bar_check.py` reads every
+condition from committed JSON into `ops/evals/bar.json`. **None of the four
+holds**, and none is lowered to pass.
+
+| # | Condition | Result |
+| --- | --- | --- |
+| 1 | Every band on every seed, rules twin and production; no invariant fails | Eight misses in 84 checks. Turnover: three rules seeds, four production seeds. Cash flow: production 0.173 on 20261301, as Jev alone had (0.168). No invariant failed on any seed |
+| 2 | Production beats before, loses clearly on nothing | Clearly better on 11 scored measures (trial) and 10 (confirmation): late share, the cafe's peak, churn, settled and stalled conversations, ontology gaps, and the signal measures. Clearly worse on `persona_signal` in both rounds (0.34 → 0.29) |
+| 3 | Both validated judges prefer after, Wilson clear of 0.5 | 120 pairs each. Luna 0.535 [0.45, 0.62] and 0.479 [0.39, 0.57]; Haiku 0.446 [0.36, 0.54] and 0.458 [0.37, 0.55]. No preference either way |
+| 4 | Persona at least as strong as Jev's own | 2,691 routed decisions: press 0.360 against Jev's 0.427 (84%), small talk 0.360 against 0.498 (72%) |
+| 5 | Every figure from committed JSON | Yes |
+
+- **Where `persona_signal` fell** (`scripts/persona_parts.py`,
+  `ops/evals/prompt-lab/persona-parts.json`). All of it is in one of the
+  detector's five pairs, promptness → paying a bill (0.52–0.62 → 0.29–0.44).
+  Among decisions Jev answered, the gap is unchanged: 0.24 → 0.56 before,
+  0.23 → 0.53 after. What changed is 852 rows of the cannot-afford gate,
+  which settles "no" whoever the payer is. The detector counts gated rows
+  as persona evidence, so they narrow its gap. That is a flaw in the
+  instrument. The scorecard was fixed before the trial, though, so the
+  verdict stands as scored. The detector should count only decisions a
+  model answered, and that change belongs with the next trial, not this one.
+- **The judges see no difference.** The before world already routed
+  conversations to GLM (DECIDE-0006). What this PR changed that a
+  conversation shows is persona (DECIDE-0008) and wording. The persona judge
+  can see persona, and it preferred the transplant (EVAL-0004). The ordinary
+  judge cannot. What this PR mostly changed, the economy's calibration and
+  the signal in the records, is not in a conversation for a judge to read.
+- **Rules twin and Jev alone** are as reported above: every band except
+  turnover, and for Jev one seed of cash flow.
