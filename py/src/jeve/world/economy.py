@@ -815,11 +815,13 @@ def careers(engine: Engine, report: TickReport) -> None:
 
     Somebody with something pushing them — wages late, a colleague they have
     fallen out with, a desk that is swamped, a firm in trouble, a bad month —
-    is asked (`career.review`), with what the world knows about them. Somebody
-    with nothing pushing them is not: asked every month, Jev put a contented
-    employee's chance of resigning at about 0.10 (three 60-day worlds), five
-    times the rate at which people actually quit. A month's base rate is a
-    hazard, not a judgement, so theirs is their industry's quit rate."""
+    is asked (`career.review`) how much likelier than an ordinary month they
+    are to go, and faces their industry's quit rate times that. Somebody with
+    nothing pushing them is not asked and faces the rate as it is. Asked for
+    the chance outright, Jev put a contented employee's resignation at about
+    0.10 a month (three 60-day worlds), five times the rate at which people
+    actually quit: a month's base rate is data, the situation's effect on it
+    a judgement."""
 
     from jeve.world.space import SWAMPED_AT  # space -> shocks -> economy
 
@@ -882,13 +884,7 @@ def careers(engine: Engine, report: TickReport) -> None:
             or int(person["mood"]) == 0
         )
         if not pushed:
-            # Keyed by the person and the month (CORE-0009).
-            rng = derive_rng(
-                engine.root_seed,
-                "career.lapse",
-                str(person["id"]),
-                report.sim_time // MONTH,
-            )
+            rng = _month_rng(engine, report, str(person["id"]))
             if rng.random() < QUITS_MONTHLY.get(org, QUITS_MONTHLY_DEFAULT):
                 point, total = rng.random() * sum(w for _, w in UNPUSHED_REASONS), 0.0
                 reason = UNPUSHED_REASONS[-1][0]
@@ -913,9 +909,21 @@ def careers(engine: Engine, report: TickReport) -> None:
     for person, ctx, made in zip(
         asked, contexts, engine.decide_many(report, contexts), strict=True
     ):
-        if made.chosen.get("notice"):
+        # The industry's rate, times how much likelier than an ordinary month
+        # Jev judges this person to go; the same draw a content person gets.
+        base = QUITS_MONTHLY.get(str(person["org_id"]), QUITS_MONTHLY_DEFAULT)
+        risk = float(made.chosen.get("relative_risk", 1.0))
+        if _month_rng(engine, report, str(person["id"])).random() < base * risk:
             reason = str(made.chosen.get("reason") or "other")
             _give_notice(engine, report, person, reason, ctx.facts, made=made)
+
+
+def _month_rng(engine: Engine, report: TickReport, person_id: str) -> Any:
+    """One draw per person per month (CORE-0009), content or pushed alike."""
+
+    return derive_rng(
+        engine.root_seed, "career.lapse", person_id, report.sim_time // MONTH
+    )
 
 
 def _give_notice(

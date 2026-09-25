@@ -53,7 +53,6 @@ ACTIONS: tuple[tuple[str, str], ...] = (
     ("vendor.trust", "trust"),
     ("time.log", "log"),
     ("invoice.dispute", "dispute"),
-    ("subscription.renew", "renew"),
     ("episode.round", "act"),
 )
 ROLE_INFORMATION = 0.05

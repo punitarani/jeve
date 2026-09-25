@@ -17,10 +17,8 @@ confirmation: "cd py && uv run pytest tests/test_loops.py tests/test_field_repor
 ## Context and Problem Statement
 
 The eval harness (EVAL-0001) found the biggest plausibility gaps in the
-rules, not the decisions. Four clients in five paid by standing instruction,
-so bills were about 0.5 days late against 7.8 in the US (Xero). The cafe
-peaked at noon, not 8–10am (Square). Nobody quit a healthy firm, and every
-client could always pay.
+rules: bills about 0.5 days late against 7.8 (Xero), a cafe peaking at noon
+not 8–10am (Square), nobody quitting a healthy firm, every client able to pay.
 
 Filling those gaps meant new monthly decisions: whether staff stay, and whether
 every subscriber renews. The first 60-day trial showed what a model does with a
@@ -32,18 +30,18 @@ no way to know how rare "this month" makes it.
 
 ## Considered Options
 
-- **Calibrate each rule to a cited source. Ask a model only when something
-  in the situation pushes. Give everyone else a hazard at the observed base
-  rate, keyed by subject and month.** Taken.
+- **Calibrate each rule to a cited source. Everyone faces the observed
+  base rate. Only people something pushes are asked, and Jev judges how much
+  likelier than an ordinary month they are, not the chance outright.** Taken.
 - **Ask everyone, reworded until Jev's answers come out rare.** Loses: the
   wording would set the rate, not the situation.
 - **Leave turnover and liquidity out.** Loses: that is the gap found.
 
 ## Decision Outcome
 
-Rates are set from cited data. A month's base rate for people with nothing
-pushing them is a rule hazard. Jev is asked only when something in the
-situation pushes.
+Rates are set from cited data. A month's base rate is a rule hazard, keyed
+by subject and month. Jev judges only how the situation moves it, for the
+people something pushes.
 
 - **Paying.** Half of clients pay by standing instruction (`AUTOPAY_ABOVE =
   0.5`; Atradius US 2025: 52% of B2B value paid on time). A client's cash
@@ -51,14 +49,21 @@ situation pushes.
   days, P25 13, P75 62: lognormal, σ 1.16), keyed by client and month. Under 5
   days, a bill cannot be paid.
 - **The cafe.** Arrivals per hour peak at 8am (Square: busiest 8–10am).
-- **Quitting.** Staff with something pushing them are asked `career.review`:
-  wages late, a colleague they have fallen out with, a swamped desk, a firm in
-  trouble, a bad month. The rest face their industry's quit rate (BLS JOLTS,
-  seasonally adjusted, March–July 2026): 4.0% a month at the cafe, 2.0% at the
-  others. Their reasons are drawn from Pew's 2022 mix.
-- **Renewing.** Only customers at risk are asked, as MEM-0003 has it. The
-  rest lapse at 1% a month (SaaS Capital 2025: ~90% of revenue kept a year on
-  small contracts).
+- **Quitting.** Everyone faces their industry's quit rate (BLS JOLTS,
+  seasonally adjusted, March–July 2026): 4.0% a month at the cafe, 2.0%
+  elsewhere. Staff something pushes (wages late, a colleague fallen out with,
+  a swamped desk, a firm in trouble, a bad month) are asked `career.review`,
+  which scores their risk against an ordinary month on four levels (×0.5, ×1,
+  ×2, ×4). The expected multiplier scales the rate, drawn with the same key a
+  content person's month uses. Reasons come from Pew's 2022 mix.
+- **Renewing.** Only customers at risk are asked, as MEM-0003 has it, and in
+  the same relative terms. The ordinary month is 1% (SaaS Capital 2025: ~90%
+  of revenue kept a year on small contracts).
+- **Relative, not absolute.** Asked the chance outright, even of pushed
+  staff and at-risk customers only, Jev gave 11–22% a month for someone whose
+  one trouble was a colleague, and ~45% for an at-risk customer. Asked the
+  relative question, it ordered risks sensibly: pushed staff 1.0×, made
+  content 0.6×; at-risk customers 2.3×, made content 1.5× (30 states each).
 - **Disputes.** "Larger than expected" means half as much again as the
   payer's last bill from that firm, or for a first bill, the firm's median.
   It had been a fixed $2,000, which two-thirds of bills crossed, and Jev
@@ -66,20 +71,15 @@ situation pushes.
 - **Friction.** A payment deferred past its date counts as friction in the
   soak, as a late rent does.
 
-This extends design/005's rule. A low-stakes propensity whose base rate is
-monthly and small goes to the rules, not to a model. The model gets the cases
-where the situation, not the calendar, carries the decision.
+This extends design/005's rule. A small monthly base rate goes to the rules.
+The model judges direction and size, which it can read off a situation.
 
 ### Consequences
 
-- Good: on the first trial's Jev worlds (3 seeds × 60 days), all three
-  seeds were in band for late share (0.354), days late (5.7) and the reason
-  mix (cash flow 0.35). The cafe peaked at 8 on every seed. The final trial's
-  numbers are in `ops/evals.md` and `docs/ops/metrics.md`.
-- Bad: two decisions most people used to face (renew, stay) are now faced
-  only by the few with a reason. The content majority's choice is a coin with
-  a cited weight, not a judgement.
-- Bad: the sources are US surveys of far larger firms: plausibility
-  envelopes, the lowest rung of validation.
+- Good: late share, days late and the cafe's peak moved into band
+  (`ops/evals.md`, `docs/ops/metrics.md`).
+- Bad: the content majority's month is a coin with a cited weight, and the
+  multipliers (×0.5–×4) are this record's choice, not a source's. The sources
+  are US surveys of far larger firms: plausibility envelopes only.
 - Reverse if: a model answers a monthly base-rate question within its band
-  without wording tuned to the band. Then ask everyone again.
+  without wording tuned to the band.

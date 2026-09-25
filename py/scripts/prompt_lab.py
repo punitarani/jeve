@@ -546,10 +546,8 @@ PERSONA: dict[str, tuple[str, str, str]] = {
     "ticket.answer": ("diligence", "answer_now", "yes"),
     "time.log": ("diligence", "log", "yes"),
     "invoice.dispute": ("patience", "dispute", "yes"),
-    "subscription.renew": ("patience", "renew", "yes"),
     "chase.invoice": ("vocality", "chase", "yes"),
     "episode.round": ("vocality", "act", "press"),
-    "career.review": ("patience", "notice", "yes"),
 }
 
 

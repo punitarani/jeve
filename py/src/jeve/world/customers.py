@@ -40,11 +40,13 @@ TRUST_START = 3
 AT_RISK_BELOW = 2
 """Trust at 0 or 1 puts a customer at risk; 2 and above renews without asking."""
 LAPSE_MONTHLY = 0.01
-"""A content customer's month: no complaint, but a business closes, a need
-goes, a cheaper tool turns up (WORLD-0014). SaaS Capital 2025: about 90% of
-revenue retained a year on small contracts, some 0.9% lost a month. Asking
-them instead left Jev at 0.56 to renew a customer who trusts the vendor
-fully: 41% of subscribers lost a month (three 60-day worlds)."""
+"""An ordinary month's chance a subscription ends: no complaint, but a business
+closes, a need goes, a cheaper tool turns up (WORLD-0014). SaaS Capital 2025:
+about 90% of revenue retained a year on small contracts, some 0.9% lost a
+month. A content customer faces it as it is; one at risk faces it times how
+much likelier than an ordinary month Jev judges them to cancel. Asked for the
+chance outright, Jev renewed a customer who trusted the vendor fully at 0.56:
+41% of subscribers lost a month (three 60-day worlds)."""
 
 RETENTION_DISCOUNT = 0.25
 RETAIN_ABOVE_CENTS = 500_00
@@ -218,16 +220,9 @@ def renewals(engine: Engine, report: TickReport) -> dict[int, float]:
         if trust(engine, holder) < AT_RISK_BELOW or heard_bad_news(engine, holder):
             at_risk.append((sub, holder))
             continue
-        # Content customers are not asked, and not immortal either: a month's
-        # small chance of going for reasons of their own, keyed by the
-        # subscription and the month (CORE-0009).
-        rng = derive_rng(
-            engine.root_seed,
-            "subscription.lapse",
-            int(sub["id"]),
-            report.sim_time // economy.MONTH,
-        )
-        if rng.random() < LAPSE_MONTHLY:
+        # Content customers are not asked, and not immortal either: an
+        # ordinary month's chance of going for reasons of their own.
+        if _month_draw(engine, report, sub) < LAPSE_MONTHLY:
             cancel(engine, report, sub, holder, None)
     if not at_risk:
         return discounts
@@ -303,11 +298,25 @@ def renewals(engine: Engine, report: TickReport) -> dict[int, float]:
     for (sub, holder), made in zip(
         at_risk, engine.decide_many(report, contexts), strict=True
     ):
-        if made.chosen.get("renew"):
+        risk = float(made.chosen.get("relative_risk", 1.0))
+        if _month_draw(engine, report, sub) >= LAPSE_MONTHLY * risk:
             continue
         cancel(engine, report, sub, holder, made)
         discounts.pop(int(sub["id"]), None)
     return discounts
+
+
+def _month_draw(engine: Engine, report: TickReport, sub: dict[str, Any]) -> float:
+    """One draw per subscription per month (CORE-0009), the same whether its
+    holder is content or at risk: only the line it is held against moves."""
+
+    rng = derive_rng(
+        engine.root_seed,
+        "subscription.lapse",
+        int(sub["id"]),
+        report.sim_time // economy.MONTH,
+    )
+    return rng.random()
 
 
 TRUST_RECOVERS_AFTER = 28 * DAY

@@ -749,7 +749,7 @@ This decision is immutable. To change it, write a new record and set `superseded
 **Scope**: `py/src/jeve/world/engine.py`, `py/src/jeve/world/economy.py`, `py/src/jeve/world/customers.py`, `py/src/jeve/decide/policy.py`, `py/src/jeve/evals/priors.py`, `py/tests/test_loops.py`  
 **Tags**: calibration, economy, hazards, typed-decisions, evals, agent-decided
 
-Rates are set from cited data. A month's base rate for people with nothing pushing them is a rule hazard. Jev is asked only when something in the situation pushes.
+Rates are set from cited data. A month's base rate is a rule hazard, keyed by subject and month. Jev judges only how the situation moves it, for the people something pushes.
 
 This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
 

@@ -520,25 +520,23 @@ class RulesPolicy:
     def _career_review(
         self, ctx: DecisionContext, rng: object
     ) -> tuple[dict[str, object], dict[str, float]]:
-        """A month's quit chance for somebody something is pushing (only they
-        are asked; the content face their industry's quit rate, WORLD-0014):
-        the base rate and more for someone unhappy, unpaid, fallen out with a
-        colleague, swamped or in a firm in trouble; a friend at work keeps
-        people. The reason is whatever pushed hardest."""
+        """How much likelier than an ordinary month this person is to resign,
+        for somebody something is pushing (only they are asked; WORLD-0014):
+        unhappy, unpaid, fallen out with a colleague, swamped or in a firm in
+        trouble each add to it, and a friend at work takes a little off. The
+        world multiplies it into the industry's quit rate. The reason is
+        whatever pushed hardest."""
 
-        draw, why = _uniform(rng), _uniform(rng)
+        why = _uniform(rng)
         mood = _num(ctx.facts.get("mood"), 2.0)
-        chance = 0.02
-        chance += 0.04 if mood <= 0 else 0.015 if mood <= 1 else 0.0
-        chance += 0.05 if ctx.facts.get("pay_late") else 0.0
-        chance += 0.03 if ctx.facts.get("fallen_out_at_work") else 0.0
-        chance += 0.02 if ctx.facts.get("swamped") else 0.0
-        chance += 0.03 if ctx.facts.get("firm_struggling") else 0.0
-        chance -= 0.01 if _num(ctx.facts.get("friends_at_work"), 0.0) >= 1 else 0.0
-        notice = draw < max(0.005, min(0.3, chance))
-        if not notice:
-            reason = "stays"
-        elif ctx.facts.get("pay_late"):
+        risk = 1.0
+        risk += 1.0 if mood <= 0 else 0.3 if mood <= 1 else 0.0
+        risk += 1.0 if ctx.facts.get("pay_late") else 0.0
+        risk += 0.5 if ctx.facts.get("fallen_out_at_work") else 0.0
+        risk += 0.5 if ctx.facts.get("swamped") else 0.0
+        risk += 0.5 if ctx.facts.get("firm_struggling") else 0.0
+        risk -= 0.3 if _num(ctx.facts.get("friends_at_work"), 0.0) >= 1 else 0.0
+        if ctx.facts.get("pay_late"):
             reason = "pay"
         elif ctx.facts.get("fallen_out_at_work"):
             reason = "people"
@@ -548,7 +546,10 @@ class RulesPolicy:
             reason = "security"
         else:
             reason = "better_offer" if why < 0.5 else "advancement"
-        return {"notice": notice, "reason": reason}, {"notice": draw, "why": why}
+        return (
+            {"relative_risk": max(0.5, min(4.0, risk)), "reason": reason},
+            {"why": why},
+        )
 
     def _founder_review(
         self, ctx: DecisionContext, rng: object
@@ -633,17 +634,21 @@ class RulesPolicy:
     def _subscription_renew(
         self, ctx: DecisionContext, rng: object
     ) -> tuple[dict[str, object], dict[str, float]]:
+        """How much likelier than an ordinary month a customer at risk is to
+        cancel: lost trust and bad news raise it, a price rise a little, a
+        discount offered and a business that runs on the software lower it.
+        The world multiplies it into the ordinary month's churn."""
+
         trust = max(0.0, min(2.0, _num(ctx.facts.get("trust"), 3.0)))
-        leave = (
-            0.02
-            + 0.08 * (2.0 - trust)
-            + (0.1 if ctx.facts.get("heard_bad_news") else 0.0)
-            + (0.05 if ctx.facts.get("price_rise") else 0.0)
-            - (0.1 if ctx.facts.get("offered_discount") else 0.0)
-            - (0.08 if ctx.facts.get("relies_on_it") else 0.0)
+        risk = (
+            1.0
+            + 1.0 * (2.0 - trust)
+            + (1.0 if ctx.facts.get("heard_bad_news") else 0.0)
+            + (0.5 if ctx.facts.get("price_rise") else 0.0)
+            - (0.5 if ctx.facts.get("offered_discount") else 0.0)
+            - (0.5 if ctx.facts.get("relies_on_it") else 0.0)
         )
-        draw = _uniform(rng)
-        return {"renew": draw >= max(0.0, leave)}, {"renew": draw}
+        return {"relative_risk": max(0.5, min(4.0, risk))}, {}
 
     def _retention_offer(
         self, ctx: DecisionContext, rng: object

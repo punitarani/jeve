@@ -539,18 +539,18 @@ def test_the_uniform_sample_asks_about_confident_answers_too(
 def test_a_propensity_escalated_live_samples_the_mixture(
     conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    flash = _Flash({FIRST: {"renew": {"yes": 0.9, "no": 0.1}}})
+    flash = _Flash({FIRST: {"dispute": {"yes": 0.9, "no": 0.1}}})
     policy = _policy(
         monkeypatch,
         mode="live",
-        live=frozenset({"subscription.renew"}),
+        live=frozenset({"invoice.dispute"}),
         flash=flash,
     )
-    ctx = _ctx("subscription.renew")
-    _teach_jev(conn, policy, ctx, renew={"type": "noul", "noul": 0.5})
+    ctx = _ctx("invoice.dispute")
+    _teach_jev(conn, policy, ctx, dispute={"type": "noul", "noul": 0.5})
     made = policy.decide(ctx)
     assert made.source == "llm"
-    assert made.distributions["renew"]["yes"] == pytest.approx(0.7)
+    assert made.distributions["dispute"]["yes"] == pytest.approx(0.7)
 
 
 def test_a_routed_set_is_answered_whole_by_tier_1(
@@ -560,21 +560,21 @@ def test_a_routed_set_is_answered_whole_by_tier_1(
     not the mixture a live escalation uses — on a confident Jev answer, in a
     low-stakes set, with tier 1 otherwise off, and with no room left today."""
 
-    flash = _Flash({FIRST: {"renew": {"yes": 0.9, "no": 0.1}}})
-    route = frozenset({"subscription.renew"})
+    flash = _Flash({FIRST: {"dispute": {"yes": 0.9, "no": 0.1}}})
+    route = frozenset({"invoice.dispute"})
     policy = _policy(monkeypatch, mode="off", route=route, flash=flash)
     monkeypatch.setattr(
         escalation, "room", lambda conn, now: escalation.Room(any=0, acting=0)
     )
-    ctx = _ctx("subscription.renew")
-    _teach_jev(conn, policy, ctx, renew={"type": "noul", "noul": 0.02})
+    ctx = _ctx("invoice.dispute")
+    _teach_jev(conn, policy, ctx, dispute={"type": "noul", "noul": 0.02})
     made = policy.decide(ctx)
     assert made.source == "llm"
-    assert made.distributions["renew"]["yes"] == pytest.approx(0.9)
+    assert made.distributions["dispute"]["yes"] == pytest.approx(0.9)
     second = made.escalation
     assert second is not None and second.mode == "live"
     assert second.triggers == [escalation.ROUTED.row()]
-    assert second.jev["renew"]["yes"] == pytest.approx(0.02)
+    assert second.jev["dispute"]["yes"] == pytest.approx(0.02)
     assert flash.asked == [(FIRST, "gate")]
 
     replayed = _policy(monkeypatch, mode="off", route=route, calls="replay")

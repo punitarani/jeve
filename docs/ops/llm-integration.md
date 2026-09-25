@@ -23,7 +23,7 @@ digest, and cost per sim-day. `make evals ARMS=… SEEDS=…` reruns any of it.
 ## The instruments, checked before use
 
 | check | result |
-|---|---|
+| --- | --- |
 | judge on planted defects (wrong actor, loop, phantom effect, closed hours), 40 pairs, both orders | 0.98; 10/10 on closed hours, loops and phantom effects, 9.25/10 on a wrong actor |
 | judge on identical pairs (position bias) | 0.50, all ties |
 | judge test–retest under another sampling seed, 50 pairs | 50/50 the same two verdicts |
@@ -147,7 +147,7 @@ the held-out runs. Each run's own ledger refused anything past what was left
 counts other users of the key and so over-counts.
 
 | phase | $ (own ledgers) |
-|---|---:|
+| --- | ---: |
 | golden cassette re-record before any change (`LIVE=1 make e2e`) | 0.033 |
 | judge validation and retest | 0.089 |
 | dev arms: jev 0.054, tier-1 0.030, rounds 0.332, done 0.139, personas 0.059 | 0.614 |
@@ -158,3 +158,125 @@ counts other users of the key and so over-counts.
 
 The key meter read $2.32 at the end: the difference is other traffic on the
 shared key. $7.68 of the $10 was left unspent.
+
+## Second session: signal, calibration, a prompt laboratory, a 60-day trial
+
+The brief changed overnight: quality over cost; fix the model errors; make
+decisions, events and interactions carry more data and signal, calibrated to
+data; run a two-month trial; account for every eval and metric
+(`docs/ops/metrics.md` is that catalogue). Then: treat LLM use as an
+experiment, DSPy-style, and keep only what the evidence supports.
+
+### Model errors
+
+GLM 5.3 Flash's tier-1 replies were unreadable 17% of the time: one provider
+(Together) wrote its reasoning into the content, and 1,600 tokens cut it off
+before any JSON. Routed around it per request (LLM-0003), given 4,000 tokens,
+and read for the last JSON object in a reply, GLM answered 508 of 509 routed
+decisions in a 60-day world, and 677 of 678 in the interim trial (78% before).
+No run logged a model error, retry or wait.
+
+### More signal (WORLD-0013, MEM-0004)
+
+- Every decision keeps the facts it was asked on (`decisions.facts`, about
+  eight fields).
+- A bill left late keeps a typed reason, and how often it was chased and
+  raised in person. Payment, chase, encounter, cancellation and resignation
+  events carry amounts, lateness, pressure, the tie between the two people,
+  and a reason.
+- People who meet have a tie (met, warmth). Encounters, episodes and kept or
+  broken promises move it. It shapes whom somebody approaches within a firm,
+  how a room and a conversation read, and whether staff have friends at work.
+  The first version warmed a tie on every pleasant chat and cooled one only in
+  a bad mood, which was rare: over half the pairs who met became friends, and
+  0–3 ties per world ever soured. Now a chat moves a tie a quarter of the time
+  either way, and a falling-out is an event (`relationship.soured`), counted
+  as friction.
+
+### Calibration, and a monthly base rate is a hazard (WORLD-0014)
+
+The interim trial (3 seeds × 60 days, on the signal work as first written)
+showed calibration working. Jev's late share went from 0.14 to 0.35, days
+late from 4.5 to 5.7, and the cafe's peak from noon to 8am, in band on every
+seed. It also caught asking everyone monthly. Jev renewed a customer who fully
+trusted the vendor at P = 0.56, and let a content, paid employee resign at
+about P = 0.10: 41% of subscribers and 8.7% of staff were lost a month. A
+small monthly base rate is now a rule hazard, keyed by subject and month:
+
+- staff quit at their industry's JOLTS rate (4.0% cafe, 2.0% otherwise);
+- subscriptions lapse at 1% (SaaS Capital);
+- only people something pushes are asked.
+
+Other fixes from the same trial:
+
+- **Disputes.** "Larger than expected" is relative to the payer's last bill
+  from the firm. A fixed $2,000 had put two thirds of bills over it, and Jev
+  queried most of those.
+- **Lapses.** A lapse is quiet. It is not news that the vendor is in trouble.
+
+### The prompt laboratory (`py/scripts/prompt_lab.py`)
+
+Every model call in jeve is a typed question about a state, so a wording can
+be scored without a label, on real states from finished worlds (decisions keep
+their facts):
+
+- **fit:** the mass on "something else";
+- **persona:** the same state with a trait set low, then high;
+- **situation:** the same state with one fact moved;
+- **stability:** an irrelevant field added;
+- **validity:** replies that parse.
+
+The search is DSPy's propose → evaluate → select. Candidates come by hand and
+from a proposer model (Claude Opus 5.5) shown the scores so far. It runs on
+jeve's own gateway, since DSPy's calls would bypass `jeve.llm`, and selects on
+a dev split. The winner then faces a held-out split, a world-level A/B, and
+the blind judges (EVAL-0001). Outputs are in `ops/evals/prompt-lab/`.
+
+| Experiment | Result | Kept? |
+| --- | --- | --- |
+| **Audit of Jev on all 29 sets** (`audit`) | Stable: an irrelevant field moved answers by 0.005–0.05 (TV). Persona directions right (diligence → answer now +0.50, patience → dispute −0.22). Payment and career reasons fit after rewording (other 0.03, 0.003). Firm-level judgements showed order bias: reversing options moved them by 0.09–0.14 TV. | finding |
+| **Judgements over every rotation** (`orders`, DECIDE-0007) | Reversal flipped 11–22% of firm-level verdicts. With every cyclic rotation averaged in one request, a verdict under an order never seen disagreed in 3.7% of 350 states, against 6.9% for a single order: supplier 18% → 2%, engineering allocation 12% → 2%, dispute resolution 7% → 0%. Founder review and credit did not improve (near-ties). | kept |
+| **Typed reason lists** | Why a bill is left: other 0.60 → 0.02 with "not due" and "routine" (17 → 0 of 24 states reaching for it). Why someone resigns: 0.24 → 0.07 with Pew's reasons, asked as a supposition. | kept |
+| **Tier-1 system prompt search** (`tier1`) | Best of 12 candidates, on held-out states: press by outspokenness +0.10 → +0.15, small talk by sociability +0.12 → +0.32, done by length −0.04 → +0.08. In the world (6 seeds × 14 days): persona gradients rose (press +0.18 → +0.25, small talk +0.19 → +0.39), but episodes settled less (0.88 → 0.71), stalled more (0.015 → 0.077) and cost 22% more. Judges preferred it 0.40 (Luna) and 0.44 (Haiku). | **rejected**: the prompt named the regularities the objective measured (Goodhart), and the independent measures disagreed |
+| **Prompt ablation** | The contrastive device alone ("picture this person's opposite") gave half the gain without naming targets (objective 0.22 → 0.38). Untargeted effects (upset → less small talk, a friend → more) did not move beyond run-to-run noise (±0.04). | finding |
+| **Role words over a bill** | The creditor was told "their work is held up": the outage's words. Now it is owed the money and the payer's firm owes it. Stake acts rose: a creditor pressing 0.18 → 0.23 (tier 1), a payer promising 0.20 → 0.24 (Jev). Neither model presses harder for a bill weeks late than days late. | kept (correctness); lateness is a blind spot |
+| **Tier-1 model choice** (`models`, held-out states) | Objective: GLM 0.26, Gemini 3.8 Flash 0.59, DeepSeek V4 Flash 0.55 (P(done) 0.37, 21 s/call), GPT-5.6 Luna 0.53 (4.9 s/call), Qwen 3.8 Flash −0.16 (24 failures, 53 s/call). | finding |
+| **Model A/B in the world** (6 seeds × 14 days vs GLM) | **Luna:** press +0.16 → +0.28, small talk +0.16 → +0.29 in the world's own routed decisions. Settled unchanged (0.81), stalls not clearly different, +0.17 rounds, cost +30%. Judge (Haiku) 0.46. **Gemini:** small talk +0.45, stalls → 0, cost ×9. Judges 0.40 (Haiku) and 0.44 (Luna). | not adopted: no judge preference (EVAL-0001); Luna is the leading candidate |
+
+What the laboratory learned:
+
+1. **A proxy objective is Goodharted even when it holds out-of-sample.** The
+   tuned prompt beat the incumbent on held-out states and in the world on
+   exactly what it was tuned for, and lost on what it was not: closure, cost,
+   and the judges. Only the independent instruments caught it.
+2. **Persona flattening is a property of the model more than of the prompt.**
+   Luna and Gemini keep persona under the incumbent prompt, and GLM does not.
+   A model changes behaviour without telling the model what to do.
+3. **The pairwise judge cannot see persona, and seems to reward brevity.**
+   Every challenger that lengthened conversations (by 0.17–0.43 rounds) was
+   mildly dispreferred. The one that shortened them overnight was preferred
+   36/48. Persona is a between-person property: a judge comparing two single
+   episodes never sees a quiet person beside a loud one in the same moment.
+   The instrument that would decide Luna is a persona-aware judge: two
+   episodes with the same situation and contrasting people, asked which cast
+   is more distinct and believable.
+4. **Judgements have position bias; propensities absorb it.** Rotations
+   remove most of it at one call per decision.
+5. **Lateness does not reach conversation acts.** For Jev and tier 1 alike,
+   a bill weeks overdue is pressed no harder than one days overdue. Lateness
+   works through `payment.timing` and chasing instead.
+
+### Reproducibility
+
+The local Docker Postgres (OrbStack) slept with the lid closed. A native
+Postgres 18 cluster in C collation, as CI's alpine image, ran everything
+after that:
+
+- The rules twin at e9a8c2b gave **identical** event-log digests on both
+  clusters, on all three seeds.
+- Worlds with model calls diverged only where a call was not in a cassette
+  and was re-asked live (2–3k of ~23k per 60-day world).
+- The ties table's pair check compared under the database's collation. On an
+  `en_US` macOS cluster it rejected a pair Python ordered the other way. It is
+  `COLLATE "C"` now, which production (glibc `en_US`) needs as much as CI
+  (musl).

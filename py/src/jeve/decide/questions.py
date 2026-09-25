@@ -1798,15 +1798,40 @@ job in 2021: low pay, no advancement, feeling disrespected, inflexible hours,
 too many hours, relocating), and two this street adds: wages paid late, and a
 firm in trouble. With five of them, Jev put 0.24 on "other" (24 states, 9 of
 them reaching for it); with these, asked as a supposition, 0.07 and none."""
-_NOTICE = Ask(
-    "notice",
-    "P",
-    Noul(
-        instructions="Does this person hand in their notice this month?",
-        criteria=_yes_no(
-            "They resign and work out their notice.",
-            "They stay in their job this month.",
-        ),
+RISK_LEVELS: tuple[str, ...] = (
+    "Much less likely than in an ordinary month.",
+    "About as likely as in an ordinary month.",
+    "Somewhat more likely than in an ordinary month.",
+    "Much more likely than in an ordinary month.",
+)
+RISK_MULTIPLIERS: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0)
+"""A month's base rate is data; what the situation does to it is Jev's
+judgement (WORLD-0014). Asked for an absolute monthly chance, Jev put a
+contented employee's resignation at about 0.10 and an at-risk customer's
+cancellation near 0.5: five to ten times what people do. Asked how the
+situation compares with an ordinary month, it ordered them sensibly — pushed
+staff 1.0x, the same people made content 0.6x; at-risk customers 2.3x,
+made content 1.5x (30 real states each) — and the world multiplies that
+into the cited rate."""
+
+
+def relative_risk(resolved: Resolved) -> float:
+    """The expected multiplier over Jev's distribution across the levels:
+    all of the judgement, not only its mode."""
+
+    return sum(
+        resolved.distribution.get(str(level), 0.0) * multiplier
+        for level, multiplier in enumerate(RISK_MULTIPLIERS)
+    )
+
+
+_QUIT_RISK = Ask(
+    "risk",
+    "J",
+    Score(
+        instructions="Compared with an ordinary month for someone in their job, "
+        "how likely is this person to hand in their notice this month?",
+        criteria=list(RISK_LEVELS),
     ),
 )
 _QUIT_WHY = Ask(
@@ -1839,7 +1864,7 @@ def _prepare_career(ctx: DecisionContext) -> Prepared:
     org = str(ctx.facts.get("org", ""))
     return Prepared(
         ctx.kind,
-        asks=(_NOTICE, _QUIT_WHY),
+        asks=(_QUIT_RISK, _QUIT_WHY),
         state={
             "person": person_words(ctx.role, org),
             "feeling": feeling_words(ctx.facts.get("mood")),
@@ -1872,9 +1897,12 @@ def _prepare_career(ctx: DecisionContext) -> Prepared:
 def _interpret_career(
     ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
 ) -> Outcome:
-    notice = bool(got["notice"].value)
     return Outcome(
-        {"notice": notice, "reason": str(got["why"].value) if notice else "stays"}, {}
+        {
+            "relative_risk": round(relative_risk(got["risk"]), 4),
+            "reason": str(got["why"].value),
+        },
+        {},
     )
 
 
@@ -2156,17 +2184,13 @@ def _interpret_trust(
     return Outcome({"trust": int(str(got["trust"].value))}, {})
 
 
-_RENEW = Ask(
-    "renew",
-    "P",
-    Noul(
-        instructions=(
-            "Does this customer keep paying for the software for another month?"
-        ),
-        criteria=_yes_no(
-            "They keep their subscription.",
-            "They cancel it and move to another product.",
-        ),
+_CANCEL_RISK = Ask(
+    "risk",
+    "J",
+    Score(
+        instructions="Compared with an ordinary month for a customer like this, "
+        "how likely are they to cancel their subscription this month?",
+        criteria=list(RISK_LEVELS),
     ),
 )
 
@@ -2188,13 +2212,13 @@ def _prepare_renew(ctx: DecisionContext) -> Prepared:
         state["price"] = "The software company has put its prices up."
     if ctx.facts.get("offered_discount"):
         state["offer"] = "The account manager has offered them a month at a discount."
-    return Prepared(ctx.kind, asks=(_RENEW,), state=state)
+    return Prepared(ctx.kind, asks=(_CANCEL_RISK,), state=state)
 
 
 def _interpret_renew(
     ctx: DecisionContext, got: dict[str, Resolved], draw: Draw
 ) -> Outcome:
-    return Outcome({"renew": bool(got["renew"].value)}, {})
+    return Outcome({"relative_risk": round(relative_risk(got["risk"]), 4)}, {})
 
 
 _RETAIN = Ask(
