@@ -265,6 +265,32 @@ def test_a_desk_filled_is_not_filled_again(conn: Connection[DictRow]) -> None:
     conn.rollback()
 
 
+def test_support_hears_of_an_outage_in_person_as_well_as_by_ticket(
+    conn: Connection[DictRow],
+) -> None:
+    """A 30-minute outage raised with an engineer in the cafe, and nobody
+    filing a ticket, read as support hearing from nobody (the 60-day trial
+    at f7af7c3, seed 20261203)."""
+
+    from jeve.sim import soak
+
+    engine, report = fresh(conn)
+    name = "tickets end, and support is still hearing from people"
+
+    def holds() -> bool:
+        return next(c for c in soak.checks(conn, days=4) if c.name == name).ok
+
+    conn.execute(
+        "INSERT INTO incidents (module_id, started_sim) VALUES ('timetrack', %s)",
+        (report.sim_time,),
+    )
+    assert not holds()
+    engine.emit(report, "ticket.escalated", actor_id="thirdrail.owner.18",
+                payload={"module_id": "timetrack"})  # fmt: skip
+    assert holds()
+    conn.rollback()
+
+
 # -- households ---------------------------------------------------------------------
 
 

@@ -81,6 +81,59 @@ SIGNAL = (
     "late_bill_reminded_share",
     "late_bill_chases_mean",
 )
+BETTER: dict[str, int] = {
+    "episode_settled_share": 1,
+    "episode_stalled_share": -1,
+    "ontology_gaps": -1,
+    "persona_signal": 1,
+    "identifiability_ratio": 1,
+    "late_bill_reason_share": 1,
+    "decision_facts_share": 1,
+    "decision_facts_fields_mean": 1,
+    "event_payload_fields_mean": 1,
+    "event_caused_share": 1,
+    "invariants_failed": -1,
+    "detectors_firing": -1,
+}
+"""Which way is better, written down before the final trial was run
+(2026-09-25): +1 higher, -1 lower. A measure with a cited band is scored by
+its distance from the band instead. Everything else is reported and not
+scored, because more of it is not plainly better: more entropy is not a more
+real town, and nor is more drift or a longer causal chain."""
+
+
+def band_distance(measure: str, value: float | None) -> float | None:
+    """How far outside its band a measure is, in band widths: 0 inside."""
+
+    prior = BY_MEASURE.get(measure)
+    if prior is None or value is None:
+        return None
+    width = prior.high - prior.low
+    outside = max(prior.low - value, value - prior.high, 0.0)
+    return outside / width if width else outside
+
+
+def verdict(
+    measure: str, before: Sequence[float | None], after: Sequence[float | None]
+) -> str:
+    """`better`, `worse` or `` for a paired contrast, by the scorecard."""
+
+    if measure in BY_MEASURE:
+        p = paired(
+            [band_distance(measure, v) for v in before],
+            [band_distance(measure, v) for v in after],
+        )
+        sign = -1
+    elif measure in BETTER:
+        p = paired(before, after)
+        sign = BETTER[measure]
+    else:
+        return ""
+    if not p.clear or p.delta is None:
+        return ""
+    return "better" if p.delta * sign > 0 else "worse"
+
+
 TRIAL_CONTRASTS: tuple[tuple[str, str, str], ...] = (
     ("before-rules", "rules", "The rules twin, before the signal work and after."),
     (
@@ -242,6 +295,7 @@ def _trial_contrasts(
             continue
         rows: list[str] = []
         clear = 0
+        score: dict[str, list[str]] = {"better": [], "worse": []}
         for measure in measures:
             a = [_value(worlds.get((before, s)), measure) for s in seeds]
             b = [_value(worlds.get((after, s)), measure) for s in seeds]
@@ -250,16 +304,25 @@ def _trial_contrasts(
                 continue
             clear += p.clear
             mark = " **clear**" if p.clear else ""
-            rows.append(f"| `{measure}` | {p.text(_digits(measure))}{mark} | {p.n} |")
+            said = verdict(measure, a, b)
+            if said:
+                score[said].append(f"`{measure}`")
+            rows.append(
+                f"| `{measure}` | {p.text(_digits(measure))}{mark} | {said} | {p.n} |"
+            )
         lines += [
             f"#### `{after}` against `{before}`",
             "",
             f"{note} Paired by seed: Δ = {after} - {before}, bootstrap 95% "
             f"interval, d_z. {clear} of {len(rows)} measures have an interval "
-            "that excludes zero.",
+            "that excludes zero. Scored by the scorecard fixed before the "
+            "trial (`report.BETTER`; a banded measure by its distance from the "
+            f"band): clearly better on {len(score['better'])} "
+            f"({', '.join(score['better']) or 'none'}), clearly worse on "
+            f"{len(score['worse'])} ({', '.join(score['worse']) or 'none'}).",
             "",
-            "| measure | Δ [95% CI], d_z | seeds |",
-            "|---|---|---:|",
+            "| measure | Δ [95% CI], d_z | scored | seeds |",
+            "|---|---|---|---:|",
             *rows,
             "",
         ]

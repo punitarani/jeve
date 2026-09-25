@@ -175,10 +175,15 @@ class RulesPolicy:
         # Asked once a day per bill (WORLD-0005), so this is the chance of
         # paying *today*. Few pay ahead of the date; past it, pressure rises
         # with lateness and with being chased, and falls with a short runway.
+        # Set on six dev seeds (20261240-45, 60 days) against the cited bands:
+        # late share 0.40-0.51 (Atradius 0.43), days late 5.3-6.6 (Xero 7.8),
+        # cash flow 0.30-0.43 of late bills (Atradius 0.35 of mentions). At
+        # `promptness + 0.12/day` most paid on the date or the day after, and
+        # late share fell under the band on one trial seed in three.
         if days_until_due > 0:
             pressure = 0.25 * promptness
         else:
-            pressure = promptness + 0.12 * -days_until_due
+            pressure = 0.35 * promptness + 0.06 * -days_until_due
         if ctx.facts.get("promised"):
             # They said they would. Both policies have to agree about that or
             # the rules twin stops being a control arm for episodes.
@@ -191,15 +196,16 @@ class RulesPolicy:
             pressure -= 0.1
         draw, why = _uniform(rng), _uniform(rng)
         pay = draw < max(0.05, min(0.98, pressure))
-        # Why not, when not: before the date, it is not due; cash first when
-        # cash is short (liquidity is the most cited reason in the trade
-        # surveys), a query while disputed; otherwise the payment process (a
-        # batch, a sign-off — the next most cited), other bills, oversight.
+        # Why not, when not: before the date, it is not due; cash, mostly, when
+        # cash is short and now and then when it is only thin (liquidity is the
+        # most cited reason in the trade surveys), a query while disputed;
+        # otherwise the payment process (a batch, a sign-off — the next most
+        # cited), other bills, oversight.
         if pay:
             reason = "due"
         elif days_until_due > 0:
             reason = "not_due"
-        elif runway_days < 14 or (runway_days < 30 and why < 0.35):
+        elif (runway_days < 14 and why < 0.75) or (runway_days < 30 and why < 0.15):
             reason = "cash_flow"
         elif ctx.facts.get("disputed"):
             reason = "query"

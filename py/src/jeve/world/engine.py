@@ -157,6 +157,10 @@ FRICTION: tuple[str, ...] = (
     "escalation.dropped",
     "firm.failed",
     "invoice.disputed",
+    # A creditor pressing a late payer (WORLD-0005), weekly (WORLD-0013). Left
+    # out, a week in which sixteen late bills were chased read as a week with
+    # no friction in it, because no bill happened to fall due that week.
+    "invoice.chased",
     "invoice.written_off",
     # A bill left unpaid past its date, once per bill (WORLD-0005): the same
     # failure as `rent.late` and `supplier.unpaid`, owed to another firm or a
