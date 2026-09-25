@@ -46,7 +46,7 @@ from jeve.llm import (
     RawDecision,
 )
 from jeve.llm.gateway import parse_decision
-from jeve.llm.protocol import Answer, Usage
+from jeve.llm.protocol import Answer, Choice, ChoiceAnswer, Noul, Score, Usage
 
 CALL_TIMEOUT_S = 180.0
 FAILED = ":failed"
@@ -297,7 +297,7 @@ class JevPolicy:
         return DecisionRequest(
             model=self._model,
             state=item.state,
-            questions={ask.key: ask.question for ask in item.asks},
+            questions=rotated_questions(item.asks),
         )
 
     def _fill(
@@ -367,9 +367,13 @@ class JevPolicy:
 
     @staticmethod
     def _answers(item: Prepared, call: StoredCall) -> dict[str, Answer]:
+        return collapse_rotations(item.asks, JevPolicy._raw_answers(item, call))
+
+    @staticmethod
+    def _raw_answers(item: Prepared, call: StoredCall) -> dict[str, Answer]:
         return parse_decision(
             call.response,
-            expected={ask.key for ask in item.asks},
+            expected=set(rotated_questions(item.asks)),
             fallback_model=call.model,
             usage=Usage(
                 input_tokens=call.input_tokens,
@@ -722,6 +726,86 @@ class _Opinion:
     applied: bool
     record: Escalated
     routed: bool = False
+
+
+# -- judgements over every order (DECIDE-0007) -----------------------------------
+
+ROTATED = "__r"
+"""A judgement's copy in another order of its options: `allocation__r2`."""
+
+
+def _rotatable(ask: Ask) -> list[str]:
+    """The options a judgement over a choice is asked in every cyclic order of:
+    all but `other`, which stays last (it is the ontology gap, DECIDE-0001).
+    Empty for anything else: a propensity is sampled, and its position bias is
+    part of the distribution Jev gives, not a flipped verdict."""
+
+    if ask.mode != "J" or not isinstance(ask.question, Choice):
+        return []
+    return [o for o in ask.options if o != "other"]
+
+
+def rotated_questions(asks: Sequence[Ask]) -> dict[str, Noul | Choice | Score]:
+    """The questions as Jev is asked them: each once as declared, and each
+    judgement over a choice once more for every other cyclic order of its
+    options, under a suffixed key, in the same request.
+
+    Reversing a firm-level judgement's options flipped Jev's verdict in 11-22%
+    of real states (credit, engineering allocation, founder review). Averaged
+    over every rotation — each option in each position once — a verdict held
+    under an order it never saw in 97% of 335 states, against 93% for one
+    order; bundled in one call, as here, as well as in separate calls
+    (`ops/prompt-lab/`)."""
+
+    questions: dict[str, Noul | Choice | Score] = {}
+    for ask in asks:
+        questions[ask.key] = ask.question
+        body = _rotatable(ask)
+        if len(body) < 2:
+            continue
+        assert isinstance(ask.question, Choice)
+        criteria = dict(ask.question.criteria)
+        tail = {"other": criteria["other"]} if "other" in criteria else {}
+        for turn in range(1, len(body)):
+            order = body[turn:] + body[:turn]
+            questions[f"{ask.key}{ROTATED}{turn}"] = Choice(
+                instructions=ask.question.instructions,
+                criteria={**{o: criteria[o] for o in order}, **tail},
+            )
+    return questions
+
+
+def collapse_rotations(
+    asks: Sequence[Ask], answers: dict[str, Answer]
+) -> dict[str, Answer]:
+    """Each judgement's copies averaged back into one answer under its own
+    key; everything else as Jev gave it."""
+
+    out: dict[str, Answer] = {}
+    for ask in asks:
+        body = _rotatable(ask)
+        copies = [answers[ask.key]] + [
+            answers[f"{ask.key}{ROTATED}{turn}"]
+            for turn in range(1, len(body))
+            if f"{ask.key}{ROTATED}{turn}" in answers
+        ]
+        if len(copies) < 2 or not all(isinstance(c, ChoiceAnswer) for c in copies):
+            out[ask.key] = answers[ask.key]
+            continue
+        mean = {
+            option: sum(
+                c.distribution().get(option, 0.0)
+                for c in copies
+                if isinstance(c, ChoiceAnswer)
+            )
+            / len(copies)
+            for option in ask.options
+        }
+        out[ask.key] = ChoiceAnswer(
+            choice=max(ask.options, key=lambda option: mean[option]),
+            probabilities=mean,
+        )
+    return out
 
 
 def _parsed(call: StoredCall, asks: Sequence[Ask]) -> dict[str, Answer] | None:

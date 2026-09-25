@@ -22,7 +22,7 @@ from psycopg.rows import DictRow
 from jeve import db
 from jeve.core.clock import DAY, at
 from jeve.decide import escalation, jev_policy
-from jeve.decide.jev_policy import JevPolicy
+from jeve.decide.jev_policy import ROTATED, JevPolicy
 from jeve.decide.policy import (
     Decision,
     DecisionContext,
@@ -241,6 +241,13 @@ def _teach_jev(
     """What Jev said about this situation, stored where a replay reads it."""
 
     request = policy._request(policy._prepare(ctx))
+    # Jev answers every question it is sent, a judgement's copies in other
+    # orders (DECIDE-0007) included, and the same way whatever the order.
+    answers = {
+        question: answers[question.split(ROTATED)[0]]
+        for question in request.questions
+        if question.split(ROTATED)[0] in answers
+    }
     key = call_key(DECISION_PIN, request.wire_bytes())
     conn.execute("DELETE FROM model_calls WHERE hash = %s", (key,))
     insert_call(

@@ -44,6 +44,7 @@ from pydantic import TypeAdapter
 from jeve import db
 from jeve.config import find_repo_root, load_settings
 from jeve.decide import escalation
+from jeve.decide.jev_policy import ROTATED, collapse_rotations
 from jeve.decide.questions import QUESTION_SETS, TRAIT_PHRASES, Ask, Prepared
 from jeve.decide.recorder import insert_call
 from jeve.errors import JeveError
@@ -120,13 +121,19 @@ def load(
             asks = tuple(
                 Ask(key, "J", _QUESTION.validate_python(q))
                 for key, q in questions.items()
+                # A judgement's copies in other orders (DECIDE-0007) are how
+                # Jev was asked, not questions of their own.
+                if ROTATED not in key
             )
-            jev = parse_decision(
-                dict(row["response"]),
-                expected={a.key for a in asks},
-                fallback_model="jev",
-                usage=Usage(),
-            ).answers
+            jev = collapse_rotations(
+                asks,
+                parse_decision(
+                    dict(row["response"]),
+                    expected=set(questions),
+                    fallback_model="jev",
+                    usage=Usage(),
+                ).answers,
+            )
         except ValueError, JeveError:
             continue  # a response from before a question changed shape
         found.append(Context(str(row["kind"]), str(row["hash"]), state, asks, jev))

@@ -299,6 +299,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### DECIDE-0007: Ask a judgement over every rotation of its options, in one request
+
+**Status**: accepted (2026-09-24)  
+**Scope**: `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/sim/panel.py`, `py/tests/test_rotations.py`, `py/scripts/prompt_lab.py`  
+**Tags**: jev, robustness, position-bias, typed-decisions, agent-decided
+
+Each judgement over a choice is asked once in its declared order and once more per other cyclic order of its options (`key__r1`, `key__r2`, ...), in the same request; the copies are averaged back into one answer under its own key.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### EVAL-0001: An LLM role is kept only on a held-out, judged, paired A/B
 
 **Status**: accepted (2026-09-24)  
