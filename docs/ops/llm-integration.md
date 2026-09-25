@@ -475,16 +475,35 @@ where lateness reaches a decision in finished worlds, using six seeds per arm
 
   Both pass the pre-registered lab rule. They disagree about what a thin
   buffer means. Told the plain fact, Jev mostly still says "routine". Told
-  it feels thin, Jev treats it almost like tight. The world decides between
-  them. The measure is the cash-flow share of late bills, which sits at the
-  floor today (0.17–0.28 against 0.20–0.50, Atradius 0.35), together with
-  late share and days late. A share pushed past 0.50, or late share out of
-  band, would reject `thin`. That A/B changes the world, so it belongs in the
-  follow-up PR.
+  it feels thin, Jev treats it almost like tight.
+
+  **The world rejected `thin`.** The rule was written before any world ran:
+  on six 60-day dev worlds (20261240–45), Jev alone, against the same code
+  with only the thin band reworded (`ops/evals/prompt-lab/thin-cash.diff`),
+  keep it only if (1) the cash-flow share rises with an interval clear of
+  zero; (2) it is in band on all six seeds; (3) late share and days late stay
+  in band; (4) no invariant fails; and (5) Jev's own promptness gap among
+  answered payment decisions falls by less than 0.05.
+
+  | condition | result |
+  | --- | --- |
+  | 1. cash-flow share rises | +0.124 [+0.099, +0.149]: 0.23–0.37 → 0.31–0.53 |
+  | 2. in band on every seed | **no**: 0.527 on 20261242, over the 0.50 ceiling |
+  | 3. late share, days late in band | yes, 6/6 each; neither moved clearly |
+  | 4. no invariant fails | yes |
+  | 5. promptness gap kept | **no**: 0.360 → 0.282 (`thin-cash-persona-parts.json`) |
+
+  "Thinner than they would like" shifts everyone with thin cash toward
+  giving cash as their reason, whoever they are. That overshoots on one seed
+  and flattens promptness, so the wording stays as it is. `weeks` was not
+  run in the world: in the lab it lowered tight-cash payers' cash flow
+  (0.69 → 0.59) more than it raised thin payers' (+0.06). The cash-flow
+  share sits at the band's floor for Jev, and no wording tried so far lifts
+  it without costing persona.
 - **A bill not yet due is described in conversation as "falls due today".**
   `Stake.days_late` is floored at zero (it has been since #14), so a bill due
-  in two days reads as due today. This is left for the same follow-up PR,
-  because it changes wording and so the recorded calls.
+  in two days reads as due today. This is left for a follow-up PR, because
+  it changes wording and so the recorded calls.
 
 ### Where the bar stands
 

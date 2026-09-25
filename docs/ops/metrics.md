@@ -56,7 +56,8 @@ Two misses are worth reading closely:
   Jev's in both. Jev gives cash flow for tight-cash payers about half the
   time. For payers whose cash is only thin it almost never does (0.036).
   `prompt_lab.py cash` found wording that moves it (+0.58 on held-out
-  states). That wording needs a world A/B of its own.
+  states). In a world A/B it overshot the band on one seed and flattened
+  promptness, so it was rejected (`docs/ops/llm-integration.md`).
 
 ## Plausibility: against a cited band
 
