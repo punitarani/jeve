@@ -1058,18 +1058,55 @@ done about it. `days` gives the age as a count instead of the buckets of
 read no bucket past a week differently from any other."""
 
 
-def _lateness_points(ctx: DecisionContext) -> list[tuple[Prepared, str]]:
-    """Every (question, reference) a state is asked, ladder by ladder, rung by
-    rung. A reference is shared across ladders and rungs (common random
-    numbers), so two wordings of one bill differ only in the wording."""
+PROBE_ROOTS = {"lateness": 20261314, "cash": 20261315}
+"""Each probe's reference root, as its committed output was drawn."""
+
+
+def _references(probe: str, ctx: DecisionContext) -> list[str]:
+    """A state's throwaway reference fields, shared by every wording and rung
+    it is asked under (common random numbers), so two wordings of one state
+    differ only in the wording."""
 
     from jeve.core.seed import derive_rng
 
+    root = PROBE_ROOTS[probe]
     rngs = [
-        derive_rng(20261314, "lateness", ctx.person_id, ctx.sim_time, k)
+        derive_rng(root, probe, ctx.person_id, ctx.sim_time, k)
         for k in range(REFERENCES)
     ]
-    refs = [f"ref-{rng.randrange(16**6):06x}" for rng in rngs]
+    return [f"ref-{rng.randrange(16**6):06x}" for rng in rngs]
+
+
+async def _ask_points(
+    gw: Gateway,
+    ctxs: Sequence[DecisionContext],
+    points: Callable[[DecisionContext], list[tuple[Prepared, str]]],
+) -> tuple[list[Dist | None], Ledger]:
+    """Every point of every state, asked of Jev with its reference, in order."""
+
+    ledger = Ledger()
+
+    def job(prepared: Prepared, ref: str) -> Callable[[], Awaitable[Dist | None]]:
+        return lambda: ask_jev(gw, prepared, ledger, reference=ref)
+
+    got = await gather([job(pr, ref) for c in ctxs for pr, ref in points(c)])
+    return got, ledger
+
+
+def _mean_of(replies: Sequence[Dist | None], key: str, option: str) -> float | None:
+    """One point's answer, averaged over its references. A reply that did not
+    answer `key` is dropped, as a failed call is, rather than ending the run
+    after every call has been paid for."""
+
+    ys = [d[key][option] for d in replies if d and key in d]
+    return statistics.fmean(ys) if ys else None
+
+
+def _lateness_points(ctx: DecisionContext) -> list[tuple[Prepared, str]]:
+    """Every (question, reference) a state is asked, ladder by ladder, rung by
+    rung."""
+
+    refs = _references("lateness", ctx)
     points: list[tuple[Prepared, str]] = []
     for wording, ladder in LADDERS.values():
         for days, times in ladder:
@@ -1085,16 +1122,7 @@ async def lateness(args: argparse.Namespace) -> int:
     async with Gateway(settings=load_settings()) as gw:
         for split, offset, n in splits:
             ctxs = contexts(args.from_db, "chase.invoice", n, offset=offset)
-            ledger = Ledger()
-
-            def job(
-                prepared: Prepared, ref: str, lg: Ledger = ledger
-            ) -> Callable[[], Awaitable[Dist | None]]:
-                return lambda: ask_jev(gw, prepared, lg, reference=ref)
-
-            got = await gather(
-                [job(pr, ref) for c in ctxs for pr, ref in _lateness_points(c)]
-            )
+            got, ledger = await _ask_points(gw, ctxs, _lateness_points)
             # by_ladder[name][state][rung]: P(chase), averaged over references.
             by_ladder: dict[str, list[list[float | None]]] = {n: [] for n in LADDERS}
             i = 0
@@ -1102,8 +1130,7 @@ async def lateness(args: argparse.Namespace) -> int:
                 for name in LADDERS:
                     rungs: list[float | None] = []
                     for _rung in LADDER:
-                        ys = [d["chase"]["yes"] for d in got[i : i + REFERENCES] if d]
-                        rungs.append(statistics.fmean(ys) if ys else None)
+                        rungs.append(_mean_of(got[i : i + REFERENCES], "chase", "yes"))
                         i += REFERENCES
                     by_ladder[name].append(rungs)
             row: dict[str, Any] = {
@@ -1171,13 +1198,7 @@ in every band and leaves the reading to the model."""
 
 
 def _cash_points(ctx: DecisionContext) -> list[tuple[Prepared, str]]:
-    from jeve.core.seed import derive_rng
-
-    rngs = [
-        derive_rng(20261315, "cash", ctx.person_id, ctx.sim_time, k)
-        for k in range(REFERENCES)
-    ]
-    refs = [f"ref-{rng.randrange(16**6):06x}" for rng in rngs]
+    refs = _references("cash", ctx)
     points: list[tuple[Prepared, str]] = []
     for words in CASH_WORDINGS.values():
         for band, days in enumerate(RUNWAYS):
@@ -1200,22 +1221,20 @@ async def cash(args: argparse.Namespace) -> int:
             args.from_db, "payment.timing", 4 * (args.dev + args.held_out)
         )
         # Overdue and asked: the reason list without "not due", no gate.
-        if float(str(c.facts.get("days_until_due", 1))) <= 0 and gates.settle(c) is None
+        if isinstance(due := c.facts.get("days_until_due"), int | float)
+        and due <= 0
+        and gates.settle(c) is None
     ]
+    if len(pool) < args.dev + args.held_out:
+        raise SystemExit(
+            f"{args.from_db} has {len(pool)} overdue, ungated payment states; "
+            f"the splits need {args.dev + args.held_out}"
+        )
     held_out = pool[args.dev : args.dev + args.held_out]
     splits = (("dev", pool[: args.dev]), ("held_out", held_out))
     async with Gateway(settings=load_settings()) as gw:
         for split, ctxs in splits:
-            ledger = Ledger()
-
-            def job(
-                prepared: Prepared, ref: str, lg: Ledger = ledger
-            ) -> Callable[[], Awaitable[Dist | None]]:
-                return lambda: ask_jev(gw, prepared, lg, reference=ref)
-
-            got = await gather(
-                [job(pr, ref) for c in ctxs for pr, ref in _cash_points(c)]
-            )
+            got, ledger = await _ask_points(gw, ctxs, _cash_points)
             # why[name][band][state], pay[name][band][state]
             why: dict[str, list[list[float | None]]] = {}
             pay: dict[str, list[list[float | None]]] = {}
@@ -1226,18 +1245,12 @@ async def cash(args: argparse.Namespace) -> int:
             for _ in ctxs:
                 for name in CASH_WORDINGS:
                     for band in range(len(RUNWAYS)):
-                        ds = [d for d in got[i : i + REFERENCES] if d]
+                        replies = got[i : i + REFERENCES]
                         i += REFERENCES
                         why[name][band].append(
-                            statistics.fmean(d["why_not"]["cash_flow"] for d in ds)
-                            if ds
-                            else None
+                            _mean_of(replies, "why_not", "cash_flow")
                         )
-                        pay[name][band].append(
-                            statistics.fmean(d["pay_today"]["yes"] for d in ds)
-                            if ds
-                            else None
-                        )
+                        pay[name][band].append(_mean_of(replies, "pay_today", "yes"))
             row: dict[str, Any] = {
                 "n": len(ctxs),
                 "calls": ledger.calls,

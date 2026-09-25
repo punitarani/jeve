@@ -25,10 +25,11 @@ from jeve import db
 from jeve.core.clock import DAY, at
 from jeve.decide.policy import DecisionContext, RulesPolicy
 from jeve.decide.recorder import insert_call
-from jeve.evals import casts, judge, report, stats, transcripts
+from jeve.evals import casts, judge, report, runner, stats, transcripts
 from jeve.evals.metrics import measure
 from jeve.evals.priors import BY_MEASURE, Prior
 from jeve.sim import advance
+from jeve.sim import daemon as sim_daemon
 from jeve.world.engine import Engine
 from jeve.world.seed_world import ROOT_SEED, seed
 
@@ -340,3 +341,27 @@ def test_the_report_is_rendered_from_the_run_files_alone(
     assert "`persona_signal` | +0.200" in text and "**clear**" in text
     assert "12.000 ± 0.000 (0/3 in band)" in text
     assert "Held-out seeds: none yet" in text and "No judge results yet." in text
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_a_resumed_world_is_carried_on_and_never_seeded_again(
+    monkeypatch: pytest.MonkeyPatch, resume: bool
+) -> None:
+    """`--resume` exists for a world an exhausted account halted halfway: it
+    must reach the daemon without `--seed-world`, which would start the world
+    over and throw away the days already run."""
+
+    asked: list[list[str]] = []
+    monkeypatch.setenv("JEVE_DATABASE_URL", db.dsn())
+    monkeypatch.setattr(runner, "ensure_database", lambda name: f"postgresql:///{name}")
+
+    def daemon(argv: list[str]) -> int:
+        asked.append(argv)
+        return 0
+
+    monkeypatch.setattr(sim_daemon, "main", daemon)
+
+    assert runner.run(runner.arm("rules"), 20261201, 60, resume=resume) == 0
+    (argv,) = asked
+    assert ("--seed-world" in argv) is not resume
+    assert argv[argv.index("--until-day") + 1] == "60"

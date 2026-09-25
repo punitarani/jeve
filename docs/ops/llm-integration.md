@@ -396,8 +396,9 @@ probability 0.77, on three seeds with 0.45, and on six with 0.20
 the time. The bar's turnover condition is a lottery at this scale, and the
 band is not widened to hide that.
 
-The final seeds drew badly. The hazard predicts 0.92 departures a world. Six
-final worlds drew 10 between them, a draw of probability 0.053. Eleven dev
+The final seeds drew badly (`ops/evals/band-power.json`, `drawn`). The hazard
+predicts 0.92 departures a world. Six final worlds drew 10 between them, a
+draw of probability 0.053. Eleven dev
 worlds drew 13, which is unremarkable (P(≥13) = 0.22). The world is calibrated
 in expectation, and the misses are the draw. The draw is keyed by person and
 month (CORE-0009), so a person reads the same uniform in every arm. A pushed
@@ -426,7 +427,7 @@ where lateness reaches a decision in finished worlds, using six seeds per arm
 | 10–20 | 0.36 | 0.61 | 0 / 0 |
 | 21+ | 0.39 | 0.94 | 0 / 0 |
 
-- **The conversation blind spot has almost no support in the world.** Of 1,730
+- **The conversation blind spot has almost no support in the world.** Of 1,530
   decisions in conversations about a bill, 22 concerned one more than three
   days late. Street firms owe each other few bills, and those that go late
   are paid within days. Outside clients owe most late bills, and they are
@@ -458,7 +459,8 @@ where lateness reaches a decision in finished worlds, using six seeds per arm
   how the situation moves it. That is a design change for its own record and
   PR, not a wording.
 - **Thin cash: the words answered the question** (`prompt_lab.py cash`,
-  `ops/evals/prompt-lab/cash.json`). Over 2,682 asked decisions in six
+  `ops/evals/prompt-lab/cash.json`; the world's figures are
+  `lateness-world.json`, `why_by_cash_band`). Over 2,682 asked decisions in six
   worlds, Jev gave cash flow as the reason for leaving an overdue bill 0.54
   of the time when cash was tight, 0.036 when thin (14–30 days, where the
   median small business sits: JPMorgan Chase Institute, 27 days) and 0.000
@@ -502,7 +504,7 @@ holds**, and none is lowered to pass.
 
 - **Where `persona_signal` fell** (`scripts/persona_parts.py`,
   `ops/evals/prompt-lab/persona-parts.json`). All of it is in one of the
-  detector's five pairs, promptness → paying a bill (0.52–0.62 → 0.29–0.44).
+  detector's five pairs, promptness → paying a bill (0.52–0.68 → 0.25–0.44 across the six seeds).
   Among decisions Jev answered, the gap is unchanged: 0.24 → 0.56 before,
   0.23 → 0.53 after. What changed is 852 rows of the cannot-afford gate,
   which settles "no" whoever the payer is. The detector counts gated rows

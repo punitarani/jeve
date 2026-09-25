@@ -1,6 +1,7 @@
-"""Where lateness reaches a decision, measured on finished worlds.
+"""Where a bill's age and the payer's cash reach a decision, measured on
+finished worlds.
 
-Two readings per arm, pooled over seeds, from the decisions' own facts and
+Three readings per arm, pooled over seeds, from the decisions' own facts and
 stored distributions (WORLD-0013):
 
 * **chase** — the issuer's chance of chasing a bill (`chase.invoice`, P(yes)
@@ -11,6 +12,10 @@ stored distributions (WORLD-0013):
   pressing by that lateness. The prompt lab found that neither Jev nor tier 1
   presses harder for a bill weeks overdue. This asks whether the world ever
   puts such a bill in front of them.
+* **why, by cash** — for an overdue bill a model was asked about (no gate),
+  the mean chance of each reason for leaving it, by the payer's cash band
+  (`cash_band`: tight, thin, comfortable). The rules twin stores no
+  distribution and is skipped.
 
     uv run python scripts/lateness_world.py jev,rules 20261201,20261202 \\
         ../ops/evals/prompt-lab/lateness-world.json
@@ -26,6 +31,7 @@ from collections import defaultdict
 import psycopg
 from psycopg.rows import dict_row
 
+from jeve.decide.policy import cash_band
 from jeve.evals.runner import database, dsn_for
 
 AGES = ((0, 0, "not late"), (1, 3, "1-3"), (4, 6, "4-6"), (7, 9, "7-9"))
@@ -44,6 +50,8 @@ def readings(arm: str, seeds: list[int]) -> dict[str, object]:
     chase: dict[str, list[float]] = defaultdict(list)
     talked: dict[str, int] = defaultdict(int)
     press: dict[str, list[float]] = defaultdict(list)
+    why: dict[int, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    asked: dict[int, int] = defaultdict(int)
     for seed in seeds:
         with psycopg.connect(
             dsn_for(database(arm, seed)), row_factory=dict_row, autocommit=True
@@ -73,12 +81,32 @@ def readings(arm: str, seeds: list[int]) -> dict[str, object]:
                     if act
                     else float(r["chosen"].get("act") == "press")
                 )
+            for r in conn.execute(
+                "SELECT facts->'runway_days' AS runway, distributions->'why_not' "
+                "AS why FROM decisions WHERE question_set = 'payment.timing' "
+                "AND distributions ? 'why_not' "
+                "AND (facts->>'days_until_due')::float <= 0"
+            ):
+                band = cash_band(r["runway"])
+                asked[band] += 1
+                for reason, chance in r["why"].items():
+                    why[band][reason] += float(chance)
     names = [name for _, _, name in AGES]
     return {
         "p_chase": {a: _mean(chase[a]) for a in names if chase[a]},
         "chase_decisions": {a: len(chase[a]) for a in names if chase[a]},
         "invoice_round_decisions": {a: talked[a] for a in names if talked[a]},
         "creditor_p_press": {a: _mean(press[a]) for a in names if press[a]},
+        "why_by_cash_band": {
+            ("tight", "thin", "comfortable")[band]: {
+                "asked": asked[band],
+                **{
+                    reason: round(total / asked[band], 4)
+                    for reason, total in sorted(why[band].items())
+                },
+            }
+            for band in sorted(asked)
+        },
     }
 
 

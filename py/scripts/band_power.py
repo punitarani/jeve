@@ -9,22 +9,34 @@ the month-ends whose notice ends inside the run. Only the hazard for staff
 nothing is pushing is counted, so this is the best case: a world whose people
 have reasons to go does worse.
 
+It then counts what the rules twin's 60-day worlds actually drew: departures
+by the unpushed hazard whose notice ended inside the run, per world, and how
+likely that many or more is from a calibrated world. The final trial's seeds
+and the dev seeds are read separately.
+
     uv run python scripts/band_power.py            # writes ops/evals/band-power.json
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
+
+import psycopg
+from psycopg.rows import dict_row
 
 from jeve.config import find_repo_root
 from jeve.core.clock import DAY
+from jeve.evals.arms import CONFIRM_SEEDS, TRIAL_SEEDS
 from jeve.evals.priors import BY_MEASURE
+from jeve.evals.runner import database, dsn_for
 from jeve.world.economy import (
     HEADS,
     MONTH,
     NOTICE,
     QUITS_MONTHLY,
     QUITS_MONTHLY_DEFAULT,
+    UNPUSHED_REASONS,
     per_month,
 )
 from jeve.world.seed_world import STAFF
@@ -45,6 +57,37 @@ def departures(chances: list[float]) -> list[float]:
             nxt[k + 1] += q * p
         dist = nxt
     return dist
+
+
+DEV_SEEDS = (*range(20261211, 20261216), *range(20261240, 20261246))
+"""The rules twin's complete 60-day dev worlds (20261210 stopped at day 26)."""
+
+
+def drawn(seeds: Sequence[int], chances: list[float]) -> dict[str, object]:
+    """Unpushed departures the rules twin drew in these worlds, and the chance
+    of that many or more from a calibrated world run as many times."""
+
+    unpushed = [name for name, _ in UNPUSHED_REASONS]
+    per_world = {}
+    for seed in seeds:
+        with psycopg.connect(
+            dsn_for(database("rules", seed)), row_factory=dict_row, autocommit=True
+        ) as conn:
+            row = conn.execute(
+                "SELECT count(*) AS n FROM events WHERE kind = 'staff.notice' "
+                "AND payload->>'reason' = ANY(%s) "
+                "AND sim_time + %s < (SELECT sim_time FROM sim_meta)",
+                (unpushed, NOTICE),
+            ).fetchone()
+        per_world[str(seed)] = int(row["n"]) if row else 0
+    total = sum(per_world.values())
+    dist = departures(chances * len(seeds))
+    return {
+        "per_world": per_world,
+        "total": total,
+        "expected": round(sum(chances) * len(seeds), 3),
+        "p_at_least_total": round(sum(dist[total:]), 4),
+    }
 
 
 def main() -> int:
@@ -87,6 +130,16 @@ def main() -> int:
             }
         )
     out["horizons"] = rows
+    sixty = [
+        per_month(QUITS_MONTHLY.get(org, QUITS_MONTHLY_DEFAULT))
+        for t in range(FIRST_MONTH_END, 60 * DAY, MONTH)
+        if t + NOTICE < 60 * DAY
+        for org in eligible
+    ]
+    out["drawn"] = {
+        "final": drawn([*TRIAL_SEEDS, *CONFIRM_SEEDS], sixty),
+        "dev": drawn(DEV_SEEDS, sixty),
+    }
     out["note"] = (
         "Unpushed hazard only (the best case). A seed passes when departures / "
         "staff per 30 days is inside the band; the chance is exact "
@@ -97,6 +150,7 @@ def main() -> int:
     path.write_text(json.dumps(out, indent=1) + "\n")
     for row in rows:
         print(row)
+    print(out["drawn"])
     return 0
 
 
