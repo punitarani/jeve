@@ -444,12 +444,22 @@ def _answer(ask: Ask, probs: dict[str, float]) -> Answer:
     return ScoreAnswer(score=float(best), probabilities=probs)
 
 
-def applied(ask: Ask, jev: Answer, llm: Answer, *, routed: bool = False) -> Answer:
+def applied(
+    ask: Ask,
+    jev: Answer,
+    llm: Answer,
+    *,
+    routed: bool = False,
+    average: Answer | None = None,
+) -> Answer:
     """What the world acts on when a set is live: the LLM's judgement, or an
     even mixture for a propensity (design/005, "what the second opinion does").
-    A routed set takes the LLM's answer whole: that is the arm being measured."""
+    A routed set takes the LLM's answer for the average person in the
+    situation, moved to this person by Jev (DECIDE-0008)."""
 
-    if ask.mode == "J" or routed:
+    if routed:
+        return llm if average is None else transplant(ask, llm, jev, average)
+    if ask.mode == "J":
         return llm
     a, b = distribution(ask, jev), distribution(ask, llm)
     return _answer(ask, {o: (a[o] + b[o]) / 2 for o in ask.options})

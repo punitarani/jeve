@@ -22,7 +22,7 @@ import json
 import threading
 import time
 from collections.abc import Coroutine, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from jeve import tracing
@@ -30,7 +30,13 @@ from jeve.config import Settings, load_settings
 from jeve.core.seed import derive_rng, path_of
 from jeve.decide import escalation, gates
 from jeve.decide.policy import Decision, DecisionContext, Escalated, Source
-from jeve.decide.questions import QUESTION_SETS, Ask, Prepared, Resolved
+from jeve.decide.questions import (
+    QUESTION_SETS,
+    Ask,
+    Prepared,
+    Resolved,
+    average_traits,
+)
 from jeve.decide.recorder import Recorder, ReplayMissError, StoredCall, call_key
 from jeve.decide.sampling import resolve
 from jeve.errors import JeveError, ModelVersionDriftError, TransportError
@@ -224,17 +230,20 @@ class JevPolicy:
             metadata={"mode": self._recorder.mode},
         ) as span:
             prepared = [self._prepare(ctx) for ctx in contexts]
+            averages = [
+                self._average(ctx, item)
+                for ctx, item in zip(contexts, prepared, strict=True)
+            ]
             requests: dict[str, tuple[Prepared, DecisionRequest]] = {}
             hashes: list[str | None] = []
             for item in prepared:
-                if not item.needs_model:
-                    hashes.append(None)
-                    continue
-                request = self._request(item)
-                # Looked up under the build we are pinned to (DECIDE-0004).
-                digest = call_key(self._pin, request.wire_bytes())
-                hashes.append(digest)
-                requests.setdefault(digest, (item, request))
+                hashes.append(self._add(item, requests))
+            # Asked beside the people they stand in for, in the same batch: a
+            # routed decision waits on nothing it did not wait on before.
+            average_hashes = [
+                self._add(item, requests) if item is not None else None
+                for item in averages
+            ]
 
             stored = self._recorder.lookup(requests)
             lookups = 0
@@ -265,7 +274,15 @@ class JevPolicy:
                 self._answers(item, call) if call is not None else None
                 for item, call in zip(prepared, calls, strict=True)
             ]
-            opinions = self._second_opinions(contexts, prepared, answers)
+            average_answers = [
+                self._answers(item, stored[maybe])
+                if item is not None and maybe is not None
+                else None
+                for item, maybe in zip(averages, average_hashes, strict=True)
+            ]
+            opinions = self._second_opinions(
+                contexts, prepared, answers, averages, average_answers
+            )
             decisions = [
                 self._decide_one(ctx, item, call, jev, opinions.get(index))
                 for index, (ctx, item, call, jev) in enumerate(
@@ -291,6 +308,30 @@ class JevPolicy:
             # The world has already decided (WORLD-0005): no model is asked.
             return Prepared(ctx.kind, gated=settled)
         return QUESTION_SETS[ctx.kind].prepare(ctx)
+
+    def _average(self, ctx: DecisionContext, item: Prepared) -> Prepared | None:
+        """DECIDE-0008: for a routed set, the same situation with the person
+        at the middle of every trait. Tier 1 is asked about them, and Jev's
+        answer for them is what this person's answer is measured against."""
+
+        if not item.needs_model or not self._tier1.routes(ctx.kind):
+            return None
+        return QUESTION_SETS[ctx.kind].prepare(
+            replace(ctx, traits=average_traits(ctx.traits))
+        )
+
+    def _add(
+        self, item: Prepared, requests: dict[str, tuple[Prepared, DecisionRequest]]
+    ) -> str | None:
+        """Into the batch, once per distinct request; the key it is filed under."""
+
+        if not item.needs_model:
+            return None
+        request = self._request(item)
+        # Looked up under the build we are pinned to (DECIDE-0004).
+        digest = call_key(self._pin, request.wire_bytes())
+        requests.setdefault(digest, (item, request))
+        return digest
 
     def _request(self, item: Prepared) -> DecisionRequest:
         assert item.state is not None
@@ -410,6 +451,7 @@ class JevPolicy:
                         jev[ask.key],
                         opinion.answers[ask.key],
                         routed=opinion.routed,
+                        average=opinion.average.get(ask.key),
                     )
         # The same path whichever tier answered: a live escalation changes what
         # is drawn from, never the draws themselves.
@@ -436,6 +478,8 @@ class JevPolicy:
         contexts: Sequence[DecisionContext],
         prepared: Sequence[Prepared],
         answers: Sequence[dict[str, Answer] | None],
+        averages: Sequence[Prepared | None],
+        average_answers: Sequence[dict[str, Answer] | None],
     ) -> dict[int, _Opinion]:
         """Ask tier 1 about the answers Jev was unsure of, within today's room.
 
@@ -457,10 +501,13 @@ class JevPolicy:
             if jev is not None and self._tier1.routes(ctx.kind):
                 # DECIDE-0006: every question, whatever Jev said, and outside
                 # the day's room — the set is answered by tier 1, not escalated.
+                # Asked about the average person in this situation (DECIDE-0008):
+                # who this person is comes from Jev.
                 keys = self._tier1.routed_asks(ctx.kind, item.asks)
-                if keys:
+                average = averages[index]
+                if keys and average is not None:
                     routed.append(
-                        _Wanted(index, ctx, item, keys, (escalation.ROUTED,), True)
+                        _Wanted(index, ctx, average, keys, (escalation.ROUTED,), True)
                     )
                 continue
             if (
@@ -542,10 +589,12 @@ class JevPolicy:
             jev = answers[want.index]
             assert jev is not None
             asks = want.asks
+            routed_here = escalation.ROUTED in want.fired
             opinions[want.index] = _Opinion(
                 answers=llm,
                 applied=want.acts,
-                routed=escalation.ROUTED in want.fired,
+                routed=routed_here,
+                average=(average_answers[want.index] or {}) if routed_here else {},
                 record=Escalated(
                     mode="live" if want.acts else "shadow",
                     sampled=not want.fired,
@@ -730,6 +779,9 @@ class _Opinion:
     applied: bool
     record: Escalated
     routed: bool = False
+    average: dict[str, Answer] = field(default_factory=dict)
+    """Jev's answer for the average person in the same situation: what a
+    routed answer is moved from, to this person (DECIDE-0008)."""
 
 
 # -- judgements over every order (DECIDE-0007) -----------------------------------

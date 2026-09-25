@@ -29,7 +29,7 @@ from jeve.decide.policy import (
     Escalated,
     RulesPolicy,
 )
-from jeve.decide.questions import QUESTION_SETS, Ask, Prepared
+from jeve.decide.questions import QUESTION_SETS, Ask, Prepared, average_traits
 from jeve.decide.recorder import Mode as RecorderMode
 from jeve.decide.recorder import Recorder, ReplayMissError, call_key, insert_call
 from jeve.errors import TransportError
@@ -269,6 +269,7 @@ class _Flash:
     def __init__(self, replies: dict[str, dict[str, Any] | Exception]) -> None:
         self.replies = replies
         self.asked: list[tuple[str, Purpose]] = []
+        self.sent: list[ChatRequest] = []
 
     generative_models = (FIRST, SECOND)
 
@@ -282,6 +283,7 @@ class _Flash:
         out: list[ChatResponse | BaseException] = []
         for request, purpose in requests:
             self.asked.append((request.model, purpose))
+            self.sent.append(request)
             reply = self.replies[request.model]
             if isinstance(reply, TimeoutError):
                 raise reply  # what the bridge does when the round runs out
@@ -568,6 +570,8 @@ def test_a_routed_set_is_answered_whole_by_tier_1(
     )
     ctx = _ctx("invoice.dispute")
     _teach_jev(conn, policy, ctx, dispute={"type": "noul", "noul": 0.02})
+    # Jev says the same of the average person: this one is nobody special.
+    _teach_jev(conn, policy, _average(ctx), dispute={"type": "noul", "noul": 0.02})
     made = policy.decide(ctx)
     assert made.source == "llm"
     assert made.distributions["dispute"]["yes"] == pytest.approx(0.9)
@@ -576,6 +580,41 @@ def test_a_routed_set_is_answered_whole_by_tier_1(
     assert second.triggers == [escalation.ROUTED.row()]
     assert second.jev["dispute"]["yes"] == pytest.approx(0.02)
     assert flash.asked == [(FIRST, "gate")]
+
+    replayed = _policy(monkeypatch, mode="off", route=route, calls="replay")
+    assert replayed.decide(ctx).draws == made.draws
+
+
+def _average(ctx: DecisionContext) -> DecisionContext:
+    return replace(ctx, traits=average_traits(ctx.traits))
+
+
+def test_a_routed_answer_is_the_llms_situation_and_jevs_person(
+    conn: Connection[DictRow], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DECIDE-0008: tier 1 is asked about the average person in this
+    situation, and the answer is moved by as much as Jev moves when the
+    average person becomes this one."""
+
+    flash = _Flash({FIRST: {"dispute": {"yes": 0.9, "no": 0.1}}})
+    route = frozenset({"invoice.dispute"})
+    policy = _policy(monkeypatch, mode="off", route=route, flash=flash)
+    ctx = _ctx("invoice.dispute")
+    _teach_jev(conn, policy, ctx, dispute={"type": "noul", "noul": 0.02})
+    _teach_jev(conn, policy, _average(ctx), dispute={"type": "noul", "noul": 0.10})
+    made = policy.decide(ctx)
+    # Five times less likely than average, by Jev, give or take the floor.
+    floor = escalation.FLOOR
+    yes = 0.9 * (0.02 + floor) / (0.10 + floor)
+    no = 0.1 * (0.98 + floor) / (0.90 + floor)
+    assert made.distributions["dispute"]["yes"] == pytest.approx(yes / (yes + no))
+    # The LLM was told about the average person, not this one.
+    (sent,) = flash.sent
+    said = str(sent.messages[-1].content)
+    assert "will wait a few minutes" in said and "impatient" not in said
+    second = made.escalation
+    assert second is not None and second.llm["dispute"]["yes"] == pytest.approx(0.9)
+    assert second.jev["dispute"]["yes"] == pytest.approx(0.02)
 
     replayed = _policy(monkeypatch, mode="off", route=route, calls="replay")
     assert replayed.decide(ctx).draws == made.draws
@@ -763,6 +802,7 @@ class _PerRequest(_Flash):
         out: list[ChatResponse | BaseException] = []
         for request, purpose in requests:
             self.asked.append((request.model, purpose))
+            self.sent.append(request)
             large = "larger bills" in request.messages[1].content
             reply = self.by[(request.model, large)]
             if isinstance(reply, TimeoutError):
