@@ -1,0 +1,35 @@
+{
+ "footer": "310 verdicts; $0.3717 spent on this run.",
+ "note": "Episodes from the two arms and the same seed, of the same shape (what was at stake, how many rounds, how many people), shown both ways round. *Right preferred* is how often the judge preferred `rounds-persona2`'s episode; 0.50 is no difference.",
+ "tallies": [
+  {
+   "consistent": 2,
+   "label": "rounds-persona2 over rounds-plain (invoice)",
+   "n": 2,
+   "points": 2.0,
+   "ties": 0
+  },
+  {
+   "consistent": 73,
+   "label": "rounds-persona2 over rounds-plain (news)",
+   "n": 145,
+   "points": 78.0,
+   "ties": 0
+  },
+  {
+   "consistent": 6,
+   "label": "rounds-persona2 over rounds-plain (outage)",
+   "n": 8,
+   "points": 5.0,
+   "ties": 0
+  },
+  {
+   "consistent": 81,
+   "label": "rounds-persona2 over rounds-plain (all)",
+   "n": 155,
+   "points": 85.0,
+   "ties": 0
+  }
+ ],
+ "title": "`rounds-persona2` against `rounds-plain`, 20261260,20261261,20261262,20261263,20261264,20261265 seeds (anthropic/claude-haiku-4.5)"
+}

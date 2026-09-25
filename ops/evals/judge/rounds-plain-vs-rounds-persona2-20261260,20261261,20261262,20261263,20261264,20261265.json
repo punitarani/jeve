@@ -1,0 +1,35 @@
+{
+ "footer": "310 verdicts; $0.2090 spent on this run.",
+ "note": "Episodes from the two arms and the same seed, of the same shape (what was at stake, how many rounds, how many people), shown both ways round. *Right preferred* is how often the judge preferred `rounds-persona2`'s episode; 0.50 is no difference.",
+ "tallies": [
+  {
+   "consistent": 1,
+   "label": "rounds-persona2 over rounds-plain (invoice)",
+   "n": 2,
+   "points": 1.5,
+   "ties": 0
+  },
+  {
+   "consistent": 102,
+   "label": "rounds-persona2 over rounds-plain (news)",
+   "n": 145,
+   "points": 77.5,
+   "ties": 0
+  },
+  {
+   "consistent": 7,
+   "label": "rounds-persona2 over rounds-plain (outage)",
+   "n": 8,
+   "points": 5.5,
+   "ties": 0
+  },
+  {
+   "consistent": 110,
+   "label": "rounds-persona2 over rounds-plain (all)",
+   "n": 155,
+   "points": 84.5,
+   "ties": 0
+  }
+ ],
+ "title": "`rounds-persona2` against `rounds-plain`, 20261260,20261261,20261262,20261263,20261264,20261265 seeds (openai/gpt-5.6-luna)"
+}
