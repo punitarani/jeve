@@ -311,6 +311,18 @@ This decision is immutable. To change it, write a new record and set `superseded
 
 ---
 
+### DECIDE-0008: A routed propensity takes the person from Jev
+
+**Status**: accepted (2026-09-25)  
+**Scope**: `py/src/jeve/decide/jev_policy.py`, `py/src/jeve/decide/escalation.py`, `py/src/jeve/decide/questions.py`, `py/tests/test_escalation.py`, `py/scripts/prompt_lab.py`, `py/scripts/persona_gradients.py`  
+**Tags**: escalation, persona, typed-decisions, llm, agent-decided
+
+For a routed set, Jev is asked about this person and about the same situation with every trait at the middle of its range, in the same batch. Tier 1 is asked about that average person. A judgement is the LLM's whole. A propensity is the LLM's answer times Jev's ratio for this person over the average person, renormalised (`escalation.transplant`, with a 0.01 floor on Jev's side). This amends DECIDE-0006's "sampled from the LLM's own distribution" for propensities only.
+
+This decision is immutable. To change it, write a new record and set `superseded-by` on this one — do not edit its substance.
+
+---
+
 ### EVAL-0001: An LLM role is kept only on a held-out, judged, paired A/B
 
 **Status**: accepted (2026-09-24)  

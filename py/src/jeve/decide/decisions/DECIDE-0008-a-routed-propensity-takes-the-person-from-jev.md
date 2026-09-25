@@ -36,8 +36,7 @@ conversation.
 - **Luna in place of GLM.** Luna keeps more persona on its own. The persona
   judge (Sonnet) preferred GLM with Jev's person over Luna, 0.56
   [0.48, 0.65], at no extra LLM cost.
-- **Mix the two answers.** An even mixture halves both the persona effect and
-  the conversation effect. It does not choose between them.
+- **An even mixture of both answers.** It halves both effects.
 
 ## Decision Outcome
 
@@ -49,10 +48,8 @@ renormalised (`escalation.transplant`, with a 0.01 floor on Jev's side). This
 amends DECIDE-0006's "sampled from the LLM's own distribution" for
 propensities only.
 
-The factorisation is a log-linear model, with the situation from one tier and
-the person from the other. In log-odds the persona effect is Jev's in full.
-In probability it is smaller wherever GLM's average-person baseline is lower
-than Jev's.
+A log-linear model: in log-odds the persona effect is Jev's in full; in
+probability it is smaller wherever GLM's average-person baseline is lower.
 
 Evidence, all committed:
 
