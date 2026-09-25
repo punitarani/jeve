@@ -454,11 +454,18 @@ def applied(
 ) -> Answer:
     """What the world acts on when a set is live: the LLM's judgement, or an
     even mixture for a propensity (design/005, "what the second opinion does").
-    A routed set takes the LLM's answer for the average person in the
-    situation, moved to this person by Jev (DECIDE-0008)."""
+
+    A routed set's judgement is the LLM's whole: that is what it was routed to
+    make. Its propensities are the LLM's answer for the average person in the
+    situation, moved to this person by Jev (DECIDE-0008). Moved as well, the
+    judgement of whether someone had had their say fell below one half more
+    often: settled conversations 0.84 -> 0.72, a third of a round longer (six
+    14-day worlds)."""
 
     if routed:
-        return llm if average is None else transplant(ask, llm, jev, average)
+        if ask.mode == "J" or average is None:
+            return llm
+        return transplant(ask, llm, jev, average)
     if ask.mode == "J":
         return llm
     a, b = distribution(ask, jev), distribution(ask, llm)

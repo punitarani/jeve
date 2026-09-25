@@ -620,6 +620,18 @@ def test_a_routed_answer_is_the_llms_situation_and_jevs_person(
     assert replayed.decide(ctx).draws == made.draws
 
 
+def test_a_routed_judgement_is_the_llms_and_only_a_propensity_is_moved() -> None:
+    """Moving whether someone had had their say by Jev's ratio pushed it under
+    one half more often, and conversations settled less (DECIDE-0008)."""
+
+    llm, person, average = (NoulAnswer(noul=p) for p in (0.6, 0.2, 0.5))
+    done = _ask("done", "J", NOUL)
+    assert escalation.applied(done, person, llm, routed=True, average=average) == llm
+    inclined = _ask("mention", "P", NOUL)
+    moved = escalation.applied(inclined, person, llm, routed=True, average=average)
+    assert isinstance(moved, NoulAnswer) and moved.noul < 0.6
+
+
 def test_one_question_of_a_set_can_be_routed_and_the_rest_stay_jevs() -> None:
     config = escalation.Config(route=frozenset({"episode.round:done"}))
     asks = [_ask("act", "P", CHOICE), _ask("done", "J", NOUL)]
