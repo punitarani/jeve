@@ -262,6 +262,10 @@ class JevPolicy:
                     "contexts": len(contexts),
                     "lookups": lookups,
                     "cache_hits": hits,
+                    # DECIDE-0008's requests for the average person share the
+                    # batch, so they are counted in `distinct_requests` and
+                    # `live_calls`; this says how many there were.
+                    "averages": sum(h is not None for h in average_hashes),
                     "distinct_requests": len(requests),
                     "live_calls": len(missing),
                 }

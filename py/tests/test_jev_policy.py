@@ -382,7 +382,10 @@ def test_a_replayed_tick_is_one_trace_whose_batches_carry_their_decisions(
         # both are zero, and the shared-call test below pulls them apart.
         assert by["live"] == data["lookups"] - data["cache_hits"] == 0
         assert data["live_calls"] == 0
-        assert data["distinct_requests"] <= data["lookups"]
+        # A routed decision is asked about its average person too (DECIDE-0008),
+        # in the same batch: 3 requests for 2 lookups on the golden's first day.
+        assert data["distinct_requests"] <= data["lookups"] + data["averages"]
+        assert data["averages"] <= data["lookups"]
         for row in settled:
             if row["settled_by"] == "gated":
                 assert row["model_call"] is None
