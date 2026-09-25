@@ -119,17 +119,14 @@ def _payments(conn: Connection[DictRow], m: Measures, end: int) -> None:
     )
     m.values["dispute_share"] = _ratio(disputed, issued)
     # Why bills were left, as the payers said (WORLD-0013): each reason's share
-    # of the bills that were ever left unpaid past their date.
-    # A gate's reason is the same reason in other words: no cash is cash flow,
-    # a bill under dispute is a query.
-    gate = {"insufficient_cash": "cash_flow", "disputed": "query"}
+    # of the bills that were ever left unpaid past their date. The engine
+    # stores a gate's reason in the payer's vocabulary (LATE_REASON_OF_GATE).
     reasons: Counter[str] = Counter()
     for r in conn.execute(
         "SELECT late_reason, count(*) AS n FROM invoices "
         "WHERE late_reason IS NOT NULL GROUP BY 1"
     ).fetchall():
-        reason = str(r["late_reason"])
-        reasons[gate.get(reason, reason)] += int(r["n"])
+        reasons[str(r["late_reason"])] += int(r["n"])
     total = sum(reasons.values())
     for reason in (
         "cash_flow",
@@ -196,7 +193,13 @@ def _churn(conn: Connection[DictRow], m: Measures) -> None:
     cancelled = _scalar(
         conn, "SELECT count(*) FROM subscriptions WHERE cancelled_sim IS NOT NULL"
     )
-    staff = _scalar(conn, "SELECT count(*) FROM persons WHERE kind = 'staff'")
+    # Over the staff the world started with: a replacement hired after a
+    # departure is not another person who could have left all along.
+    staff = _scalar(
+        conn,
+        "SELECT (SELECT count(*) FROM persons WHERE kind = 'staff') - "
+        "(SELECT count(*) FROM events WHERE kind = 'staff.hired')",
+    )
     left = _scalar(
         conn, "SELECT count(*) FROM persons WHERE kind = 'staff' AND status = 'left'"
     )

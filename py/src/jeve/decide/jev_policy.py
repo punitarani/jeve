@@ -371,9 +371,13 @@ class JevPolicy:
 
     @staticmethod
     def _raw_answers(item: Prepared, call: StoredCall) -> dict[str, Answer]:
+        # Only the declared questions must be answered. A judgement's copies
+        # in other orders (DECIDE-0007) are averaged when present; a reply
+        # missing one is the declared order's answer, not a shape error the
+        # daemon would retry for ever (SIM-0002).
         return parse_decision(
             call.response,
-            expected=set(rotated_questions(item.asks)),
+            expected={ask.key for ask in item.asks},
             fallback_model=call.model,
             usage=Usage(
                 input_tokens=call.input_tokens,

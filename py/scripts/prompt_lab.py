@@ -47,6 +47,7 @@ from jeve.config import find_repo_root, load_settings
 from jeve.decide import escalation
 from jeve.decide.policy import DecisionContext
 from jeve.decide.questions import QUESTION_SETS, Ask, Prepared
+from jeve.errors import ResponseShapeError, TransportError
 from jeve.evals.runner import dsn_for
 from jeve.llm import DECISION_PREFERENCE, DecisionRequest, Gateway
 from jeve.llm.protocol import (
@@ -154,7 +155,9 @@ async def ask_llm(
     try:
         reply = await gw.complete(request, purpose="gate")
         answers = escalation.parse(reply.text, prepared.asks)
-    except Exception:  # an unusable reply is the measurement
+    except ValueError, ResponseShapeError, TransportError:
+        # An unusable reply, or a provider that would not give one, is the
+        # measurement. A spend ceiling or a missing key is not: it propagates.
         ledger.failed += 1
         return None
     finally:
@@ -184,7 +187,7 @@ async def ask_jev(
             DecisionRequest(model=DECISION_PREFERENCE[0], state=state, questions=qs),
             purpose="gate",
         )
-    except Exception:
+    except ValueError, ResponseShapeError, TransportError:
         ledger.failed += 1
         return None
     finally:

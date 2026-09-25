@@ -106,12 +106,19 @@ time, where real small businesses are paid 7.8 days late (Xero, Dec quarter
 2025) and 43% of B2B invoice value is overdue (Atradius US 2025). Half now pay
 by instruction; the other half decide, daily, from their own cash (WORLD-0014)."""
 CHASE_AGAIN_AFTER = 7 * DAY
+"""A dunning cadence: a bill still unpaid a week after it was chased is chased
+again. It used to be chased once, ever."""
 REMINDER_LASTS = 14 * DAY
 """A bill raised in person weighs on the payer for a fortnight."""
 CLIENT_CAN_PAY_DAYS = 5.0
 """Under five days of cash in hand, a client cannot pay a bill today."""
-"""A dunning cadence: a bill still unpaid a week after it was chased is chased
-again. It used to be chased once, ever."""
+LATE_REASON_OF_GATE: dict[str, str] = {
+    "insufficient_cash": "cash_flow",
+    "disputed": "query",
+}
+"""A gate's reason for leaving a bill, in the payer's own words: no cash is
+cash flow, a bill under dispute is a query (WORLD-0013), so `late_reason`
+speaks one vocabulary whoever settled it."""
 CLIENT_BUFFER_MEDIAN_DAYS = 27.0
 CLIENT_BUFFER_SIGMA = 1.16
 """A client's cash buffer, in days of outgoings, drawn each month from a
@@ -119,8 +126,6 @@ log-normal fitted to JPMorgan Chase Institute's 597,000 small businesses
 ("Cash is King", 2016): median 27 days, a quarter under 13, a quarter over 62.
 About 29% fall under the 14 days `runway_words` calls tight. Clients were told
 they had 60 days, always."""
-"""Clients in the four prompter fifths pay by standing instruction on the day a
-bill falls due: a gate, not a question. The slowest fifth decide, daily."""
 
 
 def per_tick(rate_per_hour: float) -> float:
@@ -1795,7 +1800,7 @@ class Engine:
                     self._conn.execute(
                         "UPDATE invoices SET deferrals = deferrals + 1, "
                         "late_reason = %s WHERE id = %s",
-                        (reason, bill["id"]),
+                        (LATE_REASON_OF_GATE.get(reason, reason), bill["id"]),
                     )
                 continue
 

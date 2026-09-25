@@ -623,3 +623,19 @@ def test_the_rules_twin_acts_on_hearsay_less_than_on_what_it_saw() -> None:
         return bool(policy._file_ticket(ctx, Fixed())[0]["file"])
 
     assert files(0) and not files(1) and not files(3)
+
+
+def test_not_due_is_a_reason_only_before_the_date() -> None:
+    """Past its date a bill cannot be left because it is not due yet; offered
+    anyway, a sampled answer wrote exactly that on overdue bills."""
+
+    def why_not(days_until_due: int) -> tuple[str, ...]:
+        prepared = _prepare(
+            "payment.timing",
+            {**ASKING["payment.timing"], "days_until_due": days_until_due},
+        )
+        return next(a.options for a in prepared.asks if a.key == "why_not")
+
+    assert "not_due" in why_not(2)
+    assert "not_due" not in why_not(0)
+    assert "not_due" not in why_not(-4)

@@ -27,6 +27,7 @@ from typing import Literal
 from jeve.core.clock import SimTime
 from jeve.decide.policy import DecisionContext, approach_weight
 from jeve.llm.protocol import Choice, Noul, NoulCriteria, Prose, Score
+from jeve.memory.ties import Tie
 
 type Mode = Literal["J", "P"]
 """J: judgement, take the argmax. P: propensity, sample the distribution.
@@ -518,12 +519,26 @@ _WHY_NOT = Ask(
         criteria=dict(LATE_REASONS),
     ),
 )
+_WHY_LATE = Ask(
+    "why_not",
+    "P",
+    Choice(
+        instructions="Suppose this person does not pay the invoice today. What "
+        "would be the main reason?",
+        criteria={k: v for k, v in LATE_REASONS.items() if k != "not_due"},
+    ),
+)
+"""Past its date, "not due yet" is not a reason a bill can be left for: offered
+anyway, a sampled answer could write it on an overdue bill."""
 
 
 def _prepare_payment(ctx: DecisionContext) -> Prepared:
     return Prepared(
         ctx.kind,
-        asks=(_PAY, _WHY_NOT),
+        asks=(
+            _PAY,
+            _WHY_NOT if _number(ctx.facts.get("days_until_due")) > 0 else _WHY_LATE,
+        ),
         state={
             "person": "the person who pays the bills for a small business",
             "habit": trait_words("promptness", ctx.traits.get("promptness")),
@@ -771,7 +786,7 @@ def _tie(person: dict[str, object]) -> tuple[int, int]:
 
 
 def _is_friend(met: int, warmth: int) -> bool:
-    return warmth >= 2 or (met >= 4 and warmth >= 1)
+    return Tie(met, warmth).friend
 
 
 def rapport_words(ctx: DecisionContext) -> str:

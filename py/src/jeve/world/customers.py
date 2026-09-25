@@ -367,6 +367,11 @@ def cancel(
             "decided_by": made.source if made is not None else "rules",
         },
     )
+    if made is None:
+        # A subscription left to lapse, for a reason of the customer's own, is
+        # not a sign the vendor is in trouble: made news, it put everyone who
+        # heard it at risk (VENDOR_BAD_NEWS) and a quiet month could cascade.
+        return
     # That the vendor is losing customers is news, and it travels (MEM-0002):
     # the account manager and the founder know first.
     fact = memory.Fact.churned("tallybird")

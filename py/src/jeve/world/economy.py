@@ -834,37 +834,44 @@ def careers(engine: Engine, report: TickReport) -> None:
         "  SELECT 1 FROM scheduled q WHERE q.kind = 'staff.leaves' "
         "  AND q.subject_id = p.id) ORDER BY p.id"
     ).fetchall()
+    since = report.sim_time - PAY_LATE_LOOKBACK
+    # What is true of a firm is asked once per firm, not once per person in it.
+    troubles = {
+        str(r["org_id"]): (int(r["pay_late"]), int(r["struggling"]))
+        for r in engine.conn.execute(
+            "SELECT org_id, count(*) FILTER (WHERE kind IN ('payroll.held', "
+            "'payroll.missed')) AS pay_late, count(*) FILTER (WHERE kind = "
+            "'insolvency.warning') AS struggling FROM events WHERE kind IN "
+            "('payroll.held', 'payroll.missed', 'insolvency.warning') "
+            "AND sim_time >= %s GROUP BY org_id",
+            (since,),
+        ).fetchall()
+        if r["org_id"] is not None
+    }
     contexts: list[DecisionContext] = []
     asked: list[DictRow] = []
     for person in staff:
         org = str(person["org_id"])
         if person["role"] == HEADS.get(org) or failed(engine, org):
             continue
-        colleagues = engine.conn.execute(
-            "SELECT count(*) FILTER (WHERE t.warmth >= 2 OR (t.met >= 4 AND "
-            "t.warmth >= 1)) AS friends, count(*) FILTER (WHERE t.warmth <= -1) "
-            "AS fallen_out FROM ties t JOIN persons o ON o.id = "
-            "CASE WHEN t.a = %s THEN t.b ELSE t.a END "
-            "WHERE (t.a = %s OR t.b = %s) AND o.org_id = %s AND o.status <> 'left'",
-            (person["id"], person["id"], person["id"], org),
-        ).fetchone()
-        pay_late = engine.conn.execute(
-            "SELECT count(*) AS n FROM events WHERE org_id = %s AND kind IN "
-            "('payroll.held', 'payroll.missed') AND sim_time >= %s",
-            (org, report.sim_time - PAY_LATE_LOOKBACK),
-        ).fetchone()
-        struggling = engine.conn.execute(
-            "SELECT count(*) AS n FROM events WHERE org_id = %s "
-            "AND kind = 'insolvency.warning' AND sim_time >= %s",
-            (org, report.sim_time - PAY_LATE_LOOKBACK),
-        ).fetchone()
+        colleagues = [
+            memory.Tie(int(r["met"]), int(r["warmth"]))
+            for r in engine.conn.execute(
+                "SELECT t.met, t.warmth FROM ties t JOIN persons o ON o.id = "
+                "CASE WHEN t.a = %s THEN t.b ELSE t.a END "
+                "WHERE (t.a = %s OR t.b = %s) AND o.org_id = %s "
+                "AND o.status <> 'left'",
+                (person["id"], person["id"], person["id"], org),
+            ).fetchall()
+        ]
+        pay_late, struggling = troubles.get(org, (0, 0))
         facts: dict[str, object] = {
             "org": org,
             "mood": int(person["mood"]),
-            "friends_at_work": int(colleagues["friends"]) if colleagues else 0,
-            "fallen_out_at_work": int(colleagues["fallen_out"]) if colleagues else 0,
-            "pay_late": bool(pay_late and int(pay_late["n"])),
-            "firm_struggling": bool(struggling and int(struggling["n"])),
+            "friends_at_work": sum(tie.friend for tie in colleagues),
+            "fallen_out_at_work": sum(tie.fallen_out for tie in colleagues),
+            "pay_late": pay_late > 0,
+            "firm_struggling": struggling > 0,
             "swamped": org == "tallybird" and swamped,
         }
         pushed = (
