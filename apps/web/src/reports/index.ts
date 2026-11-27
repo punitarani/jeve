@@ -21,6 +21,16 @@ export type Published = {
 
 export const REPORTS: readonly Published[] = [
 	{
+		slug: "first-16000-days",
+		title: "The First 16,000 Days",
+		headline: "Sixteen thousand days, one near-failure, and a cure nobody chose.",
+		summary:
+			"The production run from its first tick to d15,988: 571 sim-months on one code. Halloran nearly fails on unlogged hours and is saved by who replaced the people it couldn't pay; the model meets fewer new situations every month.",
+		date: "2026-11-27",
+		run: "golden-20260920",
+		scope: "d0→d15,988 · 6,008,305 decisions · 571 months · 9 defects",
+	},
+	{
 		slug: "day-3-in-prod",
 		title: "Day 3 in Prod",
 		headline: "Consequences arrived. Tallybird lasted 22 days.",
