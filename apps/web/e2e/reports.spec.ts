@@ -124,6 +124,35 @@ test("Day 3 in Prod is the report as published", async ({ page }) => {
 	await expect(page.locator("#defects .d")).toHaveCount(9);
 });
 
+test("The First 16,000 Days is the report as published", async ({ page }) => {
+	await page.goto("/reports/first-16000-days");
+	await expect(page.locator("h1")).toHaveText("Sixteen thousand days, one near-failure, and a cure nobody chose.");
+
+	// Four eras of one code, and Halloran's crisis in order from the event log.
+	await expect(page.locator("#eras .rg")).toHaveCount(4);
+	await expect(page.locator("#halloran .tl li")).toHaveCount(12);
+	await expect(page.locator("#halloran")).toContainText("$75,268 of interest on $62,215");
+
+	// Hide a firm from the cash chart, and read a month off it.
+	const legend = page.locator("#economy .legend button");
+	await expect(legend).toHaveCount(4);
+	await legend.nth(2).click();
+	await expect(legend.nth(2)).toHaveAttribute("aria-pressed", "false");
+	await legend.nth(2).click();
+	const chart = page.locator("#economy .chart svg").first();
+	await chart.scrollIntoViewIfNeeded();
+	const box = await chart.boundingBox();
+	if (!box) throw new Error("the cash chart has no box");
+	await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+	await expect(page.getByRole("tooltip")).toContainText(/day [\d,]+/);
+
+	// Tier 1's disagreement is Halloran's alone.
+	await expect(page.locator("#model table tbody tr")).toHaveCount(6);
+	await expect(page.locator("#run table tbody tr")).toHaveCount(4);
+
+	await expect(page.locator("#defects .d")).toHaveCount(9);
+});
+
 test("an unknown report is not a page", async ({ page }) => {
 	const response = await page.goto("/reports/no-such-report");
 	expect(response?.status()).toBe(404);

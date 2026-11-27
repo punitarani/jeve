@@ -226,6 +226,14 @@ html:has(.rpt) { scroll-padding-top:64px; }
 @media (max-width:720px) {
   .rpt .regimes { grid-template-columns:minmax(0,1fr); }
 }
+/* Four eras of one code, equal widths: they span 19 to 253 months, too uneven to draw to scale. */
+.rpt .regimes.four { grid-template-columns:repeat(4,minmax(0,1fr)); }
+@media (max-width:900px) {
+  .rpt .regimes.four { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width:560px) {
+  .rpt .regimes.four { grid-template-columns:minmax(0,1fr); }
+}
 .rpt .rg { position:relative; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; min-width:0; }
 .rpt .rg b { display:block; font:700 12.5px/1.3 var(--mono); }
 .rpt .rg .rg-pr { font:500 11px/1 var(--mono); color:var(--mark); letter-spacing:.06em; text-transform:uppercase; }

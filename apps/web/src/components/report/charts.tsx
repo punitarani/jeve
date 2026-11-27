@@ -144,7 +144,11 @@ export function LineChart(o: LineProps) {
 		const cur = ends[i];
 		if (prev && cur && cur.y - prev.y < 15) cur.y = prev.y + 15;
 	}
-	const xLabels = [...new Set([0, 0.2, 0.4, 0.6, 0.8, 1].map((fr) => Math.round(fr * last)))];
+	// Six labels where they fit, fewer where they don't: at phone width, "d12,908"
+	// six times over ran into itself (the 16,000-day report).
+	const labelW = Math.max(...[0, last].map((i) => o.xfmt(o.xs[i] ?? i).length)) * CW + 14;
+	const slots = Math.max(2, Math.min(6, Math.floor(iw / labelW)));
+	const xLabels = [...new Set(Array.from({ length: slots }, (_, k) => Math.round((k / (slots - 1)) * last)))];
 
 	const move = (ev: React.PointerEvent<SVGRectElement>) => {
 		const svg = ev.currentTarget.ownerSVGElement;
